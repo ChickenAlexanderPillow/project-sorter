@@ -154,6 +154,49 @@ fn is_allowed_for_mode(mode: &str, path: &Path) -> bool {
     }
 }
 
+fn detect_mode_for_path(path: &Path) -> Option<&'static str> {
+    let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("").to_lowercase();
+    if ext.is_empty() {
+        return None;
+    }
+    if ext == "mxf" {
+        return Some("VIDEO PROXY");
+    }
+    if ext == "mp4" {
+        return Some("VIDEO RAW");
+    }
+    let audio = matches!(
+        ext.as_str(),
+        "wav" | "mp3" | "aif" | "aiff" | "flac" | "m4a" | "aac" | "ogg" | "opus"
+    );
+    if audio {
+        let stem = path
+            .file_stem()
+            .and_then(|s| s.to_str())
+            .unwrap_or("")
+            .to_ascii_uppercase();
+        if stem.starts_with("CLEAN") {
+            return Some("AUDIO CLEAN");
+        }
+        return Some("AUDIO RAW");
+    }
+    let stills = matches!(
+        ext.as_str(),
+        "jpg" | "jpeg" | "png" | "tif" | "tiff" | "heic" | "heif" | "webp" | "bmp" | "gif"
+    );
+    if stills {
+        return Some("STILLS");
+    }
+    let video = matches!(
+        ext.as_str(),
+        "mov" | "mxf" | "mp4" | "mkv" | "avi" | "mpg" | "mpeg" | "m4v" | "webm" | "r3d"
+    );
+    if video {
+        return Some("VIDEO RAW");
+    }
+    None
+}
+
 fn has_dir(path: &Path, child: &str) -> bool {
     path.join(child).is_dir()
 }
@@ -202,6 +245,7 @@ fn unique_destination_path(
 
 fn list_files(paths: &[String]) -> Vec<PathBuf> {
     let mut files = Vec::new();
+    let mut seen = HashSet::new();
     for path_str in paths {
         let path = PathBuf::from(path_str);
         if path.is_dir() {
@@ -210,10 +254,17 @@ fn list_files(paths: &[String]) -> Vec<PathBuf> {
                 .filter_map(|entry| entry.ok())
                 .filter(|entry| entry.file_type().is_file())
             {
-                files.push(entry.path().to_path_buf());
+                let file_path = entry.path().to_path_buf();
+                let key = fs::canonicalize(&file_path).unwrap_or_else(|_| file_path.clone());
+                if seen.insert(key.clone()) {
+                    files.push(key);
+                }
             }
         } else if path.is_file() {
-            files.push(path);
+            let key = fs::canonicalize(&path).unwrap_or_else(|_| path.clone());
+            if seen.insert(key.clone()) {
+                files.push(key);
+            }
         }
     }
     files
@@ -259,6 +310,55 @@ fn append_log(path: &Path, entries: &[SortEntry]) -> Result<(), io::Error> {
             use std::io::Write;
             file.write_all(lines.as_bytes())
         })
+}
+
+fn prune_logs(log_dir: &Path, max_days: i64, max_files: usize) -> Result<(), io::Error> {
+    if !log_dir.exists() {
+        return Ok(());
+    }
+    let mut entries = Vec::new();
+    for entry in fs::read_dir(log_dir)? {
+        let entry = entry?;
+        let path = entry.path();
+        if !path.is_file() {
+            continue;
+        }
+        let name = match path.file_name().and_then(|n| n.to_str()) {
+            Some(name) => name,
+            None => continue,
+        };
+        if !name.starts_with("sort_log_") || !name.ends_with(".csv") {
+            continue;
+        }
+        let metadata = match entry.metadata() {
+            Ok(meta) => meta,
+            Err(_) => continue,
+        };
+        entries.push((path, metadata));
+    }
+
+    let cutoff = chrono::Local::now() - chrono::Duration::days(max_days);
+    for (path, meta) in &entries {
+        if let Ok(modified) = meta.modified() {
+            let modified: chrono::DateTime<chrono::Local> = modified.into();
+            if modified < cutoff {
+                let _ = fs::remove_file(path);
+            }
+        }
+    }
+
+    let mut remaining: Vec<_> = entries
+        .into_iter()
+        .filter(|(path, _)| path.exists())
+        .collect();
+    remaining.sort_by_key(|(_, meta)| meta.modified().ok());
+    if remaining.len() > max_files {
+        let remove_count = remaining.len() - max_files;
+        for (path, _) in remaining.into_iter().take(remove_count) {
+            let _ = fs::remove_file(path);
+        }
+    }
+    Ok(())
 }
 
 fn username() -> String {
@@ -463,20 +563,23 @@ async fn sort_files(
 ) -> Result<SortResult, String> {
     let window_clone = window.clone();
     tauri::async_runtime::spawn_blocking(move || {
-        let destination_rel = destination_for_mode(&mode)
-            .ok_or_else(|| "Unknown mode selected".to_string())?;
-        let dest_dir = PathBuf::from(&project_root)
-            .join(&client_name)
-            .join(destination_rel);
-        if !dry_run {
-            ensure_dir(&dest_dir).map_err(|e| e.to_string())?;
-        }
-
         let files = list_files(&paths);
-        let files: Vec<PathBuf> = files
-            .into_iter()
-            .filter(|path| is_allowed_for_mode(&mode, path))
-            .collect();
+        let mut files: Vec<PathBuf> = files;
+        if mode != "AUTO" {
+            files = files
+                .into_iter()
+                .filter(|path| is_allowed_for_mode(&mode, path))
+                .collect();
+        }
+        let mut unique_files = Vec::new();
+        let mut seen_sources = HashSet::new();
+        for file_path in files {
+            let key = fs::canonicalize(&file_path).unwrap_or_else(|_| file_path.clone());
+            if seen_sources.insert(key.clone()) {
+                unique_files.push(key);
+            }
+        }
+        let files = unique_files;
         let total = files.len();
         if total == 0 {
             return Err("No files matched the selected mode.".to_string());
@@ -487,10 +590,12 @@ async fn sort_files(
         let mut entries: Vec<SortEntry> = Vec::new();
         let mut reserved_names = HashSet::new();
         let username = username();
+        let mut ensured_dirs = HashSet::new();
 
         let log_dir = PathBuf::from(&project_root).join("_logs");
         if !dry_run {
             ensure_dir(&log_dir).map_err(|e| e.to_string())?;
+            let _ = prune_logs(&log_dir, 30, 200);
         }
         let log_file_name = format!(
             "sort_log_{}.csv",
@@ -504,6 +609,46 @@ async fn sort_files(
         for file_path in files {
             processed += 1;
             let source_path = file_path.to_string_lossy().to_string();
+            let resolved_mode = if mode == "AUTO" {
+                detect_mode_for_path(&file_path)
+            } else {
+                Some(mode.as_str())
+            };
+            let resolved_mode = match resolved_mode {
+                Some(found) => found,
+                None => {
+                    skipped += 1;
+                    entries.push(SortEntry {
+                        timestamp: chrono::Local::now().to_rfc3339(),
+                        username: username.clone(),
+                        mode: mode.clone(),
+                        client: client_name.clone(),
+                        operation: operation.clone(),
+                        source_path: source_path.clone(),
+                        dest_path: "".to_string(),
+                        result: "skipped".to_string(),
+                        error_message: "Unsupported file type".to_string(),
+                    });
+                    let _ = window_clone.emit(
+                        "sort-progress",
+                        SortProgress {
+                            processed,
+                            total,
+                            current: source_path,
+                            result: "skipped".to_string(),
+                        },
+                    );
+                    continue;
+                }
+            };
+            let destination_rel = destination_for_mode(resolved_mode)
+                .ok_or_else(|| "Unknown mode selected".to_string())?;
+            let dest_dir = PathBuf::from(&project_root)
+                .join(&client_name)
+                .join(destination_rel);
+            if !dry_run && ensured_dirs.insert(dest_dir.clone()) {
+                ensure_dir(&dest_dir).map_err(|e| e.to_string())?;
+            }
             let file_name = match file_path.file_name().and_then(|n| n.to_str()) {
                 Some(name) => name.to_string(),
                 None => {
@@ -511,7 +656,7 @@ async fn sort_files(
                     entries.push(SortEntry {
                         timestamp: chrono::Local::now().to_rfc3339(),
                         username: username.clone(),
-                        mode: mode.clone(),
+                        mode: resolved_mode.to_string(),
                         client: client_name.clone(),
                         operation: operation.clone(),
                         source_path: source_path.clone(),
@@ -541,7 +686,7 @@ async fn sort_files(
                 SortEntry {
                     timestamp,
                     username: username.clone(),
-                    mode: mode.clone(),
+                    mode: resolved_mode.to_string(),
                     client: client_name.clone(),
                     operation: operation.clone(),
                     source_path: source_path.clone(),
@@ -555,7 +700,7 @@ async fn sort_files(
                         Ok(_) => SortEntry {
                             timestamp,
                             username: username.clone(),
-                            mode: mode.clone(),
+                            mode: resolved_mode.to_string(),
                             client: client_name.clone(),
                             operation: operation.clone(),
                             source_path: source_path.clone(),
@@ -568,7 +713,7 @@ async fn sort_files(
                             SortEntry {
                                 timestamp,
                                 username: username.clone(),
-                                mode: mode.clone(),
+                                mode: resolved_mode.to_string(),
                                 client: client_name.clone(),
                                 operation: operation.clone(),
                                 source_path: source_path.clone(),
@@ -582,7 +727,7 @@ async fn sort_files(
                         Ok(_) => SortEntry {
                             timestamp,
                             username: username.clone(),
-                            mode: mode.clone(),
+                            mode: resolved_mode.to_string(),
                             client: client_name.clone(),
                             operation: operation.clone(),
                             source_path: source_path.clone(),
@@ -598,7 +743,7 @@ async fn sort_files(
                                     Ok(_) => SortEntry {
                                         timestamp,
                                         username: username.clone(),
-                                        mode: mode.clone(),
+                                        mode: resolved_mode.to_string(),
                                         client: client_name.clone(),
                                         operation: operation.clone(),
                                         source_path: source_path.clone(),
@@ -611,7 +756,7 @@ async fn sort_files(
                                         SortEntry {
                                             timestamp,
                                             username: username.clone(),
-                                            mode: mode.clone(),
+                                            mode: resolved_mode.to_string(),
                                             client: client_name.clone(),
                                             operation: operation.clone(),
                                             source_path: source_path.clone(),
@@ -626,7 +771,7 @@ async fn sort_files(
                                 SortEntry {
                                     timestamp,
                                     username: username.clone(),
-                                    mode: mode.clone(),
+                                    mode: resolved_mode.to_string(),
                                     client: client_name.clone(),
                                     operation: operation.clone(),
                                     source_path: source_path.clone(),
@@ -642,7 +787,7 @@ async fn sort_files(
                         SortEntry {
                             timestamp,
                             username: username.clone(),
-                            mode: mode.clone(),
+                            mode: resolved_mode.to_string(),
                             client: client_name.clone(),
                             operation: operation.clone(),
                             source_path: source_path.clone(),

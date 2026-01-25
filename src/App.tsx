@@ -63,14 +63,7 @@ const CONFIG_STORE = new LazyStore("config.json", {
   defaults: {},
 });
 
-const MODES = [
-  "VIDEO PROXY",
-  "VIDEO RAW",
-  "AUDIO CLEAN",
-  "AUDIO RAW",
-  "STILLS",
-  "EXPORTS",
-];
+const MODES = ["AUTO"];
 
 const MODE_ACCEPTED: Record<string, string[]> = {
   "VIDEO PROXY": [
@@ -102,7 +95,8 @@ const MODE_ACCEPTED: Record<string, string[]> = {
   STILLS: ["jpg", "jpeg", "png", "tif", "tiff", "heic", "heif", "webp", "bmp", "gif"],
 };
 
-const acceptedForMode = (mode: string) => MODE_ACCEPTED[mode] ?? null;
+const acceptedForMode = (mode: string) =>
+  mode === "AUTO" ? null : MODE_ACCEPTED[mode] ?? null;
 const CURSOR_Y_OFFSET = -20;
 const DEBUG_ENABLED = false;
 
@@ -135,13 +129,13 @@ const parseClientLabel = (raw: string) => {
 };
 
 export default function App() {
-  const [screen, setScreen] = useState<"home" | "sort">("home");
+  const [screen] = useState<"home" | "sort">("sort");
   const [projectRoot, setProjectRoot] = useState<string>("");
   const [clients, setClients] = useState<ClientInfo[]>([]);
   const [loading, setLoading] = useState(false);
   const [search, setSearch] = useState("");
   const [showNonClients, setShowNonClients] = useState(false);
-  const [mode, setMode] = useState<string>("VIDEO RAW");
+  const [mode] = useState<string>("AUTO");
   const [showApprovalMode, setShowApprovalMode] = useState(false);
   const [operation, setOperation] = useState<"move" | "copy">("move");
   const [dryRun, setDryRun] = useState(false);
@@ -150,8 +144,13 @@ export default function App() {
   const [error, setError] = useState<string | null>(null);
   const [lastSummary, setLastSummary] = useState<string>("");
   const [lastBatch, setLastBatch] = useState<UndoEntry[]>([]);
-  const [showAddModal, setShowAddModal] = useState(false);
+  const [showAddInline, setShowAddInline] = useState(false);
+  const [showUndoConfirm, setShowUndoConfirm] = useState(false);
+  const [showAdvancedMenu, setShowAdvancedMenu] = useState(false);
   const [newClientName, setNewClientName] = useState("");
+  const [newClientType, setNewClientType] = useState<(typeof CLIENT_TYPES)[number]>(
+    "EXHIBITOR"
+  );
   const projectRootRef = useRef(projectRoot);
   const [dragTarget, setDragTarget] = useState<string | null>(null);
   const hoverClientRef = useRef<string | null>(null);
@@ -215,8 +214,8 @@ export default function App() {
       if (typeof savedShowNonClients === "boolean") {
         setShowNonClients(savedShowNonClients);
       }
-      if (typeof savedMode === "string") {
-        setMode(savedMode);
+      if (typeof savedMode === "string" && savedMode !== "AUTO") {
+        await CONFIG_STORE.set("lastMode", "AUTO");
       }
       if (savedOperation === "copy" || savedOperation === "move") {
         setOperation(savedOperation);
@@ -297,14 +296,19 @@ export default function App() {
     setWatcher();
   }, [projectRoot]);
 
+  useEffect(() => {
+    if (!showAdvancedMenu) return;
+    const onKey = (event: KeyboardEvent) => {
+      if (event.key === "Escape") {
+        setShowAdvancedMenu(false);
+      }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => {
+      window.removeEventListener("keydown", onKey);
+    };
+  }, [showAdvancedMenu]);
 
-  const modeOptions = useMemo(() => {
-    const options = [...MODES];
-    if (showApprovalMode) {
-      options.push("APPROVAL EXPORTS");
-    }
-    return options;
-  }, [showApprovalMode]);
 
   const visibleClients = useMemo(() => {
     const filtered = clients.filter((client) =>
@@ -320,6 +324,27 @@ export default function App() {
     () => clients.filter((client) => client.status !== "Not a client"),
     [clients]
   );
+
+  const resolveDropClient = () => {
+    if (hoverClientRef.current) return hoverClientRef.current;
+    const cursor = lastCursorRef.current;
+    if (!cursor) return null;
+    const rows = Array.from(
+      document.querySelectorAll<HTMLElement>(".droppable-row[data-client]")
+    );
+    for (const row of rows) {
+      const rect = row.getBoundingClientRect();
+      if (
+        cursor.x >= rect.left &&
+        cursor.x <= rect.right &&
+        cursor.y >= rect.top &&
+        cursor.y <= rect.bottom
+      ) {
+        return row.dataset.client ?? null;
+      }
+    }
+    return null;
+  };
 
   useEffect(() => {
     let unlisten: (() => void) | null = null;
@@ -360,7 +385,7 @@ export default function App() {
         // Hover highlighting is driven by cursor polling for accuracy.
 
         if (payload.type === "drop") {
-          const dropClient = hoverClientRef.current;
+          const dropClient = resolveDropClient();
           setDragTarget(null);
           setDragActive(false);
           if (!dropClient) {
@@ -459,7 +484,7 @@ export default function App() {
           }, 8000);
         }
         const target = document.elementFromPoint(adjusted.x, adjusted.y);
-        const row = target?.closest?.(".drop-row") as HTMLElement | null;
+        const row = target?.closest?.(".droppable-row") as HTMLElement | null;
         if (row?.dataset?.client) {
           hoverClientRef.current = row.dataset.client;
           setDragTarget(row.dataset.client);
@@ -518,7 +543,9 @@ export default function App() {
       setError("Choose a Project Root first.");
       return;
     }
-    const normalized = normalizeClientInput(newClientName);
+    const baseName = newClientName.trim();
+    if (!baseName) return;
+    const normalized = normalizeClientInput(`${baseName}_${newClientType}`);
     if (!normalized) return;
     const parsed = parseClientLabel(normalized);
     if (!parsed.type) {
@@ -533,8 +560,9 @@ export default function App() {
         projectRoot,
         clientName: normalized,
       });
-      setShowAddModal(false);
+      setShowAddInline(false);
       setNewClientName("");
+      setNewClientType("EXHIBITOR");
       await refreshClients();
     } catch (err) {
       setError(String(err));
@@ -720,66 +748,101 @@ export default function App() {
       <header className="topbar">
         <div className="project-root">
           <div className="label">Project Root</div>
-          <div className="path">{projectRoot || "Not set"}</div>
+          {projectRoot ? (
+            <button className="path-button" onClick={pickProjectRoot}>
+              {projectRoot}
+            </button>
+          ) : (
+            <button className="path-button empty" onClick={pickProjectRoot}>
+              Select project root…
+            </button>
+          )}
         </div>
         <div className="topbar-actions">
-          <button className="ghost" onClick={pickProjectRoot}>
-            Change…
-          </button>
-          {screen === "home" ? (
-            <>
-              <input
-                className="search"
-                placeholder="Search clients…"
-                value={search}
-                onChange={(event) => setSearch(event.target.value)}
-              />
-              <button className="ghost" onClick={() => refreshClients()}>
-                Refresh
-              </button>
+        </div>
+      </header>
+
+      {error && <div className="banner error">{error}</div>}
+      {(processingToast ?? toast) && (
+        <div className={`toast ${(processingToast ?? toast)!.tone}`}>
+          {(processingToast ?? toast)!.message}
+        </div>
+      )}
+
+      <section className="panel">
+        {DEBUG_ENABLED && debugInfo && (
+          <div className="debug-info">
+            <div className="debug-row">
+              <span>phys:</span>
+              <span>{Math.round(debugInfo.physical.x)}, {Math.round(debugInfo.physical.y)}</span>
+            </div>
+            <div className="debug-row">
+              <span>log:</span>
+              <span>{Math.round(debugInfo.logical.x)}, {Math.round(debugInfo.logical.y)}</span>
+            </div>
+            {debugInfo.client && (
+              <div className="debug-row">
+                <span>client:</span>
+                <span>{Math.round(debugInfo.client.x)}, {Math.round(debugInfo.client.y)}</span>
+              </div>
+            )}
+            <div className="debug-row">
+              <span>note:</span>
+              <span>auto-hides after 8s</span>
+            </div>
+            <button
+              className="debug-toggle"
+              onClick={async () => {
+                const payload = `phys: ${Math.round(debugInfo.physical.x)}, ${Math.round(
+                  debugInfo.physical.y
+                )}\nlog: ${Math.round(debugInfo.logical.x)}, ${Math.round(
+                  debugInfo.logical.y
+                )}\nclient: ${
+                  debugInfo.client
+                    ? `${Math.round(debugInfo.client.x)}, ${Math.round(debugInfo.client.y)}`
+                    : "n/a"
+                }`;
+                try {
+                  await writeText(payload);
+                  setCopiedDebug(true);
+                } catch (err) {
+                  setError(`Clipboard failed: ${String(err)}`);
+                }
+              }}
+            >
+              {copiedDebug ? "Copied" : "Copy"}
+            </button>
+          </div>
+        )}
+        <div className="panel-header" />
+        <div className="panel-tools">
+          <div className="tool-row single">
+            <input
+              className="search panel"
+              placeholder="Search clients…"
+              value={search}
+              onChange={(event) => setSearch(event.target.value)}
+            />
+            <div className="advanced-menu">
               <button
-                className="primary"
-                onClick={() => setShowAddModal(true)}
+                type="button"
+                className="ghost"
+                onClick={(event) => {
+                  event.stopPropagation();
+                  setShowAdvancedMenu((current) => !current);
+                }}
               >
-                Add Client
+                ⋯
               </button>
-              <button className="accent" onClick={() => setScreen("sort")}>
-                Sort Mode
-              </button>
-              <label className="toggle compact">
-                <input
-                  type="checkbox"
-                  checked={alwaysOnTop}
-                  onChange={(event) => {
-                    const checked = event.target.checked;
-                    setAlwaysOnTop(checked);
-                    saveConfigValue("alwaysOnTop", checked);
-                    getCurrentWindow()
-                      .setAlwaysOnTop(checked)
-                      .catch(() => undefined);
-                  }}
-                />
-                Float on top
-              </label>
-            </>
-          ) : (
-            <>
-              <label className="select compact">
-                <span>Mode</span>
-                <select
-                  value={mode}
-                  onChange={(event) => {
-                    setMode(event.target.value);
-                    saveConfigValue("lastMode", event.target.value);
-                  }}
-                >
-                  {modeOptions.map((option) => (
-                    <option key={option} value={option}>
-                      {option}
-                    </option>
-                  ))}
-                </select>
-              </label>
+            </div>
+          </div>
+        </div>
+        {showAdvancedMenu && (
+          <div className="advanced-overlay" onClick={() => setShowAdvancedMenu(false)}>
+            <div
+              className="advanced-popover fixed"
+              onClick={(event) => event.stopPropagation()}
+            >
               <label className="toggle compact">
                 <input
                   type="checkbox"
@@ -809,8 +872,7 @@ export default function App() {
                     setShowApprovalMode(checked);
                     saveConfigValue("showApprovalMode", checked);
                     if (!checked && mode === "APPROVAL EXPORTS") {
-                      setMode("EXPORTS");
-                      saveConfigValue("lastMode", "EXPORTS");
+                      saveConfigValue("lastMode", "AUTO");
                     }
                   }}
                 />
@@ -831,68 +893,138 @@ export default function App() {
                 />
                 Float on top
               </label>
-              <button className="ghost" onClick={() => setScreen("home")}>
-                Back
-              </button>
-            </>
-          )}
-        </div>
-      </header>
-
-      {error && <div className="banner error">{error}</div>}
-      {(processingToast ?? toast) && (
-        <div className={`toast ${(processingToast ?? toast)!.tone}`}>
-          {(processingToast ?? toast)!.message}
-        </div>
-      )}
-
-      {screen === "home" && (
-        <section className="panel">
-          <div className="panel-header">
-            <div className="panel-title">Clients</div>
-            <label className="toggle">
-              <input
-                type="checkbox"
-                checked={showNonClients}
-                onChange={(event) => {
-                  const checked = event.target.checked;
-                  setShowNonClients(checked);
-                  saveConfigValue("showNonClients", checked);
-                }}
-              />
-              Show non-client folders
-            </label>
-          </div>
-          <div className="table">
-            <div className="table-row table-head">
-              <div>Client Name</div>
-              <div>Status</div>
-              <div>Actions</div>
+              <label className="toggle compact">
+                <input
+                  type="checkbox"
+                  checked={showNonClients}
+                  onChange={(event) => {
+                    const checked = event.target.checked;
+                    setShowNonClients(checked);
+                    saveConfigValue("showNonClients", checked);
+                  }}
+                />
+                Show non-client folders
+              </label>
             </div>
-            {loading && <div className="table-row">Loading…</div>}
-            {!loading && visibleClients.length === 0 && (
-              <div className="table-row">No clients found.</div>
-            )}
-            {!loading &&
-              visibleClients.map((client) => {
-                const label = parseClientLabel(client.name);
-                return (
-                  <div className="table-row" key={client.name}>
-                    <div>
-                      <div className="client-title">
-                        <span className="client-name">{label.name}</span>
-                        {label.type && (
-                          <span className={`client-tag ${label.type.toLowerCase()}`}>
-                            {label.type}
-                          </span>
-                        )}
-                      </div>
-                      {client.status === "Missing folders" && (
-                        <div className="missing">
-                          Missing: {client.missing.join(", ")}
-                        </div>
+          </div>
+        )}
+        <div
+          className={`table ${busy ? "busy" : ""}`}
+          onDragOver={screen === "sort" ? handleSortDragOver : undefined}
+        >
+          <button
+            className="table-row add-client-row"
+            type="button"
+            onClick={() => setShowAddInline(true)}
+          >
+            <span>+ Add client</span>
+            <span className="add-client-hint">Create a new CLIENT_TYPE folder</span>
+          </button>
+          {showAddInline && (
+            <div className="table-row add-client-inline">
+              <input
+                className="inline-input"
+                placeholder="Client name (e.g. Digitain)"
+                value={newClientName}
+                onChange={(event) => setNewClientName(event.target.value)}
+              />
+              <div className="inline-types">
+                {CLIENT_TYPES.map((type) => (
+                  <button
+                    key={type}
+                    type="button"
+                    className={`type-chip ${
+                      newClientType === type ? "selected" : ""
+                    } ${type.toLowerCase()}`}
+                    onClick={() => setNewClientType(type)}
+                  >
+                    {type}
+                  </button>
+                ))}
+              </div>
+              <div className="inline-actions">
+                <button
+                  className="ghost"
+                  onClick={() => {
+                    setShowAddInline(false);
+                    setNewClientName("");
+                    setNewClientType("EXHIBITOR");
+                  }}
+                >
+                  Cancel
+                </button>
+                <button className="primary" onClick={handleAddClient}>
+                  Create
+                </button>
+              </div>
+            </div>
+          )}
+          <div className="table-row table-head">
+            <div>Client Name</div>
+            <div>Status</div>
+            <div>Actions</div>
+          </div>
+          {loading && <div className="table-row">Loading…</div>}
+          {!loading && visibleClients.length === 0 && (
+            <div className="table-row">No clients found.</div>
+          )}
+          {!loading &&
+            visibleClients.map((client) => {
+              const label = parseClientLabel(client.name);
+              const droppable = screen === "sort" && client.status !== "Not a client";
+              return (
+                <div
+                  key={client.name}
+                  className={`table-row ${droppable ? "droppable-row" : ""} ${
+                    dragTarget === client.name ? "drag-over" : ""
+                  }`}
+                  data-client={droppable ? client.name : undefined}
+                  onDragOver={
+                    droppable
+                      ? (event) => {
+                          handleSortDragOver(event);
+                          hoverClientRef.current = client.name;
+                          setDragTarget(client.name);
+                        }
+                      : undefined
+                  }
+                  onDragEnter={
+                    droppable
+                      ? () => {
+                          hoverClientRef.current = client.name;
+                          setDragTarget(client.name);
+                        }
+                      : undefined
+                  }
+                  onDragLeave={
+                    droppable
+                      ? () => {
+                          if (hoverClientRef.current === client.name) {
+                            hoverClientRef.current = null;
+                          }
+                          setDragTarget((current) =>
+                            current === client.name ? null : current
+                          );
+                        }
+                      : undefined
+                  }
+                  onDrop={droppable ? (event) => handleDropEvent(event, client) : undefined}
+                >
+                  <div>
+                    <div className="client-title">
+                      <span className="client-name">{label.name}</span>
+                      {label.type && (
+                        <span className={`client-tag ${label.type.toLowerCase()}`}>
+                          {label.type}
+                        </span>
                       )}
                     </div>
+                    {client.status === "Missing folders" && (
+                      <div className="missing">
+                        Missing: {client.missing.join(", ")}
+                      </div>
+                    )}
+                  </div>
                   <div>
                     <span
                       className={`badge ${client.status
@@ -918,118 +1050,15 @@ export default function App() {
                       </button>
                     )}
                   </div>
-                  </div>
-                );
-              })}
-          </div>
-        </section>
-      )}
-
-      {screen === "sort" && (
-        <section className="panel">
-          {DEBUG_ENABLED && debugInfo && (
-            <div className="debug-info">
-              <div className="debug-row">
-                <span>phys:</span>
-                <span>{Math.round(debugInfo.physical.x)}, {Math.round(debugInfo.physical.y)}</span>
-              </div>
-              <div className="debug-row">
-                <span>log:</span>
-                <span>{Math.round(debugInfo.logical.x)}, {Math.round(debugInfo.logical.y)}</span>
-              </div>
-              {debugInfo.client && (
-                <div className="debug-row">
-                  <span>client:</span>
-                  <span>{Math.round(debugInfo.client.x)}, {Math.round(debugInfo.client.y)}</span>
-                </div>
-              )}
-              <div className="debug-row">
-                <span>note:</span>
-                <span>auto-hides after 8s</span>
-              </div>
-              <button
-                className="debug-toggle"
-                onClick={async () => {
-                  const payload = `phys: ${Math.round(debugInfo.physical.x)}, ${Math.round(
-                    debugInfo.physical.y
-                  )}\nlog: ${Math.round(debugInfo.logical.x)}, ${Math.round(
-                    debugInfo.logical.y
-                  )}\nclient: ${
-                    debugInfo.client
-                      ? `${Math.round(debugInfo.client.x)}, ${Math.round(debugInfo.client.y)}`
-                      : "n/a"
-                  }`;
-                  try {
-                    await writeText(payload);
-                    setCopiedDebug(true);
-                  } catch (err) {
-                    setError(`Clipboard failed: ${String(err)}`);
-                  }
-                }}
-              >
-                {copiedDebug ? "Copied" : "Copy"}
-              </button>
-            </div>
-          )}
-          <div className="panel-header">
-            <div className="panel-title">Sort Mode</div>
-            <div className="client-meta">
-              Drop onto a client row to sort.
-            </div>
-          </div>
-
-          <div
-            className={`drop-grid ${busy ? "busy" : ""}`}
-            onDragOver={handleSortDragOver}
-          >
-            {sortableClients.map((client) => {
-              const label = parseClientLabel(client.name);
-              return (
-                <div
-                  key={client.name}
-                  className={`drop-row ${dragTarget === client.name ? "drag-over" : ""}`}
-                  data-client={client.name}
-                  onDragOver={(event) => {
-                    handleSortDragOver(event);
-                    hoverClientRef.current = client.name;
-                    setDragTarget(client.name);
-                  }}
-                  onDragEnter={() => {
-                    hoverClientRef.current = client.name;
-                    setDragTarget(client.name);
-                  }}
-                  onDragLeave={() => {
-                    if (hoverClientRef.current === client.name) {
-                      hoverClientRef.current = null;
-                    }
-                    setDragTarget((current) => (current === client.name ? null : current));
-                  }}
-                  onDrop={(event) => handleDropEvent(event, client)}
-                >
-                  <div>
-                    <div className="client-title">
-                      <span className="client-name">{label.name}</span>
-                      {label.type && (
-                        <span className={`client-tag ${label.type.toLowerCase()}`}>
-                          {label.type}
-                        </span>
-                      )}
-                    </div>
-                    <div className="client-meta">{client.status}</div>
-                  </div>
-                  <div className="drop-hint">Drop files or folders here</div>
                 </div>
               );
             })}
-            {sortableClients.length === 0 && (
-              <div className="empty">No valid clients to sort into.</div>
-            )}
-          </div>
-        </section>
-      )}
+        </div>
+      </section>
 
       <footer className="status">
         <div>
+          <span className="mode-label">Auto routing</span>
           {busy && progress
             ? `Processing ${progress.processed}/${progress.total}`
             : "Ready"}
@@ -1037,36 +1066,45 @@ export default function App() {
         </div>
         <div className="status-actions">
           <span>{lastSummary || "No operations yet."}</span>
-          <button className="ghost" onClick={handleUndo} disabled={!lastBatch.length}>
+          <button
+            className="ghost"
+            onClick={() => setShowUndoConfirm(true)}
+            disabled={!lastBatch.length}
+          >
             Undo last
           </button>
           <button className="ghost" onClick={handleLogOpen} disabled={!projectRoot}>
             View log
           </button>
+          <button className="ghost" onClick={() => refreshClients()} disabled={!projectRoot}>
+            Refresh
+          </button>
         </div>
       </footer>
 
-      {showAddModal && (
-        <div className="modal-backdrop" onClick={() => setShowAddModal(false)}>
+      {showUndoConfirm && (
+        <div className="modal-backdrop" onClick={() => setShowUndoConfirm(false)}>
           <div className="modal" onClick={(event) => event.stopPropagation()}>
-            <h2>Add Client</h2>
-            <p>Creates a new client folder with the full template.</p>
-            <input
-              placeholder="CLIENT_TYPE (e.g. DIGITAIN_EXHIBITOR)"
-              value={newClientName}
-              onChange={(event) => setNewClientName(event.target.value)}
-            />
+            <h2>Undo last action?</h2>
+            <p>This will revert the most recent batch.</p>
             <div className="modal-actions">
-              <button className="ghost" onClick={() => setShowAddModal(false)}>
+              <button className="ghost" onClick={() => setShowUndoConfirm(false)}>
                 Cancel
               </button>
-              <button className="primary" onClick={handleAddClient}>
-                Create
+              <button
+                className="primary"
+                onClick={async () => {
+                  setShowUndoConfirm(false);
+                  await handleUndo();
+                }}
+              >
+                Undo
               </button>
             </div>
           </div>
         </div>
       )}
+
     </div>
   );
 }

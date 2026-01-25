@@ -58,6 +58,30 @@ body {
   white-space: nowrap;
 }
 
+.path-button {
+  border: none;
+  background: none;
+  padding: 0;
+  color: inherit;
+  font-size: 1rem;
+  font-weight: 600;
+  max-width: 380px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  text-align: left;
+  cursor: pointer;
+  text-decoration: none;
+}
+
+.path-button:hover {
+  text-decoration: underline;
+}
+
+.path-button.empty {
+  color: rgba(246, 247, 249, 0.7);
+}
+
 .topbar-actions {
   display: flex;
   gap: 12px;
@@ -130,6 +154,99 @@ button.accent {
   border: 1px solid #c7d2fe;
 }
 
+.panel-tools {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.tool-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+}
+
+.tool-row.single {
+  flex-wrap: nowrap;
+  overflow-x: auto;
+  min-width: 0;
+}
+
+.tool-row.single > * {
+  flex: 0 0 auto;
+}
+
+.advanced-menu {
+  position: relative;
+  margin-left: auto;
+}
+
+.advanced-menu .ghost {
+  padding: 6px 12px;
+}
+
+.advanced-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 200;
+}
+
+.advanced-popover {
+  position: absolute;
+  right: 0;
+  top: calc(100% + 8px);
+  background: #ffffff;
+  border-radius: 12px;
+  padding: 10px 12px;
+  box-shadow: 0 16px 28px rgba(15, 23, 42, 0.18);
+  border: 1px solid rgba(31, 35, 40, 0.12);
+  display: grid;
+  gap: 8px;
+  min-width: 220px;
+}
+
+.advanced-popover.fixed {
+  position: fixed;
+  right: 18px;
+  top: 92px;
+}
+
+.search.panel {
+  min-width: 160px;
+  background: #ffffff;
+  color: #1f2328;
+  border: 1px solid rgba(31, 35, 40, 0.18);
+  box-shadow: none;
+}
+
+.search.panel::placeholder {
+  color: rgba(31, 35, 40, 0.45);
+}
+
+.panel .toggle {
+  color: #1f2328;
+}
+
+.panel .toggle.compact {
+  color: #2f3338;
+}
+
+.mode-label {
+  font-size: 0.9rem;
+  font-weight: 700;
+  color: #2f3338;
+  padding: 6px 10px;
+  border-radius: 999px;
+  background: #e5e7eb;
+  margin-right: 10px;
+}
+
+.panel button.ghost {
+  background: #e5e7eb;
+  color: #1f2328;
+}
+
 .toast {
   position: fixed;
   left: 18px;
@@ -160,13 +277,17 @@ button.accent {
 }
 
 .panel {
-  margin: 22px 28px;
-  padding: 20px 22px 28px;
+  margin: 12px 18px;
+  padding: 10px 12px 14px;
   background: rgba(255, 255, 255, 0.92);
   border-radius: 20px;
   box-shadow: 0 18px 40px rgba(28, 32, 38, 0.12);
   animation: rise 0.35s ease;
   position: relative;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  min-height: 0;
 }
 
 @keyframes rise {
@@ -213,6 +334,11 @@ button.accent {
   gap: 12px;
 }
 
+.table.busy {
+  opacity: 0.7;
+  pointer-events: none;
+}
+
 .table-row {
   display: grid;
   grid-template-columns: 2fr 1fr 1fr;
@@ -222,6 +348,135 @@ button.accent {
   border-radius: 14px;
   background: #ffffff;
   border: 1px solid rgba(31, 35, 40, 0.12);
+}
+
+.table-row.droppable-row {
+  position: relative;
+  overflow: hidden;
+  background: linear-gradient(135deg, #ffffff, #f0f2f4);
+  border: 1px dashed rgba(31, 35, 40, 0.2);
+  transition: transform 0.15s ease, border-color 0.2s ease;
+}
+
+.table-row.droppable-row::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  background: linear-gradient(135deg, #eef3ff, #dfe8ff);
+  opacity: 0;
+  transition: opacity 0.15s ease;
+  z-index: 0;
+}
+
+.table-row.droppable-row > * {
+  position: relative;
+  z-index: 1;
+}
+
+.table-row.droppable-row:hover {
+  transform: translateY(-1px);
+  border-color: rgba(31, 35, 40, 0.35);
+}
+
+.table-row.droppable-row.drag-over {
+  border-color: #1d4ed8;
+  transform: translateY(-1px);
+}
+
+.table-row.droppable-row.drag-over::before {
+  opacity: 1;
+  box-shadow: inset 0 0 0 1px rgba(29, 78, 216, 0.28),
+    inset 0 0 18px rgba(29, 78, 216, 0.18);
+}
+
+.add-client-row {
+  display: grid;
+  grid-template-columns: 2fr 1fr 1fr;
+  gap: 12px;
+  align-items: center;
+  text-align: left;
+  background: #f3f4f6;
+  color: #6b7280;
+  border: 1px dashed rgba(31, 35, 40, 0.2);
+  font-weight: 600;
+  position: relative;
+  z-index: 1;
+}
+
+.add-client-row:hover {
+  border-color: rgba(31, 35, 40, 0.4);
+}
+
+.add-client-row span {
+  pointer-events: none;
+}
+
+.add-client-hint {
+  font-size: 0.75rem;
+  color: #9aa0a8;
+}
+
+.add-client-inline {
+  grid-template-columns: 1.6fr 1.6fr 1fr;
+  align-items: center;
+  background: #ffffff;
+  gap: 12px;
+}
+
+.add-client-inline .inline-input {
+  width: 100%;
+  padding: 10px 12px;
+  border-radius: 10px;
+  border: 1px solid rgba(31, 35, 40, 0.18);
+  font-size: 0.95rem;
+}
+
+.add-client-inline .inline-actions {
+  display: flex;
+  gap: 10px;
+  justify-content: flex-end;
+}
+
+.add-client-inline .inline-types {
+  display: flex;
+  gap: 8px;
+  flex-wrap: nowrap;
+  justify-content: flex-start;
+}
+
+.type-chip {
+  border: none;
+  border-radius: 999px;
+  padding: 3px 8px;
+  font-size: 0.7rem;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  background: #e6e8eb;
+  color: #30343a;
+  cursor: pointer;
+}
+
+.type-chip.selected {
+  box-shadow: 0 6px 12px rgba(15, 23, 42, 0.2);
+  outline: 2px solid rgba(31, 35, 40, 0.2);
+  outline-offset: 2px;
+}
+
+.type-chip.exhibitor {
+  background: #ffe1e1;
+  color: #7a1f1f;
+}
+
+.type-chip.huddle {
+  background: #e0edff;
+  color: #1d4b7a;
+}
+
+.type-chip.product {
+  background: #ffe8cc;
+  color: #8a4b12;
 }
 
 .table-head {
@@ -482,8 +737,6 @@ button.accent {
   margin: 12px 16px;
   padding: 14px 16px 16px;
   border-radius: 16px;
-  display: flex;
-  flex-direction: column;
   min-height: 0;
 }
 
@@ -495,7 +748,7 @@ button.accent {
   font-size: 1rem;
 }
 
-.app.sort-mode .drop-grid {
+.app.sort-mode .table {
   gap: 8px;
   flex: 1;
   min-height: 0;
@@ -503,7 +756,7 @@ button.accent {
   padding: 4px 4px 2px 0;
 }
 
-.app.sort-mode .drop-row {
+.app.sort-mode .table-row {
   padding: 10px 12px;
   border-radius: 12px;
 }
@@ -542,6 +795,7 @@ button.accent {
   display: flex;
   align-items: center;
   justify-content: center;
+  z-index: 300;
 }
 
 .modal {
@@ -570,7 +824,7 @@ button.accent {
   gap: 10px;
 }
 
-@media (max-width: 900px) {
+@media (max-width: 700px) {
   .topbar {
     flex-direction: column;
     align-items: flex-start;
