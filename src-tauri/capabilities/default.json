@@ -5,8 +5,17 @@
   "windows": ["main"],
   "permissions": [
     "core:default",
-    "opener:default",
+    "core:window:allow-set-always-on-top",
+    {
+      "identifier": "opener:allow-open-path",
+      "allow": [
+        {
+          "path": "$DOCUMENT/**"
+        }
+      ]
+    },
     "dialog:default",
-    "store:default"
+    "store:default",
+    "clipboard-manager:allow-write-text"
   ]
 }

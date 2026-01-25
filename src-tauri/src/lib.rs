@@ -1,11 +1,14 @@
 use libc::EXDEV;
+use notify::{Event, RecommendedWatcher, RecursiveMode, Watcher};
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
 use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
+use std::sync::{mpsc, Mutex};
+use std::time::{Duration, Instant};
+use tauri::{Emitter, Manager};
 use walkdir::WalkDir;
-use tauri::Emitter;
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 struct ClientInfo {
@@ -67,6 +70,11 @@ struct SortProgress {
     result: String,
 }
 
+struct WatchState {
+    watcher: Option<RecommendedWatcher>,
+    stop_tx: Option<mpsc::Sender<()>>,
+}
+
 const REQUIRED_DIRS: [&str; 4] = ["01_MEDIA", "02_EDIT", "03_EXPORTS", "04_FINAL"];
 const TEMPLATE_DIRS: [&str; 10] = [
     "01_MEDIA",
@@ -91,6 +99,58 @@ fn destination_for_mode(mode: &str) -> Option<&'static str> {
         "EXPORTS" => Some("03_EXPORTS"),
         "APPROVAL EXPORTS" => Some("03_EXPORTS/APPROVAL"),
         _ => None,
+    }
+}
+
+fn is_allowed_for_mode(mode: &str, path: &Path) -> bool {
+    let ext = path
+        .extension()
+        .and_then(|e| e.to_str())
+        .map(|e| e.to_lowercase())
+        .unwrap_or_default();
+    if ext.is_empty() {
+        return false;
+    }
+    match mode {
+        "VIDEO PROXY" | "VIDEO RAW" => matches!(
+            ext.as_str(),
+            "mov"
+                | "mp4"
+                | "mxf"
+                | "mkv"
+                | "avi"
+                | "mpg"
+                | "mpeg"
+                | "m4v"
+                | "webm"
+                | "r3d"
+        ),
+        "AUDIO CLEAN" | "AUDIO RAW" => matches!(
+            ext.as_str(),
+            "wav"
+                | "mp3"
+                | "aif"
+                | "aiff"
+                | "flac"
+                | "m4a"
+                | "aac"
+                | "ogg"
+                | "opus"
+        ),
+        "STILLS" => matches!(
+            ext.as_str(),
+            "jpg"
+                | "jpeg"
+                | "png"
+                | "tif"
+                | "tiff"
+                | "heic"
+                | "heif"
+                | "webp"
+                | "bmp"
+                | "gif"
+        ),
+        _ => true,
     }
 }
 
@@ -206,6 +266,40 @@ fn username() -> String {
 }
 
 #[tauri::command]
+fn append_debug_log(message: String) -> Result<(), String> {
+    let path = std::env::temp_dir().join("project-sorter-drag.log");
+    let mut file = fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&path)
+        .map_err(|e| e.to_string())?;
+    use std::io::Write;
+    writeln!(file, "{}", message).map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+#[tauri::command]
+fn clear_debug_log() -> Result<(), String> {
+    let path = std::env::temp_dir().join("project-sorter-drag.log");
+    if path.exists() {
+        fs::remove_file(&path).map_err(|e| e.to_string())?;
+    }
+    Ok(())
+}
+
+fn event_in_scope(event: &Event, root: &Path) -> bool {
+    event.paths.iter().any(|path| {
+        if path.starts_with(root) {
+            return true;
+        }
+        if let Ok(canon) = path.canonicalize() {
+            return canon.starts_with(root);
+        }
+        false
+    })
+}
+
+#[tauri::command]
 fn scan_project_root(project_root: String) -> Result<Vec<ClientInfo>, String> {
     let root = PathBuf::from(&project_root);
     let mut clients = Vec::new();
@@ -220,7 +314,11 @@ fn scan_project_root(project_root: String) -> Result<Vec<ClientInfo>, String> {
             Some(name) => name.to_string(),
             None => continue,
         };
+        if name == "_logs" {
+            continue;
+        }
 
+        let is_excluded = name.starts_with("XX");
         let has_all_required = REQUIRED_DIRS.iter().all(|dir| has_dir(&path, dir));
         let missing: Vec<String> = TEMPLATE_DIRS
             .iter()
@@ -228,14 +326,12 @@ fn scan_project_root(project_root: String) -> Result<Vec<ClientInfo>, String> {
             .map(|dir| dir.to_string())
             .collect();
 
-        let status = if has_all_required {
-            if missing.is_empty() {
-                "OK"
-            } else {
-                "Missing folders"
-            }
-        } else {
+        let status = if is_excluded {
             "Not a client"
+        } else if has_all_required && missing.is_empty() {
+            "OK"
+        } else {
+            "Missing folders"
         };
 
         clients.push(ClientInfo {
@@ -248,6 +344,80 @@ fn scan_project_root(project_root: String) -> Result<Vec<ClientInfo>, String> {
 
     clients.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
     Ok(clients)
+}
+
+#[tauri::command]
+fn set_watch_root(
+    window: tauri::Window,
+    project_root: String,
+    state: tauri::State<Mutex<WatchState>>,
+) -> Result<(), String> {
+    let mut state = state.lock().map_err(|_| "Watcher lock poisoned".to_string())?;
+    if let Some(stop_tx) = state.stop_tx.take() {
+        let _ = stop_tx.send(());
+    }
+    state.watcher = None;
+
+    if project_root.trim().is_empty() {
+        return Ok(());
+    }
+
+    let root_path = PathBuf::from(&project_root);
+    if !root_path.is_dir() {
+        return Err("Project root is not a directory".to_string());
+    }
+    let root_canon = root_path.canonicalize().unwrap_or(root_path.clone());
+
+    let (event_tx, event_rx) = mpsc::channel::<notify::Result<Event>>();
+    let (stop_tx, stop_rx) = mpsc::channel::<()>();
+    let app_handle = window.app_handle().clone();
+    let project_root_clone = project_root.clone();
+    let root_for_thread = root_canon.clone();
+
+    let mut watcher = notify::recommended_watcher(move |res| {
+        let _ = event_tx.send(res);
+    })
+    .map_err(|e| e.to_string())?;
+
+    watcher
+        .watch(&root_canon, RecursiveMode::Recursive)
+        .map_err(|e| e.to_string())?;
+
+    std::thread::spawn(move || {
+        let debounce = Duration::from_millis(500);
+        let mut pending = false;
+        let mut last_event = Instant::now();
+
+        loop {
+            if stop_rx.try_recv().is_ok() {
+                break;
+            }
+
+            match event_rx.recv_timeout(Duration::from_millis(100)) {
+                Ok(Ok(event)) => {
+                    if event_in_scope(&event, &root_for_thread) {
+                        pending = true;
+                        last_event = Instant::now();
+                    }
+                }
+                Ok(Err(_)) => {
+                    pending = true;
+                    last_event = Instant::now();
+                }
+                Err(mpsc::RecvTimeoutError::Timeout) => {}
+                Err(_) => break,
+            }
+
+            if pending && last_event.elapsed() >= debounce {
+                let _ = app_handle.emit("clients-changed", project_root_clone.clone());
+                pending = false;
+            }
+        }
+    });
+
+    state.watcher = Some(watcher);
+    state.stop_tx = Some(stop_tx);
+    Ok(())
 }
 
 #[tauri::command]
@@ -268,11 +438,7 @@ fn fix_client(project_root: String, client_name: String) -> Result<(), String> {
     if !client_root.exists() {
         return Err("Client folder does not exist".to_string());
     }
-
-    let has_all_required = REQUIRED_DIRS
-        .iter()
-        .all(|dir| client_root.join(dir).is_dir());
-    if !has_all_required {
+    if client_name.starts_with("XX") {
         return Err("Folder is not recognized as a client".to_string());
     }
 
@@ -307,7 +473,14 @@ async fn sort_files(
         }
 
         let files = list_files(&paths);
+        let files: Vec<PathBuf> = files
+            .into_iter()
+            .filter(|path| is_allowed_for_mode(&mode, path))
+            .collect();
         let total = files.len();
+        if total == 0 {
+            return Err("No files matched the selected mode.".to_string());
+        }
         let mut processed = 0usize;
         let mut failed = 0usize;
         let mut skipped = 0usize;
@@ -588,13 +761,21 @@ pub fn run() {
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_store::Builder::default().build())
+        .plugin(tauri_plugin_clipboard_manager::init())
         .invoke_handler(tauri::generate_handler![
             scan_project_root,
+            set_watch_root,
             create_client,
             fix_client,
             sort_files,
+            append_debug_log,
+            clear_debug_log,
             undo_batch
         ])
+        .manage(Mutex::new(WatchState {
+            watcher: None,
+            stop_tx: None,
+        }))
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
 }
