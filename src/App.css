@@ -828,6 +828,25 @@ button.accent {
   align-items: center;
 }
 
+.icon-button {
+  width: 36px;
+  height: 36px;
+  padding: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.icon-button svg {
+  display: block;
+}
+
+.icon-button img {
+  width: 18px;
+  height: 18px;
+  display: block;
+}
+
 .status button.ghost {
   background: rgba(255, 255, 255, 0.15);
 }

@@ -6,6 +6,7 @@ use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
 use std::sync::{mpsc, Mutex};
+use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 use tauri::{Emitter, Manager};
 use walkdir::WalkDir;
@@ -73,6 +74,7 @@ struct SortProgress {
 struct WatchState {
     watcher: Option<RecommendedWatcher>,
     stop_tx: Option<mpsc::Sender<()>>,
+    thread: Option<JoinHandle<()>>,
 }
 
 const REQUIRED_DIRS: [&str; 4] = ["01_MEDIA", "02_EDIT", "03_EXPORTS", "04_FINAL"];
@@ -456,6 +458,9 @@ fn set_watch_root(
     if let Some(stop_tx) = state.stop_tx.take() {
         let _ = stop_tx.send(());
     }
+    if let Some(handle) = state.thread.take() {
+        let _ = handle.join();
+    }
     state.watcher = None;
 
     if project_root.trim().is_empty() {
@@ -483,7 +488,7 @@ fn set_watch_root(
         .watch(&root_canon, RecursiveMode::Recursive)
         .map_err(|e| e.to_string())?;
 
-    std::thread::spawn(move || {
+    let handle = std::thread::spawn(move || {
         let debounce = Duration::from_millis(500);
         let mut pending = false;
         let mut last_event = Instant::now();
@@ -517,6 +522,7 @@ fn set_watch_root(
 
     state.watcher = Some(watcher);
     state.stop_tx = Some(stop_tx);
+    state.thread = Some(handle);
     Ok(())
 }
 
@@ -920,6 +926,7 @@ pub fn run() {
         .manage(Mutex::new(WatchState {
             watcher: None,
             stop_tx: None,
+            thread: None,
         }))
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

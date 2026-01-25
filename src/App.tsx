@@ -151,8 +151,10 @@ export default function App() {
     "EXHIBITOR"
   );
   const projectRootRef = useRef(projectRoot);
+  const tableScrollRef = useRef<HTMLDivElement | null>(null);
   const [dragTarget, setDragTarget] = useState<string | null>(null);
   const hoverClientRef = useRef<string | null>(null);
+  const sortableClientsRef = useRef<ClientInfo[]>([]);
   const [debugPoint, setDebugPoint] = useState<{ x: number; y: number } | null>(null);
   const [debugInfo, setDebugInfo] = useState<{
     physical: { x: number; y: number };
@@ -296,6 +298,17 @@ export default function App() {
   }, [projectRoot]);
 
   useEffect(() => {
+    return () => {
+      if (toastTimeoutRef.current) {
+        window.clearTimeout(toastTimeoutRef.current);
+      }
+      if (debugHideTimeoutRef.current) {
+        window.clearTimeout(debugHideTimeoutRef.current);
+      }
+    };
+  }, []);
+
+  useEffect(() => {
     if (!showAdvancedMenu) return;
     const onKey = (event: KeyboardEvent) => {
       if (event.key === "Escape") {
@@ -323,6 +336,10 @@ export default function App() {
     () => clients.filter((client) => client.status !== "Not a client"),
     [clients]
   );
+
+  useEffect(() => {
+    sortableClientsRef.current = sortableClients;
+  }, [sortableClients]);
 
   const resolveDropClient = () => {
     if (hoverClientRef.current) return hoverClientRef.current;
@@ -391,7 +408,9 @@ export default function App() {
             setError("Drop files on a client row.");
             return;
           }
-          const client = sortableClients.find((entry) => entry.name === dropClient);
+          const client = sortableClientsRef.current.find(
+            (entry) => entry.name === dropClient
+          );
           if (!client) {
             setError("Drop target not found.");
             return;
@@ -430,7 +449,7 @@ export default function App() {
     return () => {
       if (unlisten) unlisten();
     };
-  }, [screen, sortableClients]);
+  }, [screen]);
 
   useEffect(() => {
     if (!dragActive) return;
@@ -494,7 +513,7 @@ export default function App() {
         inFlight = false;
       }
     };
-    const id = window.setInterval(poll, 50);
+    const id = window.setInterval(poll, 100);
     return () => {
       cancelled = true;
       window.clearInterval(id);
@@ -509,6 +528,7 @@ export default function App() {
   const refreshClients = async (rootOverride?: string) => {
     const root = rootOverride ?? projectRoot;
     if (!root) return;
+    const scrollTop = tableScrollRef.current?.scrollTop ?? 0;
     setLoading(true);
     setError(null);
     try {
@@ -516,6 +536,11 @@ export default function App() {
         projectRoot: root,
       });
       setClients(data);
+      window.requestAnimationFrame(() => {
+        if (tableScrollRef.current) {
+          tableScrollRef.current.scrollTop = scrollTop;
+        }
+      });
     } catch (err) {
       setError(String(err));
     } finally {
@@ -911,6 +936,7 @@ export default function App() {
           <div
             className={`table-scroll ${busy ? "busy" : ""}`}
             onDragOver={screen === "sort" ? handleSortDragOver : undefined}
+            ref={tableScrollRef}
           >
             <div className="table">
             <button
@@ -1037,17 +1063,35 @@ export default function App() {
                     </div>
                     <div className="actions">
                       <button
-                        className="ghost"
+                        className="ghost icon-button"
                         onClick={() => handleOpenFolder(client.path)}
+                        aria-label="Open folder"
+                        title="Open folder"
                       >
-                        Open
+                        <svg
+                          width="18"
+                          height="18"
+                          viewBox="0 0 24 24"
+                          fill="none"
+                          xmlns="http://www.w3.org/2000/svg"
+                          aria-hidden="true"
+                        >
+                          <path
+                            d="M3 7.5C3 6.12 4.12 5 5.5 5H10L12 7H18.5C19.88 7 21 8.12 21 9.5V16.5C21 17.88 19.88 19 18.5 19H5.5C4.12 19 3 17.88 3 16.5V7.5Z"
+                            stroke="currentColor"
+                            strokeWidth="1.6"
+                            strokeLinejoin="round"
+                          />
+                        </svg>
                       </button>
                       {client.status === "Missing folders" && (
                         <button
-                          className="ghost"
+                          className="ghost icon-button"
                           onClick={() => handleFixClient(client)}
+                          aria-label="Fix"
+                          title="Fix"
                         >
-                          Fix
+                          <img src="/fix.png" alt="" aria-hidden="true" />
                         </button>
                       )}
                     </div>
