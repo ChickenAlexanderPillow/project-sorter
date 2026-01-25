@@ -63,7 +63,6 @@ const CONFIG_STORE = new LazyStore("config.json", {
   defaults: {},
 });
 
-const MODES = ["AUTO"];
 
 const MODE_ACCEPTED: Record<string, string[]> = {
   "VIDEO PROXY": [
@@ -769,292 +768,296 @@ export default function App() {
         </div>
       )}
 
-      <section className="panel">
-        {DEBUG_ENABLED && debugInfo && (
-          <div className="debug-info">
-            <div className="debug-row">
-              <span>phys:</span>
-              <span>{Math.round(debugInfo.physical.x)}, {Math.round(debugInfo.physical.y)}</span>
-            </div>
-            <div className="debug-row">
-              <span>log:</span>
-              <span>{Math.round(debugInfo.logical.x)}, {Math.round(debugInfo.logical.y)}</span>
-            </div>
-            {debugInfo.client && (
+      <div className="app-content">
+        <section className="panel">
+          {DEBUG_ENABLED && debugInfo && (
+            <div className="debug-info">
               <div className="debug-row">
-                <span>client:</span>
-                <span>{Math.round(debugInfo.client.x)}, {Math.round(debugInfo.client.y)}</span>
+                <span>phys:</span>
+                <span>{Math.round(debugInfo.physical.x)}, {Math.round(debugInfo.physical.y)}</span>
               </div>
-            )}
-            <div className="debug-row">
-              <span>note:</span>
-              <span>auto-hides after 8s</span>
-            </div>
-            <button
-              className="debug-toggle"
-              onClick={async () => {
-                const payload = `phys: ${Math.round(debugInfo.physical.x)}, ${Math.round(
-                  debugInfo.physical.y
-                )}\nlog: ${Math.round(debugInfo.logical.x)}, ${Math.round(
-                  debugInfo.logical.y
-                )}\nclient: ${
-                  debugInfo.client
-                    ? `${Math.round(debugInfo.client.x)}, ${Math.round(debugInfo.client.y)}`
-                    : "n/a"
-                }`;
-                try {
-                  await writeText(payload);
-                  setCopiedDebug(true);
-                } catch (err) {
-                  setError(`Clipboard failed: ${String(err)}`);
-                }
-              }}
-            >
-              {copiedDebug ? "Copied" : "Copy"}
-            </button>
-          </div>
-        )}
-        <div className="panel-header" />
-        <div className="panel-tools">
-          <div className="tool-row single">
-            <input
-              className="search panel"
-              placeholder="Search clients…"
-              value={search}
-              onChange={(event) => setSearch(event.target.value)}
-            />
-            <div className="advanced-menu">
+              <div className="debug-row">
+                <span>log:</span>
+                <span>{Math.round(debugInfo.logical.x)}, {Math.round(debugInfo.logical.y)}</span>
+              </div>
+              {debugInfo.client && (
+                <div className="debug-row">
+                  <span>client:</span>
+                  <span>{Math.round(debugInfo.client.x)}, {Math.round(debugInfo.client.y)}</span>
+                </div>
+              )}
+              <div className="debug-row">
+                <span>note:</span>
+                <span>auto-hides after 8s</span>
+              </div>
               <button
-                type="button"
-                className="ghost"
-                onClick={(event) => {
-                  event.stopPropagation();
-                  setShowAdvancedMenu((current) => !current);
+                className="debug-toggle"
+                onClick={async () => {
+                  const payload = `phys: ${Math.round(debugInfo.physical.x)}, ${Math.round(
+                    debugInfo.physical.y
+                  )}\nlog: ${Math.round(debugInfo.logical.x)}, ${Math.round(
+                    debugInfo.logical.y
+                  )}\nclient: ${
+                    debugInfo.client
+                      ? `${Math.round(debugInfo.client.x)}, ${Math.round(debugInfo.client.y)}`
+                      : "n/a"
+                  }`;
+                  try {
+                    await writeText(payload);
+                    setCopiedDebug(true);
+                  } catch (err) {
+                    setError(`Clipboard failed: ${String(err)}`);
+                  }
                 }}
               >
-                ⋯
+                {copiedDebug ? "Copied" : "Copy"}
               </button>
             </div>
-          </div>
-        </div>
-        {showAdvancedMenu && (
-          <div className="advanced-overlay" onClick={() => setShowAdvancedMenu(false)}>
-            <div
-              className="advanced-popover fixed"
-              onClick={(event) => event.stopPropagation()}
-            >
-              <label className="toggle compact">
-                <input
-                  type="checkbox"
-                  checked={operation === "copy"}
-                  onChange={(event) => {
-                    const next = event.target.checked ? "copy" : "move";
-                    setOperation(next);
-                    saveConfigValue("lastOperation", next);
-                  }}
-                />
-                Copy
-              </label>
-              <label className="toggle compact">
-                <input
-                  type="checkbox"
-                  checked={dryRun}
-                  onChange={(event) => setDryRun(event.target.checked)}
-                />
-                Dry run
-              </label>
-              <label className="toggle compact">
-                <input
-                  type="checkbox"
-                  checked={showApprovalMode}
-                  onChange={(event) => {
-                    const checked = event.target.checked;
-                    setShowApprovalMode(checked);
-                    saveConfigValue("showApprovalMode", checked);
-                    if (!checked && mode === "APPROVAL EXPORTS") {
-                      saveConfigValue("lastMode", "AUTO");
-                    }
-                  }}
-                />
-                Approval exports
-              </label>
-              <label className="toggle compact">
-                <input
-                  type="checkbox"
-                  checked={alwaysOnTop}
-                  onChange={(event) => {
-                    const checked = event.target.checked;
-                    setAlwaysOnTop(checked);
-                    saveConfigValue("alwaysOnTop", checked);
-                    getCurrentWindow()
-                      .setAlwaysOnTop(checked)
-                      .catch(() => undefined);
-                  }}
-                />
-                Float on top
-              </label>
-              <label className="toggle compact">
-                <input
-                  type="checkbox"
-                  checked={showNonClients}
-                  onChange={(event) => {
-                    const checked = event.target.checked;
-                    setShowNonClients(checked);
-                    saveConfigValue("showNonClients", checked);
-                  }}
-                />
-                Show non-client folders
-              </label>
-            </div>
-          </div>
-        )}
-        <div
-          className={`table ${busy ? "busy" : ""}`}
-          onDragOver={screen === "sort" ? handleSortDragOver : undefined}
-        >
-          <button
-            className="table-row add-client-row"
-            type="button"
-            onClick={() => setShowAddInline(true)}
-          >
-            <span>+ Add client</span>
-            <span className="add-client-hint">Create a new CLIENT_TYPE folder</span>
-          </button>
-          {showAddInline && (
-            <div className="table-row add-client-inline">
+          )}
+          <div className="panel-header" />
+          <div className="panel-tools">
+            <div className="tool-row single">
               <input
-                className="inline-input"
-                placeholder="Client name (e.g. Digitain)"
-                value={newClientName}
-                onChange={(event) => setNewClientName(event.target.value)}
+                className="search panel"
+                placeholder="Search clients…"
+                value={search}
+                onChange={(event) => setSearch(event.target.value)}
               />
-              <div className="inline-types">
-                {CLIENT_TYPES.map((type) => (
-                  <button
-                    key={type}
-                    type="button"
-                    className={`type-chip ${
-                      newClientType === type ? "selected" : ""
-                    } ${type.toLowerCase()}`}
-                    onClick={() => setNewClientType(type)}
-                  >
-                    {type}
-                  </button>
-                ))}
-              </div>
-              <div className="inline-actions">
+              <div className="advanced-menu">
                 <button
+                  type="button"
                   className="ghost"
-                  onClick={() => {
-                    setShowAddInline(false);
-                    setNewClientName("");
-                    setNewClientType("EXHIBITOR");
+                  onClick={(event) => {
+                    event.stopPropagation();
+                    setShowAdvancedMenu((current) => !current);
                   }}
                 >
-                  Cancel
-                </button>
-                <button className="primary" onClick={handleAddClient}>
-                  Create
+                  ⋯
                 </button>
               </div>
             </div>
-          )}
-          <div className="table-row table-head">
-            <div>Client Name</div>
-            <div>Status</div>
-            <div>Actions</div>
           </div>
-          {loading && <div className="table-row">Loading…</div>}
-          {!loading && visibleClients.length === 0 && (
-            <div className="table-row">No clients found.</div>
+          {showAdvancedMenu && (
+            <div className="advanced-overlay" onClick={() => setShowAdvancedMenu(false)}>
+              <div
+                className="advanced-popover fixed"
+                onClick={(event) => event.stopPropagation()}
+              >
+                <label className="toggle compact">
+                  <input
+                    type="checkbox"
+                    checked={operation === "copy"}
+                    onChange={(event) => {
+                      const next = event.target.checked ? "copy" : "move";
+                      setOperation(next);
+                      saveConfigValue("lastOperation", next);
+                    }}
+                  />
+                  Copy
+                </label>
+                <label className="toggle compact">
+                  <input
+                    type="checkbox"
+                    checked={dryRun}
+                    onChange={(event) => setDryRun(event.target.checked)}
+                  />
+                  Dry run
+                </label>
+                <label className="toggle compact">
+                  <input
+                    type="checkbox"
+                    checked={showApprovalMode}
+                    onChange={(event) => {
+                      const checked = event.target.checked;
+                      setShowApprovalMode(checked);
+                      saveConfigValue("showApprovalMode", checked);
+                      if (!checked && mode === "APPROVAL EXPORTS") {
+                        saveConfigValue("lastMode", "AUTO");
+                      }
+                    }}
+                  />
+                  Approval exports
+                </label>
+                <label className="toggle compact">
+                  <input
+                    type="checkbox"
+                    checked={alwaysOnTop}
+                    onChange={(event) => {
+                      const checked = event.target.checked;
+                      setAlwaysOnTop(checked);
+                      saveConfigValue("alwaysOnTop", checked);
+                      getCurrentWindow()
+                        .setAlwaysOnTop(checked)
+                        .catch(() => undefined);
+                    }}
+                  />
+                  Float on top
+                </label>
+                <label className="toggle compact">
+                  <input
+                    type="checkbox"
+                    checked={showNonClients}
+                    onChange={(event) => {
+                      const checked = event.target.checked;
+                      setShowNonClients(checked);
+                      saveConfigValue("showNonClients", checked);
+                    }}
+                  />
+                  Show non-client folders
+                </label>
+              </div>
+            </div>
           )}
-          {!loading &&
-            visibleClients.map((client) => {
-              const label = parseClientLabel(client.name);
-              const droppable = screen === "sort" && client.status !== "Not a client";
-              return (
-                <div
-                  key={client.name}
-                  className={`table-row ${droppable ? "droppable-row" : ""} ${
-                    dragTarget === client.name ? "drag-over" : ""
-                  }`}
-                  data-client={droppable ? client.name : undefined}
-                  onDragOver={
-                    droppable
-                      ? (event) => {
-                          handleSortDragOver(event);
-                          hoverClientRef.current = client.name;
-                          setDragTarget(client.name);
-                        }
-                      : undefined
-                  }
-                  onDragEnter={
-                    droppable
-                      ? () => {
-                          hoverClientRef.current = client.name;
-                          setDragTarget(client.name);
-                        }
-                      : undefined
-                  }
-                  onDragLeave={
-                    droppable
-                      ? () => {
-                          if (hoverClientRef.current === client.name) {
-                            hoverClientRef.current = null;
+          <div
+            className={`table-scroll ${busy ? "busy" : ""}`}
+            onDragOver={screen === "sort" ? handleSortDragOver : undefined}
+          >
+            <div className="table">
+            <button
+              className="table-row add-client-row"
+              type="button"
+              onClick={() => setShowAddInline(true)}
+            >
+              <span>+ Add client</span>
+              <span className="add-client-hint">Create a new CLIENT_TYPE folder</span>
+            </button>
+            {showAddInline && (
+              <div className="table-row add-client-inline">
+                <input
+                  className="inline-input"
+                  placeholder="Client name (e.g. Digitain)"
+                  value={newClientName}
+                  onChange={(event) => setNewClientName(event.target.value)}
+                />
+                <div className="inline-types">
+                  {CLIENT_TYPES.map((type) => (
+                    <button
+                      key={type}
+                      type="button"
+                      className={`type-chip ${
+                        newClientType === type ? "selected" : ""
+                      } ${type.toLowerCase()}`}
+                      onClick={() => setNewClientType(type)}
+                    >
+                      {type}
+                    </button>
+                  ))}
+                </div>
+                <div className="inline-actions">
+                  <button
+                    className="ghost"
+                    onClick={() => {
+                      setShowAddInline(false);
+                      setNewClientName("");
+                      setNewClientType("EXHIBITOR");
+                    }}
+                  >
+                    Cancel
+                  </button>
+                  <button className="primary" onClick={handleAddClient}>
+                    Create
+                  </button>
+                </div>
+              </div>
+            )}
+            <div className="table-row table-head">
+              <div>Client Name</div>
+              <div>Status</div>
+              <div>Actions</div>
+            </div>
+            {loading && <div className="table-row">Loading…</div>}
+            {!loading && visibleClients.length === 0 && (
+              <div className="table-row">No clients found.</div>
+            )}
+            {!loading &&
+              visibleClients.map((client) => {
+                const label = parseClientLabel(client.name);
+                const droppable = screen === "sort" && client.status !== "Not a client";
+                return (
+                  <div
+                    key={client.name}
+                    className={`table-row ${droppable ? "droppable-row" : ""} ${
+                      dragTarget === client.name ? "drag-over" : ""
+                    }`}
+                    data-client={droppable ? client.name : undefined}
+                    onDragOver={
+                      droppable
+                        ? (event) => {
+                            handleSortDragOver(event);
+                            hoverClientRef.current = client.name;
+                            setDragTarget(client.name);
                           }
-                          setDragTarget((current) =>
-                            current === client.name ? null : current
-                          );
-                        }
-                      : undefined
-                  }
-                  onDrop={droppable ? (event) => handleDropEvent(event, client) : undefined}
-                >
-                  <div>
-                    <div className="client-title">
-                      <span className="client-name">{label.name}</span>
-                      {label.type && (
-                        <span className={`client-tag ${label.type.toLowerCase()}`}>
-                          {label.type}
-                        </span>
+                        : undefined
+                    }
+                    onDragEnter={
+                      droppable
+                        ? () => {
+                            hoverClientRef.current = client.name;
+                            setDragTarget(client.name);
+                          }
+                        : undefined
+                    }
+                    onDragLeave={
+                      droppable
+                        ? () => {
+                            if (hoverClientRef.current === client.name) {
+                              hoverClientRef.current = null;
+                            }
+                            setDragTarget((current) =>
+                              current === client.name ? null : current
+                            );
+                          }
+                        : undefined
+                    }
+                    onDrop={droppable ? (event) => handleDropEvent(event, client) : undefined}
+                  >
+                    <div>
+                      <div className="client-title">
+                        <span className="client-name">{label.name}</span>
+                        {label.type && (
+                          <span className={`client-tag ${label.type.toLowerCase()}`}>
+                            {label.type}
+                          </span>
+                        )}
+                      </div>
+                      {client.status === "Missing folders" && (
+                        <div className="missing">
+                          Missing: {client.missing.join(", ")}
+                        </div>
                       )}
                     </div>
-                    {client.status === "Missing folders" && (
-                      <div className="missing">
-                        Missing: {client.missing.join(", ")}
-                      </div>
-                    )}
-                  </div>
-                  <div>
-                    <span
-                      className={`badge ${client.status
-                        .toLowerCase()
-                        .replace(/\s/g, "-")}`}
-                    >
-                      {client.status}
-                    </span>
-                  </div>
-                  <div className="actions">
-                    <button
-                      className="ghost"
-                      onClick={() => handleOpenFolder(client.path)}
-                    >
-                      Open
-                    </button>
-                    {client.status === "Missing folders" && (
+                    <div>
+                      <span
+                        className={`badge ${client.status
+                          .toLowerCase()
+                          .replace(/\s/g, "-")}`}
+                      >
+                        {client.status}
+                      </span>
+                    </div>
+                    <div className="actions">
                       <button
                         className="ghost"
-                        onClick={() => handleFixClient(client)}
+                        onClick={() => handleOpenFolder(client.path)}
                       >
-                        Fix
+                        Open
                       </button>
-                    )}
-                  </div>
+                      {client.status === "Missing folders" && (
+                        <button
+                          className="ghost"
+                          onClick={() => handleFixClient(client)}
+                        >
+                          Fix
+                        </button>
+                      )}
+                    </div>
                 </div>
               );
             })}
-        </div>
-      </section>
+            </div>
+          </div>
+        </section>
+      </div>
 
       <footer className="status">
         <div>

@@ -1,6 +1,6 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "Project Sorter",
+  "productName": "Pepper",
   "version": "0.1.0",
   "identifier": "com.project.sorter",
   "build": {
@@ -12,7 +12,7 @@
   "app": {
     "windows": [
       {
-        "title": "Project Sorter",
+        "title": "Pepper",
         "width": 1024,
         "height": 700,
         "minWidth": 900,

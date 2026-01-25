@@ -4,6 +4,7 @@
   line-height: 1.4;
   font-weight: 400;
   --topbar-height: 78px;
+  --footer-height: 56px;
   color: #1f2328;
   background-color: #f5f6f8;
   font-synthesis: none;
@@ -23,9 +24,19 @@ body {
 
 .app {
   min-height: 100vh;
+  height: 100vh;
   background: radial-gradient(circle at top, #ffffff 0%, #f2f3f5 55%, #e9ecef 100%);
   display: flex;
   flex-direction: column;
+}
+
+.app-content {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-height: 0;
+  overflow: hidden;
+  padding-bottom: var(--footer-height);
 }
 
 .topbar {
@@ -288,6 +299,8 @@ button.accent {
   flex-direction: column;
   gap: 12px;
   min-height: 0;
+  flex: 1;
+  overflow: hidden;
 }
 
 @keyframes rise {
@@ -329,15 +342,29 @@ button.accent {
   color: rgba(246, 247, 249, 0.8);
 }
 
-.table {
-  display: grid;
-  gap: 12px;
+.table-scroll {
+  overflow-x: auto;
+  overflow-y: auto;
+  min-height: 0;
+  flex: 1;
+  padding-bottom: 12px;
+  padding-right: 12px;
+  scrollbar-gutter: stable;
 }
 
-.table.busy {
+.table-scroll.busy {
   opacity: 0.7;
   pointer-events: none;
 }
+
+.table {
+  display: grid;
+  gap: 12px;
+  align-content: start;
+  grid-auto-rows: max-content;
+  min-width: 100%;
+}
+
 
 .table-row {
   display: grid;
@@ -348,6 +375,10 @@ button.accent {
   border-radius: 14px;
   background: #ffffff;
   border: 1px solid rgba(31, 35, 40, 0.12);
+  min-width: 680px;
+  min-height: 64px;
+  position: relative;
+  z-index: 0;
 }
 
 .table-row.droppable-row {
@@ -376,7 +407,8 @@ button.accent {
 
 .table-row.droppable-row:hover {
   transform: translateY(-1px);
-  border-color: rgba(31, 35, 40, 0.35);
+  border-color: rgba(31, 35, 40, 0.5);
+  background: linear-gradient(135deg, #f7f9fc, #eef2f7);
 }
 
 .table-row.droppable-row.drag-over {
@@ -401,11 +433,16 @@ button.accent {
   border: 1px dashed rgba(31, 35, 40, 0.2);
   font-weight: 600;
   position: relative;
-  z-index: 1;
+  min-height: 64px;
+  box-shadow: none;
+  filter: none;
 }
 
 .add-client-row:hover {
   border-color: rgba(31, 35, 40, 0.4);
+  box-shadow: none !important;
+  background: #eef1f4;
+  filter: none;
 }
 
 .add-client-row span {
@@ -422,6 +459,7 @@ button.accent {
   align-items: center;
   background: #ffffff;
   gap: 12px;
+  min-height: 64px;
 }
 
 .add-client-inline .inline-input {
@@ -727,6 +765,12 @@ button.accent {
   background: rgba(26, 28, 31, 0.92);
   color: #f6f7f9;
   font-size: 0.85rem;
+  position: fixed;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  height: var(--footer-height);
+  z-index: 120;
 }
 
 .app.sort-mode {
@@ -836,7 +880,7 @@ button.accent {
   }
 
   .table-row {
-    grid-template-columns: 1fr;
+    grid-template-columns: 2fr 1fr 1fr;
     gap: 8px;
   }
 
