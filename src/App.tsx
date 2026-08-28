@@ -207,9 +207,20 @@ export default function App() {
       }
     } catch (err) {
       // Update failures should never prevent Pepper from opening or working offline.
-      console.warn("Update check failed", err);
+      const errorMessage = err instanceof Error ? err.message : String(err);
+      const noReleasePublished = /404|not found/i.test(errorMessage);
+      if (noReleasePublished) {
+        console.info("No GitHub release has been published yet.");
+      } else {
+        console.warn("Update check failed", err);
+      }
       if (showResult) {
-        setToast({ message: "Could not check for updates.", tone: "error" });
+        setToast({
+          message: noReleasePublished
+            ? "No Pepper release has been published yet."
+            : "Could not check for updates.",
+          tone: noReleasePublished ? "info" : "error",
+        });
       }
     } finally {
       setCheckingForUpdates(false);
