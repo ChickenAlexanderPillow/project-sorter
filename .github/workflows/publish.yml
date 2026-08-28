@@ -50,3 +50,4 @@ jobs:
           releaseBody: Signed Windows installer and updater artifacts for Pepper v__VERSION__.
           releaseDraft: false
           prerelease: false
+          args: "--bundles msi"
