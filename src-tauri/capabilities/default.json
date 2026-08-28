@@ -11,6 +11,9 @@
       "allow": [
         {
           "path": "$DOCUMENT/**"
+        },
+        {
+          "path": "Z:\\\\The Huddle\\\\Production\\\\**"
         }
       ]
     },

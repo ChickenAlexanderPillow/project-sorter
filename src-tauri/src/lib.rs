@@ -1,10 +1,11 @@
 use libc::EXDEV;
 use notify::{Event, RecommendedWatcher, RecursiveMode, Watcher};
 use serde::{Deserialize, Serialize};
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
+use std::process::Command;
 use std::sync::{mpsc, Mutex};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
@@ -78,13 +79,18 @@ struct WatchState {
 }
 
 const REQUIRED_DIRS: [&str; 4] = ["01_MEDIA", "02_EDIT", "03_EXPORTS", "04_FINAL"];
-const TEMPLATE_DIRS: [&str; 10] = [
+const WINDOWS_NOT_SAME_DEVICE: i32 = 17;
+const CLIENT_TEMPLATE_PROJECT_SOURCE: &str =
+    r#"Z:\The Huddle\Templates\Copied_Huddle Master Template 2026_4K_2\Huddle Master Template 2026_4K_2.prproj"#;
+const CLIENT_TYPES: [&str; 3] = ["EXHIBITOR", "HUDDLE", "PRODUCT"];
+const TEMPLATE_DIRS: [&str; 11] = [
     "01_MEDIA",
     "01_MEDIA/010_VIDEO_PROXY",
     "01_MEDIA/020_VIDEO_RAW",
     "01_MEDIA/030_AUDIO_CLEAN",
     "01_MEDIA/040_AUDIO_RAW",
     "01_MEDIA/050_STILLS",
+    "01_MEDIA/060_MUSIC",
     "02_EDIT",
     "03_EXPORTS",
     "03_EXPORTS/APPROVAL",
@@ -208,6 +214,42 @@ fn ensure_dir(path: &Path) -> Result<(), io::Error> {
         fs::create_dir_all(path)?;
     }
     Ok(())
+}
+
+fn client_project_filename(client_name: &str) -> String {
+    let parts: Vec<&str> = client_name.split('_').filter(|part| !part.is_empty()).collect();
+    let base_parts = match parts.last().copied() {
+        Some(last) if CLIENT_TYPES.contains(&last) && parts.len() > 1 => &parts[..parts.len() - 1],
+        _ => &parts[..],
+    };
+    let stem = if base_parts.is_empty() {
+        client_name.trim()
+    } else {
+        &base_parts.join("_")
+    };
+    format!("{stem}.prproj")
+}
+
+fn remove_file_with_retry(path: &Path) -> Result<(), io::Error> {
+    let mut last_err: Option<io::Error> = None;
+    for _ in 0..3 {
+        match fs::remove_file(path) {
+            Ok(_) => return Ok(()),
+            Err(err) => {
+                if err.kind() == io::ErrorKind::PermissionDenied {
+                    if let Ok(mut perms) = fs::metadata(path).map(|m| m.permissions()) {
+                        perms.set_readonly(false);
+                        let _ = fs::set_permissions(path, perms);
+                    }
+                }
+                last_err = Some(err);
+                std::thread::sleep(Duration::from_millis(150));
+            }
+        }
+    }
+    Err(last_err.unwrap_or_else(|| {
+        io::Error::new(io::ErrorKind::Other, "Failed to remove file")
+    }))
 }
 
 fn unique_destination_path(
@@ -402,50 +444,101 @@ fn event_in_scope(event: &Event, root: &Path) -> bool {
 }
 
 #[tauri::command]
-fn scan_project_root(project_root: String) -> Result<Vec<ClientInfo>, String> {
-    let root = PathBuf::from(&project_root);
-    let mut clients = Vec::new();
+async fn scan_project_root(project_root: String) -> Result<Vec<ClientInfo>, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let root = PathBuf::from(&project_root);
+        let mut clients = Vec::new();
 
-    let entries = fs::read_dir(&root).map_err(|e| e.to_string())?;
-    for entry in entries.flatten() {
-        let path = entry.path();
-        if !path.is_dir() {
-            continue;
+        let entries = fs::read_dir(&root).map_err(|e| e.to_string())?;
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if !path.is_dir() {
+                continue;
+            }
+            let name = match path.file_name().and_then(|n| n.to_str()) {
+                Some(name) => name.to_string(),
+                None => continue,
+            };
+            if name == "_logs" {
+                continue;
+            }
+
+            let is_excluded = name.starts_with("XX");
+            if is_excluded {
+                clients.push(ClientInfo {
+                    name,
+                    path: path.to_string_lossy().to_string(),
+                    status: "Not a client".to_string(),
+                    missing: Vec::new(),
+                });
+                continue;
+            }
+
+            let mut child_dirs = HashSet::new();
+            if let Ok(entries) = fs::read_dir(&path) {
+                for entry in entries.flatten() {
+                    let entry_path = entry.path();
+                    if entry_path.is_dir() {
+                        if let Some(name) = entry_path.file_name().and_then(|n| n.to_str()) {
+                            child_dirs.insert(name.to_string());
+                        }
+                    }
+                }
+            }
+
+            let mut subdir_cache: HashMap<String, HashSet<String>> = HashMap::new();
+            let mut missing = Vec::new();
+            for dir in TEMPLATE_DIRS.iter() {
+                if let Some((parent, child)) = dir.split_once('/') {
+                    if !child_dirs.contains(parent) {
+                        missing.push(dir.to_string());
+                        continue;
+                    }
+                    let subdirs = subdir_cache.entry(parent.to_string()).or_insert_with(|| {
+                        let mut set = HashSet::new();
+                        let parent_path = path.join(parent);
+                        if let Ok(entries) = fs::read_dir(parent_path) {
+                            for entry in entries.flatten() {
+                                let entry_path = entry.path();
+                                if entry_path.is_dir() {
+                                    if let Some(name) =
+                                        entry_path.file_name().and_then(|n| n.to_str())
+                                    {
+                                        set.insert(name.to_string());
+                                    }
+                                }
+                            }
+                        }
+                        set
+                    });
+                    if !subdirs.contains(child) {
+                        missing.push(dir.to_string());
+                    }
+                } else if !child_dirs.contains(*dir) {
+                    missing.push(dir.to_string());
+                }
+            }
+
+            let has_all_required = REQUIRED_DIRS.iter().all(|dir| child_dirs.contains(*dir));
+            let status = if has_all_required && missing.is_empty() {
+                "OK"
+            } else {
+                "Missing folders"
+            };
+
+            clients.push(ClientInfo {
+                name,
+                path: path.to_string_lossy().to_string(),
+                status: status.to_string(),
+                missing,
+            });
         }
-        let name = match path.file_name().and_then(|n| n.to_str()) {
-            Some(name) => name.to_string(),
-            None => continue,
-        };
-        if name == "_logs" {
-            continue;
-        }
 
-        let is_excluded = name.starts_with("XX");
-        let has_all_required = REQUIRED_DIRS.iter().all(|dir| has_dir(&path, dir));
-        let missing: Vec<String> = TEMPLATE_DIRS
-            .iter()
-            .filter(|dir| !has_dir(&path, dir))
-            .map(|dir| dir.to_string())
-            .collect();
-
-        let status = if is_excluded {
-            "Not a client"
-        } else if has_all_required && missing.is_empty() {
-            "OK"
-        } else {
-            "Missing folders"
-        };
-
-        clients.push(ClientInfo {
-            name,
-            path: path.to_string_lossy().to_string(),
-            status: status.to_string(),
-            missing,
-        });
-    }
-
-    clients.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
-    Ok(clients)
+        clients.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
+        Ok(clients)
+    })
+    .await
+    .map_err(|e| e.to_string())?
 }
 
 #[tauri::command]
@@ -535,7 +628,65 @@ fn create_client(project_root: String, client_name: String) -> Result<(), String
     for dir in TEMPLATE_DIRS.iter() {
         ensure_dir(&client_root.join(dir)).map_err(|e| e.to_string())?;
     }
+
+    let template_source = PathBuf::from(CLIENT_TEMPLATE_PROJECT_SOURCE);
+    if !template_source.exists() {
+        return Err(format!(
+            "Premiere template not found: {}",
+            template_source.display()
+        ));
+    }
+
+    let template_dest = client_root
+        .join("02_EDIT")
+        .join(client_project_filename(&client_name));
+    fs::copy(&template_source, &template_dest).map_err(|e| {
+        format!(
+            "Failed to copy Premiere template from {} to {}: {}",
+            template_source.display(),
+            template_dest.display(),
+            e
+        )
+    })?;
     Ok(())
+}
+
+#[tauri::command]
+fn open_folder(path: String) -> Result<(), String> {
+    let target = PathBuf::from(&path);
+    if !target.exists() {
+        return Err(format!("Path does not exist: {}", target.display()));
+    }
+    if !target.is_dir() {
+        return Err(format!("Path is not a folder: {}", target.display()));
+    }
+
+    #[cfg(target_os = "windows")]
+    {
+        Command::new("explorer")
+            .arg(&path)
+            .spawn()
+            .map_err(|e| format!("Failed to launch Explorer for {}: {}", target.display(), e))?;
+        return Ok(());
+    }
+
+    #[cfg(target_os = "macos")]
+    {
+        Command::new("open")
+            .arg(&path)
+            .spawn()
+            .map_err(|e| format!("Failed to open folder {}: {}", target.display(), e))?;
+        return Ok(());
+    }
+
+    #[cfg(all(unix, not(target_os = "macos")))]
+    {
+        Command::new("xdg-open")
+            .arg(&path)
+            .spawn()
+            .map_err(|e| format!("Failed to open folder {}: {}", target.display(), e))?;
+        return Ok(());
+    }
 }
 
 #[tauri::command]
@@ -742,20 +893,53 @@ async fn sort_files(
                             error_message: "".to_string(),
                         },
                         Err(err) => {
-                            if err.raw_os_error() == Some(EXDEV) {
-                                match fs::copy(&file_path, &dest_path)
-                                    .and_then(|_| fs::remove_file(&file_path))
-                                {
-                                    Ok(_) => SortEntry {
-                                        timestamp,
-                                        username: username.clone(),
-                                        mode: resolved_mode.to_string(),
-                                        client: client_name.clone(),
-                                        operation: operation.clone(),
-                                        source_path: source_path.clone(),
-                                        dest_path: dest_path_str.clone(),
-                                        result: "ok".to_string(),
-                                        error_message: "".to_string(),
+                            let raw = err.raw_os_error();
+                            if raw == Some(EXDEV) || raw == Some(WINDOWS_NOT_SAME_DEVICE) {
+                                match fs::copy(&file_path, &dest_path) {
+                                    Ok(_) => match remove_file_with_retry(&file_path) {
+                                        Ok(_) => SortEntry {
+                                            timestamp,
+                                            username: username.clone(),
+                                            mode: resolved_mode.to_string(),
+                                            client: client_name.clone(),
+                                            operation: operation.clone(),
+                                            source_path: source_path.clone(),
+                                            dest_path: dest_path_str.clone(),
+                                            result: "ok".to_string(),
+                                            error_message: "".to_string(),
+                                        },
+                                        Err(remove_err) => {
+                                            let rollback_msg = if dest_path.exists() {
+                                                match fs::remove_file(&dest_path) {
+                                                    Ok(_) => "Copied file was rolled back.".to_string(),
+                                                    Err(rb_err) => {
+                                                        format!("Rollback failed ({}).", rb_err)
+                                                    }
+                                                }
+                                            } else {
+                                                "Copied file was already missing.".to_string()
+                                            };
+                                            let hint = if remove_err.kind() == io::ErrorKind::PermissionDenied {
+                                                " Source file is likely open in another app."
+                                            } else {
+                                                ""
+                                            };
+                                            failed += 1;
+                                            SortEntry {
+                                                timestamp,
+                                                username: username.clone(),
+                                                mode: resolved_mode.to_string(),
+                                                client: client_name.clone(),
+                                                operation: operation.clone(),
+                                                source_path: source_path.clone(),
+                                                dest_path: dest_path_str.clone(),
+                                                result: "failed".to_string(),
+                                                error_message: format!(
+                                                    "Move failed: could not remove source ({}).{} {}",
+                                                    remove_err, hint, rollback_msg
+                                                ),
+                                            }
+                                        }
                                     },
                                     Err(err) => {
                                         failed += 1;
@@ -836,7 +1020,6 @@ async fn sort_files(
     .await
     .map_err(|e| e.to_string())?
 }
-
 #[tauri::command]
 async fn undo_batch(entries: Vec<UndoEntry>) -> Result<UndoResult, String> {
     tauri::async_runtime::spawn_blocking(move || {
@@ -917,6 +1100,7 @@ pub fn run() {
             scan_project_root,
             set_watch_root,
             create_client,
+            open_folder,
             fix_client,
             sort_files,
             append_debug_log,
@@ -973,5 +1157,18 @@ mod tests {
         );
 
         let _ = fs::remove_dir_all(&temp_dir);
+    }
+
+    #[test]
+    fn client_project_filename_uses_client_name_without_type() {
+        assert_eq!(
+            client_project_filename("DIGITAIN_EXHIBITOR"),
+            "DIGITAIN.prproj"
+        );
+        assert_eq!(
+            client_project_filename("THE_BIG_SHOW_PRODUCT"),
+            "THE_BIG_SHOW.prproj"
+        );
+        assert_eq!(client_project_filename("DIGITAIN"), "DIGITAIN.prproj");
     }
 }

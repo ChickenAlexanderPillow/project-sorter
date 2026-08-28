@@ -3,7 +3,6 @@ import type { DragEvent } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
-import { openPath } from "@tauri-apps/plugin-opener";
 import { LazyStore } from "@tauri-apps/plugin-store";
 import { cursorPosition, getCurrentWindow, LogicalSize } from "@tauri-apps/api/window";
 import { type DragDropEvent } from "@tauri-apps/api/webview";
@@ -155,6 +154,8 @@ export default function App() {
   const [dragTarget, setDragTarget] = useState<string | null>(null);
   const hoverClientRef = useRef<string | null>(null);
   const sortableClientsRef = useRef<ClientInfo[]>([]);
+  const busyRef = useRef(false);
+  const pendingRefreshRef = useRef(false);
   const [debugPoint, setDebugPoint] = useState<{ x: number; y: number } | null>(null);
   const [debugInfo, setDebugInfo] = useState<{
     physical: { x: number; y: number };
@@ -241,9 +242,12 @@ export default function App() {
     });
     const unlistenClientsPromise = listen<string>("clients-changed", () => {
       const root = projectRootRef.current;
-      if (root) {
-        refreshClients(root).catch(console.error);
+      if (!root) return;
+      if (busyRef.current) {
+        pendingRefreshRef.current = true;
+        return;
       }
+      refreshClients(root, false).catch(console.error);
     });
 
     loadConfig().catch(console.error);
@@ -283,6 +287,10 @@ export default function App() {
   useEffect(() => {
     projectRootRef.current = projectRoot;
   }, [projectRoot]);
+
+  useEffect(() => {
+    busyRef.current = busy;
+  }, [busy]);
 
   useEffect(() => {
     const setWatcher = async () => {
@@ -525,11 +533,13 @@ export default function App() {
     await CONFIG_STORE.save();
   };
 
-  const refreshClients = async (rootOverride?: string) => {
+  const refreshClients = async (rootOverride?: string, showLoading = true) => {
     const root = rootOverride ?? projectRoot;
     if (!root) return;
     const scrollTop = tableScrollRef.current?.scrollTop ?? 0;
-    setLoading(true);
+    if (showLoading) {
+      setLoading(true);
+    }
     setError(null);
     try {
       const data = await invoke<ClientInfo[]>("scan_project_root", {
@@ -544,7 +554,9 @@ export default function App() {
     } catch (err) {
       setError(String(err));
     } finally {
-      setLoading(false);
+      if (showLoading) {
+        setLoading(false);
+      }
     }
   };
 
@@ -587,7 +599,7 @@ export default function App() {
       setShowAddInline(false);
       setNewClientName("");
       setNewClientType("EXHIBITOR");
-      await refreshClients();
+      await refreshClients(undefined, false);
     } catch (err) {
       setError(String(err));
     }
@@ -620,8 +632,21 @@ export default function App() {
     paths: string[],
     meta?: { queued: number; skipped: number }
   ) => {
-    if (!projectRoot) {
-      setError("Choose a Project Root first.");
+    let root = projectRoot;
+    if (!root) {
+      try {
+        await CONFIG_STORE.init();
+        const savedRoot = await CONFIG_STORE.get<string>("projectRoot");
+        if (typeof savedRoot === "string" && savedRoot.trim()) {
+          root = savedRoot;
+          setProjectRoot(savedRoot);
+        }
+      } catch {
+        // fall through to error
+      }
+    }
+    if (!root) {
+      setError("Choose a Project Root first (or reselect it if the app lost it).");
       return;
     }
     if (!paths.length) {
@@ -641,7 +666,7 @@ export default function App() {
     setProgress({ processed: 0, total: paths.length, current: "", result: "" });
     try {
       const result = await invoke<SortResult>("sort_files", {
-        projectRoot,
+        projectRoot: root,
         clientName: client.name,
         mode,
         operation,
@@ -657,13 +682,17 @@ export default function App() {
         result.failed ? "error" : "success",
         5000
       );
-      await refreshClients();
+      await refreshClients(undefined, false);
     } catch (err) {
       setError(String(err));
       showToast(`Transfer failed: ${String(err)}`, "error", 5000);
     } finally {
       setBusy(false);
       setQueueMeta(null);
+      if (pendingRefreshRef.current) {
+        pendingRefreshRef.current = false;
+        await refreshClients(root, false);
+      }
     }
   };
 
@@ -687,21 +716,35 @@ export default function App() {
     }
   };
 
+  const formatOpenError = (path: string, err: unknown) => {
+    const message = String(err ?? "");
+    const lower = message.toLowerCase();
+    if (
+      lower.includes("not allowed") ||
+      lower.includes("permission") ||
+      lower.includes("access is denied") ||
+      lower.includes("denied")
+    ) {
+      return `Failed to open folder: ${path}. Access blocked by app permissions or OS policy. If this is a network drive, confirm it is mapped for this user and reopen the app. Details: ${message}`;
+    }
+    return `Failed to open folder: ${path}. ${message}`;
+  };
+
   const handleOpenFolder = async (path: string) => {
     if (!path) return;
     try {
-      await openPath(path);
+      await invoke("open_folder", { path });
     } catch (err) {
-      setError(`Failed to open folder: ${String(err)}`);
+      setError(formatOpenError(path, err));
     }
   };
 
   const handleLogOpen = async () => {
     if (!projectRoot) return;
     try {
-      await openPath(`${projectRoot}/_logs`);
+      await invoke("open_folder", { path: `${projectRoot}/_logs` });
     } catch (err) {
-      setError(`Failed to open log folder: ${String(err)}`);
+      setError(formatOpenError(`${projectRoot}/_logs`, err));
     }
   };
 
@@ -991,12 +1034,13 @@ export default function App() {
               <div>Status</div>
               <div>Actions</div>
             </div>
-            {loading && <div className="table-row">Loading…</div>}
-            {!loading && visibleClients.length === 0 && (
+            {loading && visibleClients.length === 0 && (
+              <div className="table-row">Loading…</div>
+            )}
+            {visibleClients.length === 0 && !loading && (
               <div className="table-row">No clients found.</div>
             )}
-            {!loading &&
-              visibleClients.map((client) => {
+            {visibleClients.map((client) => {
                 const label = parseClientLabel(client.name);
                 const droppable = screen === "sort" && client.status !== "Not a client";
                 return (

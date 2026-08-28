@@ -17,7 +17,10 @@ Created under each client folder:
 - `01_MEDIA/030_AUDIO_CLEAN/`
 - `01_MEDIA/040_AUDIO_RAW/`
 - `01_MEDIA/050_STILLS/`
+- `01_MEDIA/060_MUSIC/`
 - `02_EDIT/`
+  - copies `Z:\The Huddle\Templates\Copied_Huddle Master Template 2026_4K_2\Huddle Master Template 2026_4K_2.prproj`
+  - renames it to the client name, for example `DIGITAIN.prproj`
 - `03_EXPORTS/`
 - `03_EXPORTS/APPROVAL/`
 - `04_FINAL/`
