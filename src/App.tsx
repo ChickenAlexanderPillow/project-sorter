@@ -7,6 +7,7 @@ import { LazyStore } from "@tauri-apps/plugin-store";
 import { cursorPosition, getCurrentWindow, LogicalSize } from "@tauri-apps/api/window";
 import { type DragDropEvent } from "@tauri-apps/api/webview";
 import { writeText } from "@tauri-apps/plugin-clipboard-manager";
+import { check } from "@tauri-apps/plugin-updater";
 import "./App.css";
 
 type ClientStatus = "OK" | "Missing folders" | "Not a client";
@@ -105,7 +106,9 @@ const getExtension = (path: string) => {
 };
 
 
-const CLIENT_TYPES = ["EXHIBITOR", "HUDDLE", "PRODUCT"] as const;
+const CLIENT_TYPES = ["EXHIBITOR", "HUDDLE", "PRODUCT", "MARIYAMEETS", "SOCIAL"] as const;
+type ClientType = (typeof CLIENT_TYPES)[number] | "CUSTOM";
+type HuddleTemplate = "PHYSICAL" | "VIDEO_CALL";
 
 const normalizeClientInput = (value: string) =>
   value.trim().replace(/\s+/g, "_").toUpperCase();
@@ -146,9 +149,9 @@ export default function App() {
   const [showUndoConfirm, setShowUndoConfirm] = useState(false);
   const [showAdvancedMenu, setShowAdvancedMenu] = useState(false);
   const [newClientName, setNewClientName] = useState("");
-  const [newClientType, setNewClientType] = useState<(typeof CLIENT_TYPES)[number]>(
-    "EXHIBITOR"
-  );
+  const [newClientType, setNewClientType] = useState<ClientType>("EXHIBITOR");
+  const [customClientType, setCustomClientType] = useState("");
+  const [huddleTemplate, setHuddleTemplate] = useState<HuddleTemplate>("PHYSICAL");
   const projectRootRef = useRef(projectRoot);
   const tableScrollRef = useRef<HTMLDivElement | null>(null);
   const [dragTarget, setDragTarget] = useState<string | null>(null);
@@ -180,6 +183,42 @@ export default function App() {
   const lastCursorRef = useRef<{ x: number; y: number } | null>(null);
   const lastLogTsRef = useRef(0);
   const [dragActive, setDragActive] = useState(false);
+  const [checkingForUpdates, setCheckingForUpdates] = useState(false);
+
+  const checkForUpdates = async (showResult = true) => {
+    if (checkingForUpdates) return;
+    setCheckingForUpdates(true);
+    try {
+      const update = await check();
+      if (!update) {
+        if (showResult) {
+          setToast({ message: "Pepper is up to date.", tone: "info" });
+        }
+        return;
+      }
+
+      const shouldInstall = window.confirm(
+        `Pepper ${update.version} is available. Install it now?\n\n${update.body ?? ""}`
+      );
+      if (shouldInstall) {
+        await update.downloadAndInstall();
+      } else if (showResult) {
+        setToast({ message: "Update postponed.", tone: "info" });
+      }
+    } catch (err) {
+      // Update failures should never prevent Pepper from opening or working offline.
+      console.warn("Update check failed", err);
+      if (showResult) {
+        setToast({ message: "Could not check for updates.", tone: "error" });
+      }
+    } finally {
+      setCheckingForUpdates(false);
+    }
+  };
+
+  useEffect(() => {
+    void checkForUpdates(false);
+  }, []);
 
   useEffect(() => {
     const appWindow = getCurrentWindow();
@@ -581,12 +620,19 @@ export default function App() {
     }
     const baseName = newClientName.trim();
     if (!baseName) return;
-    const normalized = normalizeClientInput(`${baseName}_${newClientType}`);
+    const customType = normalizeClientInput(customClientType);
+    if (newClientType === "CUSTOM" && !customType) {
+      setError("Enter a custom mode name.");
+      return;
+    }
+    const normalized = normalizeClientInput(
+      `${baseName}_${newClientType === "CUSTOM" ? customType : newClientType}`
+    );
     if (!normalized) return;
     const parsed = parseClientLabel(normalized);
-    if (!parsed.type) {
+    if (!parsed.type && newClientType !== "CUSTOM") {
       setError(
-        "Client name must be in CLIENT_TYPE format (EXHIBITOR, HUDDLE, or PRODUCT)."
+        "Client name must include a valid client mode."
       );
       return;
     }
@@ -595,10 +641,14 @@ export default function App() {
       await invoke("create_client", {
         projectRoot,
         clientName: normalized,
+        clientType: newClientType,
+        huddleTemplate: newClientType === "HUDDLE" ? huddleTemplate : null,
       });
       setShowAddInline(false);
       setNewClientName("");
       setNewClientType("EXHIBITOR");
+      setCustomClientType("");
+      setHuddleTemplate("PHYSICAL");
       await refreshClients(undefined, false);
     } catch (err) {
       setError(String(err));
@@ -973,6 +1023,14 @@ export default function App() {
                   />
                   Show non-client folders
                 </label>
+                <button
+                  type="button"
+                  className="update-check-button ghost"
+                  disabled={checkingForUpdates}
+                  onClick={() => void checkForUpdates()}
+                >
+                  {checkingForUpdates ? "Checking…" : "Check for updates"}
+                </button>
               </div>
             </div>
           )}
@@ -988,7 +1046,7 @@ export default function App() {
               onClick={() => setShowAddInline(true)}
             >
               <span>+ Add client</span>
-              <span className="add-client-hint">Create a new CLIENT_TYPE folder</span>
+              <span className="add-client-hint">Choose a mode for the new folder</span>
             </button>
             {showAddInline && (
               <div className="table-row add-client-inline">
@@ -1011,7 +1069,35 @@ export default function App() {
                       {type}
                     </button>
                   ))}
+                  <button
+                    type="button"
+                    className={`type-chip custom ${newClientType === "CUSTOM" ? "selected" : ""}`}
+                    onClick={() => setNewClientType("CUSTOM")}
+                  >
+                    CUSTOM
+                  </button>
                 </div>
+                {newClientType === "CUSTOM" && (
+                  <input
+                    className="inline-input custom-mode-input"
+                    placeholder="Custom mode (e.g. WORKSHOP)"
+                    value={customClientType}
+                    onChange={(event) => setCustomClientType(event.target.value)}
+                  />
+                )}
+                {newClientType === "HUDDLE" && (
+                  <div className="huddle-options">
+                    <span className="huddle-label">Interview type</span>
+                    <label>
+                      <input type="radio" name="huddle-template" checked={huddleTemplate === "PHYSICAL"} onChange={() => setHuddleTemplate("PHYSICAL")} />
+                      In-person interview
+                    </label>
+                    <label>
+                      <input type="radio" name="huddle-template" checked={huddleTemplate === "VIDEO_CALL"} onChange={() => setHuddleTemplate("VIDEO_CALL")} />
+                      Video call · scene switching
+                    </label>
+                  </div>
+                )}
                 <div className="inline-actions">
                   <button
                     className="ghost"
@@ -1019,6 +1105,8 @@ export default function App() {
                       setShowAddInline(false);
                       setNewClientName("");
                       setNewClientType("EXHIBITOR");
+                      setCustomClientType("");
+                      setHuddleTemplate("PHYSICAL");
                     }}
                   >
                     Cancel

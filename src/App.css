@@ -517,6 +517,57 @@ button.accent {
   color: #8a4b12;
 }
 
+.type-chip.mariyameets {
+  background: #e9ddff;
+  color: #5b3192;
+}
+
+.type-chip.social {
+  background: #d9f5e8;
+  color: #17633d;
+}
+
+.type-chip.custom {
+  background: #e8e9ec;
+  color: #4b5563;
+}
+
+.custom-mode-input {
+  grid-column: 1 / -1;
+}
+
+.huddle-options {
+  grid-column: 1 / -1;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px 16px;
+  padding: 8px 10px;
+  border-radius: 10px;
+  background: #f4f6f8;
+  color: #3f4650;
+  font-size: 0.78rem;
+}
+
+.huddle-options label {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-weight: 600;
+}
+
+.huddle-options input {
+  accent-color: #2f3338;
+}
+
+.huddle-label {
+  color: #69717c;
+  font-size: 0.7rem;
+  font-weight: 800;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
 .table-head {
   background: transparent;
   border: none;

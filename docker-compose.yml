@@ -1,0 +1,10 @@
+services:
+  update-server:
+    image: nginx:alpine
+    container_name: project-sorter-update-server
+    restart: unless-stopped
+    ports:
+      - "8088:80"
+    volumes:
+      - ./update-server/data:/usr/share/nginx/html:ro
+      - ./update-server/nginx.conf:/etc/nginx/conf.d/default.conf:ro

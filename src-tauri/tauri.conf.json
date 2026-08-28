@@ -4,9 +4,9 @@
   "version": "0.1.0",
   "identifier": "com.project.sorter",
   "build": {
-    "beforeDevCommand": "pnpm dev",
+    "beforeDevCommand": "npm run dev",
     "devUrl": "http://localhost:1420",
-    "beforeBuildCommand": "pnpm build",
+    "beforeBuildCommand": "npm run build",
     "frontendDist": "../dist"
   },
   "app": {
@@ -16,15 +16,27 @@
         "width": 1024,
         "height": 700,
         "minWidth": 900,
-        "minHeight": 600
+      "minHeight": 600
       }
     ],
     "security": {
       "csp": null
     }
   },
+  "plugins": {
+    "updater": {
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDI3QjUyMDJENEExQ0QyQTgKUldTbzBoeEtMU0MxSi9WRkF2eGM5eXZpYUh1dS9RL01rTkd0SmtteGVwU1Y3bDdReTRWbExIVXQK",
+      "endpoints": [
+        "https://github.com/ChickenAlexanderPillow/project-sorter/releases/latest/download/latest.json"
+      ],
+      "windows": {
+        "installMode": "passive"
+      }
+    }
+  },
   "bundle": {
     "active": true,
+    "createUpdaterArtifacts": true,
     "targets": "all",
     "icon": [
       "icons/32x32.png",

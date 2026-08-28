@@ -82,7 +82,9 @@ const REQUIRED_DIRS: [&str; 4] = ["01_MEDIA", "02_EDIT", "03_EXPORTS", "04_FINAL
 const WINDOWS_NOT_SAME_DEVICE: i32 = 17;
 const CLIENT_TEMPLATE_PROJECT_SOURCE: &str =
     r#"Z:\The Huddle\Templates\Copied_Huddle Master Template 2026_4K_2\Huddle Master Template 2026_4K_2.prproj"#;
-const CLIENT_TYPES: [&str; 3] = ["EXHIBITOR", "HUDDLE", "PRODUCT"];
+const CLIENT_SCENE_SWITCHING_TEMPLATE_SOURCE: &str =
+    r#"Z:\The Huddle\Templates\Copied_Huddle Master Template Scenes Switching 2026 4K_1\Huddle Master Template Scenes Switching 2026 4K_1.prproj"#;
+const CLIENT_TYPES: [&str; 5] = ["EXHIBITOR", "HUDDLE", "PRODUCT", "MARIYAMEETS", "SOCIAL"];
 const TEMPLATE_DIRS: [&str; 11] = [
     "01_MEDIA",
     "01_MEDIA/010_VIDEO_PROXY",
@@ -620,7 +622,12 @@ fn set_watch_root(
 }
 
 #[tauri::command]
-fn create_client(project_root: String, client_name: String) -> Result<(), String> {
+fn create_client(
+    project_root: String,
+    client_name: String,
+    client_type: String,
+    huddle_template: Option<String>,
+) -> Result<(), String> {
     let client_root = PathBuf::from(project_root).join(&client_name);
     if client_root.exists() {
         return Err("Client folder already exists".to_string());
@@ -629,25 +636,33 @@ fn create_client(project_root: String, client_name: String) -> Result<(), String
         ensure_dir(&client_root.join(dir)).map_err(|e| e.to_string())?;
     }
 
-    let template_source = PathBuf::from(CLIENT_TEMPLATE_PROJECT_SOURCE);
-    if !template_source.exists() {
-        return Err(format!(
-            "Premiere template not found: {}",
-            template_source.display()
-        ));
-    }
+    if client_type == "EXHIBITOR" || client_type == "PRODUCT" || client_type == "HUDDLE" {
+        let template_source = if client_type == "HUDDLE"
+            && huddle_template.as_deref() == Some("VIDEO_CALL")
+        {
+            PathBuf::from(CLIENT_SCENE_SWITCHING_TEMPLATE_SOURCE)
+        } else {
+            PathBuf::from(CLIENT_TEMPLATE_PROJECT_SOURCE)
+        };
+        if !template_source.exists() {
+            return Err(format!(
+                "Premiere template not found: {}",
+                template_source.display()
+            ));
+        }
 
-    let template_dest = client_root
-        .join("02_EDIT")
-        .join(client_project_filename(&client_name));
-    fs::copy(&template_source, &template_dest).map_err(|e| {
-        format!(
-            "Failed to copy Premiere template from {} to {}: {}",
-            template_source.display(),
-            template_dest.display(),
-            e
-        )
-    })?;
+        let template_dest = client_root
+            .join("02_EDIT")
+            .join(client_project_filename(&client_name));
+        fs::copy(&template_source, &template_dest).map_err(|e| {
+            format!(
+                "Failed to copy Premiere template from {} to {}: {}",
+                template_source.display(),
+                template_dest.display(),
+                e
+            )
+        })?;
+    }
     Ok(())
 }
 
@@ -1092,6 +1107,7 @@ async fn undo_batch(entries: Vec<UndoEntry>) -> Result<UndoResult, String> {
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
+        .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_store::Builder::default().build())
