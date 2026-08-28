@@ -7,7 +7,8 @@ import { LazyStore } from "@tauri-apps/plugin-store";
 import { cursorPosition, getCurrentWindow, LogicalSize } from "@tauri-apps/api/window";
 import { type DragDropEvent } from "@tauri-apps/api/webview";
 import { writeText } from "@tauri-apps/plugin-clipboard-manager";
-import { check } from "@tauri-apps/plugin-updater";
+import { check, type Update } from "@tauri-apps/plugin-updater";
+import { Check, Maximize2, Minus, RefreshCw, Wrench, X } from "lucide-react";
 import "./App.css";
 
 type ClientStatus = "OK" | "Missing folders" | "Not a client";
@@ -145,7 +146,6 @@ export default function App() {
   const [error, setError] = useState<string | null>(null);
   const [lastSummary, setLastSummary] = useState<string>("");
   const [lastBatch, setLastBatch] = useState<UndoEntry[]>([]);
-  const [showAddInline, setShowAddInline] = useState(false);
   const [showUndoConfirm, setShowUndoConfirm] = useState(false);
   const [showAdvancedMenu, setShowAdvancedMenu] = useState(false);
   const [newClientName, setNewClientName] = useState("");
@@ -175,6 +175,7 @@ export default function App() {
   const [copiedDebug, setCopiedDebug] = useState(false);
   const debugHideTimeoutRef = useRef<number | null>(null);
   const toastTimeoutRef = useRef<number | null>(null);
+  const initialUpdateCheckRef = useRef(false);
   const lastDebugRef = useRef<{
     physical: { x: number; y: number };
     logical: { x: number; y: number };
@@ -184,6 +185,13 @@ export default function App() {
   const lastLogTsRef = useRef(0);
   const [dragActive, setDragActive] = useState(false);
   const [checkingForUpdates, setCheckingForUpdates] = useState(false);
+  const [pendingUpdate, setPendingUpdate] = useState<Update | null>(null);
+  const [installingUpdate, setInstallingUpdate] = useState(false);
+  const updateNotes = pendingUpdate?.body
+    ?.split(/\r?\n/)
+    .filter((line) => !/^Automatic signed Pepper build for commit\b/i.test(line.trim()))
+    .join("\n")
+    .trim();
 
   const checkForUpdates = async (showResult = true) => {
     if (checkingForUpdates) return;
@@ -197,14 +205,7 @@ export default function App() {
         return;
       }
 
-      const shouldInstall = window.confirm(
-        `Pepper ${update.version} is available. Install it now?\n\n${update.body ?? ""}`
-      );
-      if (shouldInstall) {
-        await update.downloadAndInstall();
-      } else if (showResult) {
-        setToast({ message: "Update postponed.", tone: "info" });
-      }
+      setPendingUpdate(update);
     } catch (err) {
       // Update failures should never prevent Pepper from opening or working offline.
       const errorMessage = err instanceof Error ? err.message : String(err);
@@ -228,6 +229,8 @@ export default function App() {
   };
 
   useEffect(() => {
+    if (initialUpdateCheckRef.current) return;
+    initialUpdateCheckRef.current = true;
     void checkForUpdates(false);
   }, []);
 
@@ -655,7 +658,6 @@ export default function App() {
         clientType: newClientType,
         huddleTemplate: newClientType === "HUDDLE" ? huddleTemplate : null,
       });
-      setShowAddInline(false);
       setNewClientName("");
       setNewClientType("EXHIBITOR");
       setCustomClientType("");
@@ -873,7 +875,15 @@ export default function App() {
           <div className="debug-hit" style={{ left: debugPoint.x, top: debugPoint.y }} />
         </div>
       )}
-      <header className="topbar">
+      <header
+        className="topbar"
+        data-tauri-drag-region
+        onMouseDown={(event) => {
+          if (event.button === 0 && !(event.target as HTMLElement).closest("button")) {
+            void getCurrentWindow().startDragging();
+          }
+        }}
+      >
         <div className="project-root">
           <div className="label">Project Root</div>
           {projectRoot ? (
@@ -886,7 +896,34 @@ export default function App() {
             </button>
           )}
         </div>
-        <div className="topbar-actions">
+        <div className="topbar-actions window-controls">
+          <button
+            type="button"
+            className="window-control"
+            aria-label="Minimize Pepper"
+            title="Minimize"
+            onClick={() => void getCurrentWindow().minimize()}
+          >
+            <Minus size={15} aria-hidden="true" />
+          </button>
+          <button
+            type="button"
+            className="window-control"
+            aria-label="Maximize Pepper"
+            title="Maximize"
+            onClick={() => void getCurrentWindow().toggleMaximize()}
+          >
+            <Maximize2 size={14} aria-hidden="true" />
+          </button>
+          <button
+            type="button"
+            className="window-control close"
+            aria-label="Close Pepper"
+            title="Close"
+            onClick={() => void getCurrentWindow().close()}
+          >
+            <X size={15} aria-hidden="true" />
+          </button>
         </div>
       </header>
 
@@ -899,6 +936,18 @@ export default function App() {
 
       <div className="app-content">
         <section className="panel">
+          <div className="panel-project-root">
+            <div className="label">Project Root</div>
+            {projectRoot ? (
+              <button className="path-button" title={projectRoot} onClick={pickProjectRoot}>
+                <span className="path-text">{projectRoot}</span>
+              </button>
+            ) : (
+              <button className="path-button empty" onClick={pickProjectRoot}>
+                Select project root...
+              </button>
+            )}
+          </div>
           {DEBUG_ENABLED && debugInfo && (
             <div className="debug-info">
               <div className="debug-row">
@@ -943,7 +992,6 @@ export default function App() {
               </button>
             </div>
           )}
-          <div className="panel-header" />
           <div className="panel-tools">
             <div className="tool-row single">
               <input
@@ -952,6 +1000,16 @@ export default function App() {
                 value={search}
                 onChange={(event) => setSearch(event.target.value)}
               />
+              <button
+                type="button"
+                className="ghost icon-button refresh-button"
+                onClick={() => void refreshClients()}
+                disabled={!projectRoot || loading}
+                aria-label="Refresh clients"
+                title="Refresh clients"
+              >
+                <RefreshCw size={17} strokeWidth={2} aria-hidden="true" />
+              </button>
               <div className="advanced-menu">
                 <button
                   type="button"
@@ -1042,6 +1100,14 @@ export default function App() {
                 >
                   {checkingForUpdates ? "Checking…" : "Check for updates"}
                 </button>
+                <div className="advanced-actions">
+                  <button type="button" className="ghost" onClick={() => setShowUndoConfirm(true)} disabled={!lastBatch.length}>
+                    Undo last
+                  </button>
+                  <button type="button" className="ghost" onClick={() => void handleLogOpen()} disabled={!projectRoot}>
+                    View log
+                  </button>
+                </div>
               </div>
             </div>
           )}
@@ -1051,15 +1117,6 @@ export default function App() {
             ref={tableScrollRef}
           >
             <div className="table">
-            <button
-              className="table-row add-client-row"
-              type="button"
-              onClick={() => setShowAddInline(true)}
-            >
-              <span>+ Add client</span>
-              <span className="add-client-hint">Choose a mode for the new folder</span>
-            </button>
-            {showAddInline && (
               <div className="table-row add-client-inline">
                 <input
                   className="inline-input"
@@ -1088,6 +1145,7 @@ export default function App() {
                     CUSTOM
                   </button>
                 </div>
+                <div className={`client-extra ${newClientType === "CUSTOM" || newClientType === "HUDDLE" ? "has-options" : ""}`}>
                 {newClientType === "CUSTOM" && (
                   <input
                     className="inline-input custom-mode-input"
@@ -1109,25 +1167,33 @@ export default function App() {
                     </label>
                   </div>
                 )}
+                </div>
                 <div className="inline-actions">
                   <button
-                    className="ghost"
+                    type="button"
+                    className="ghost icon-button inline-action-button"
+                    aria-label="Cancel adding client"
+                    title="Cancel"
                     onClick={() => {
-                      setShowAddInline(false);
                       setNewClientName("");
                       setNewClientType("EXHIBITOR");
                       setCustomClientType("");
                       setHuddleTemplate("PHYSICAL");
                     }}
                   >
-                    Cancel
+                    <X size={18} strokeWidth={2.2} aria-hidden="true" />
                   </button>
-                  <button className="primary" onClick={handleAddClient}>
-                    Create
+                  <button
+                    type="button"
+                    className="primary icon-button inline-action-button"
+                    aria-label="Create client"
+                    title="Create client"
+                    onClick={handleAddClient}
+                  >
+                    <Check size={18} strokeWidth={2.2} aria-hidden="true" />
                   </button>
                 </div>
               </div>
-            )}
             <div className="table-row table-head">
               <div>Client Name</div>
               <div>Status</div>
@@ -1234,7 +1300,7 @@ export default function App() {
                           aria-label="Fix"
                           title="Fix"
                         >
-                          <img src="/fix.png" alt="" aria-hidden="true" />
+                          <Wrench size={17} strokeWidth={2} aria-hidden="true" />
                         </button>
                       )}
                     </div>
@@ -1271,6 +1337,47 @@ export default function App() {
           </button>
         </div>
       </footer>
+
+      {pendingUpdate && (
+        <div className="modal-backdrop" onClick={() => !installingUpdate && setPendingUpdate(null)}>
+          <div className="modal update-modal" onClick={(event) => event.stopPropagation()}>
+            <h2>Pepper update available</h2>
+            <p>
+              Version <strong>{pendingUpdate.version}</strong> is ready to install.
+            </p>
+            {updateNotes && <p className="update-notes">{updateNotes}</p>}
+            <div className="modal-actions">
+              <button
+                type="button"
+                className="ghost"
+                disabled={installingUpdate}
+                onClick={() => setPendingUpdate(null)}
+              >
+                Later
+              </button>
+              <button
+                type="button"
+                className="primary"
+                disabled={installingUpdate}
+                onClick={async () => {
+                  setInstallingUpdate(true);
+                  try {
+                    await pendingUpdate.downloadAndInstall();
+                  } catch (err) {
+                    setToast({
+                      message: "Could not install update.",
+                      tone: "error",
+                    });
+                    setInstallingUpdate(false);
+                  }
+                }}
+              >
+                {installingUpdate ? "Installing…" : "Install update"}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {showUndoConfirm && (
         <div className="modal-backdrop" onClick={() => setShowUndoConfirm(false)}>

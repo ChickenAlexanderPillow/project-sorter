@@ -64,7 +64,7 @@ jobs:
         with:
           tagName: v__VERSION__
           releaseName: Pepper v__VERSION__
-          releaseBody: Automatic signed Pepper build for commit ${{ github.sha }}.
+          releaseBody: ""
           releaseDraft: false
           prerelease: false
           args: "--bundles msi"
