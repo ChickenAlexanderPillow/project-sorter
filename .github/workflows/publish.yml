@@ -4,9 +4,6 @@ on:
   push:
     branches:
       - main
-    paths:
-      - "src-tauri/tauri.conf.json"
-      - ".github/workflows/publish.yml"
   workflow_dispatch:
 
 permissions:
@@ -38,6 +35,18 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
+      - name: Set automatic build version
+        shell: pwsh
+        run: |
+          $configPath = "src-tauri/tauri.conf.json"
+          $config = Get-Content -Raw $configPath | ConvertFrom-Json
+          $parts = $config.version.Split('.')
+          $config.version = "$($parts[0]).$($parts[1]).$env:GITHUB_RUN_NUMBER"
+          $json = $config | ConvertTo-Json -Depth 20
+          $utf8NoBom = New-Object System.Text.UTF8Encoding($false)
+          [System.IO.File]::WriteAllText((Resolve-Path $configPath), $json, $utf8NoBom)
+          "APP_VERSION=$($config.version)" >> $env:GITHUB_ENV
+
       - name: Normalize updater signing key
         shell: pwsh
         env:
@@ -55,7 +64,7 @@ jobs:
         with:
           tagName: v__VERSION__
           releaseName: Pepper v__VERSION__
-          releaseBody: Signed Windows installer and updater artifacts for Pepper v__VERSION__.
+          releaseBody: Automatic signed Pepper build for commit ${{ github.sha }}.
           releaseDraft: false
           prerelease: false
           args: "--bundles msi"

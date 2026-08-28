@@ -59,13 +59,15 @@ pnpm tauri build
 
 ## GitHub Releases and automatic updates
 
-Pepper checks the latest GitHub Release at startup. To publish one from the normal VS Code workflow:
+Pepper checks the latest GitHub Release at startup. Every push to `main` publishes a signed Pepper build automatically. The workflow uses the major/minor version from `src-tauri/tauri.conf.json` and GitHub's run number as the patch version. For example, a commit may become `0.1.4`, then the next commit `0.1.5`.
 
-1. Change the `version` in `src-tauri/tauri.conf.json`, for example from `0.1.0` to `0.2.0`.
-2. Commit the change in VS Code Source Control.
+Your normal release flow is:
+
+1. Make your changes.
+2. Commit them in VS Code Source Control.
 3. Click **Sync Changes**.
 
-The workflow runs automatically when `src-tauri/tauri.conf.json` changes on `main`, builds the signed Windows installer, and creates the matching `v0.2.0` GitHub Release. Ordinary commits that do not change the app version do not publish a release.
+The workflow builds the signed Windows installer and creates a matching GitHub Release for that commit. To move to a new minor version, change the major/minor values in `src-tauri/tauri.conf.json`; the workflow supplies the patch number automatically.
 
 The GitHub Actions workflow in `.github/workflows/publish.yml` builds the signed Windows installer and publishes the updater artifacts to the release. Add these repository Actions secrets before the first release:
 
