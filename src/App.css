@@ -381,6 +381,21 @@ button.accent {
   z-index: 0;
 }
 
+.scan-progress-row {
+  grid-template-columns: 1fr;
+  min-height: 42px;
+  padding: 9px 16px;
+  color: #667085;
+  font-size: 12px;
+}
+
+.scan-progress-row span,
+.versions-empty {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+}
+
 .table-row.droppable-row {
   position: relative;
   overflow: hidden;
@@ -420,6 +435,14 @@ button.accent {
   opacity: 1;
   box-shadow: inset 0 0 0 1px rgba(29, 78, 216, 0.28),
     inset 0 0 18px rgba(29, 78, 216, 0.18);
+}
+
+.table-row.client-row.published-row {
+  background: #e5e8ec;
+  border-style: solid;
+  border-color: #d5d9df;
+  color: #68717d;
+  filter: saturate(0.55);
 }
 
 .add-client-row {
@@ -615,6 +638,23 @@ button.accent {
   flex-wrap: wrap;
 }
 
+.expand-client-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  padding: 0;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: #687586;
+}
+
+.expand-client-button:hover {
+  background: #e7ebf0;
+}
+
 .client-tag {
   display: inline-flex;
   align-items: center;
@@ -682,6 +722,38 @@ button.accent {
   color: #1d4b7a;
 }
 
+.approval-progress-spinner {
+  flex: 0 0 auto;
+  animation: approval-progress-spin 1s linear infinite;
+}
+
+.badge.export-progress {
+  gap: 6px;
+  background: #dcecff;
+  color: #1d4b7a;
+}
+
+.approval-progress-wrap {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 3px;
+}
+
+.approval-progress-detail,
+.approval-detail-line {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  color: #52667d;
+  font-size: 0.65rem;
+  line-height: 1.25;
+}
+
+@keyframes approval-progress-spin {
+  to { transform: rotate(360deg); }
+}
+
 .badge.export-warning {
   background: #fff2cc;
   color: #7a520f;
@@ -729,6 +801,10 @@ button.accent {
 }
 
 .actions .promote-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
   min-height: 34px;
   padding: 7px 10px;
   border-radius: 9px;
@@ -1166,6 +1242,14 @@ button.accent {
   border-color: #74a8ff;
 }
 
+.table-row.client-row.published-row {
+  background: #2a3038;
+  border-color: #414a56;
+  color: #929ba8;
+  opacity: 0.62;
+  filter: saturate(0.45);
+}
+
 .add-client-row {
   background: #1c222a;
   color: #aeb8c5;
@@ -1531,6 +1615,91 @@ button.accent {
   text-transform: uppercase;
 }
 
+.project-root-select {
+  flex: 1 1 auto;
+  min-width: 0;
+  height: 34px;
+  padding: 5px 32px 5px 10px;
+  border: 1px solid #454e5a;
+  border-radius: 8px;
+  background: #20252d;
+  color: #e7ebf0;
+  font: inherit;
+  font-size: 0.86rem;
+}
+
+.project-root-select:focus {
+  outline: 2px solid #7ca8e8;
+  outline-offset: 1px;
+}
+
+.client-details {
+  grid-column: 1 / -1;
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
+  gap: 10px;
+  min-width: 680px;
+  padding: 12px;
+  border: 1px solid #d4dbe4;
+  border-radius: 12px;
+  background: #edf0f4;
+}
+
+.client-details-heading {
+  grid-column: 1 / -1;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 8px;
+  color: #3f4b5a;
+  font-size: 0.82rem;
+}
+
+.export-version-card {
+  display: grid;
+  align-content: start;
+  gap: 6px;
+  min-width: 0;
+  padding: 10px;
+  border: 1px solid #d8dee6;
+  border-radius: 10px;
+  background: #fff;
+}
+
+.export-version-heading {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  min-width: 0;
+  color: #263241;
+  font-size: 0.78rem;
+}
+
+.export-version-heading span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.export-version-card time {
+  color: #6a7583;
+  font-size: 0.68rem;
+}
+
+.export-version-card video {
+  display: block;
+  width: 100%;
+  aspect-ratio: 16 / 9;
+  border-radius: 7px;
+  background: #111;
+}
+
+.versions-empty {
+  color: #6a7583;
+  font-size: 0.78rem;
+}
+
 .panel-project-root .path-button {
   flex: 1 1 auto;
   width: auto;
@@ -1574,7 +1743,7 @@ button.accent {
     padding-bottom: 9px;
   }
 
-  .panel-project-root .path-button {
+  .panel-project-root .project-root-select {
     width: 100%;
   }
 }

@@ -1,14 +1,13 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { Fragment, useEffect, useMemo, useRef, useState } from "react";
 import type { DragEvent } from "react";
-import { invoke } from "@tauri-apps/api/core";
+import { convertFileSrc, invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
-import { open as openDialog } from "@tauri-apps/plugin-dialog";
 import { LazyStore } from "@tauri-apps/plugin-store";
 import { cursorPosition, getCurrentWindow, LogicalSize } from "@tauri-apps/api/window";
 import { type DragDropEvent } from "@tauri-apps/api/webview";
 import { writeText } from "@tauri-apps/plugin-clipboard-manager";
 import { check, type Update } from "@tauri-apps/plugin-updater";
-import { ArrowDown, ArrowUp, ArrowUpDown, Check, Maximize2, Minus, RefreshCw, Wrench, X } from "lucide-react";
+import { ArrowDown, ArrowUp, ArrowUpDown, Check, ChevronDown, ChevronRight, LoaderCircle, Maximize2, Minus, RefreshCw, Wrench, X } from "lucide-react";
 import "./App.css";
 
 type ClientStatus = "OK" | "Missing folders" | "Not a client";
@@ -20,11 +19,30 @@ type ClientInfo = {
   status: ClientStatus;
   missing: string[];
   export_status: ExportStatus;
+  exportStatusLoading?: boolean;
 };
+
+type ClientScanProgress = {
+  project_root: string;
+  scan_id: number;
+  phase: "clients" | "exports" | "complete";
+  clients: ClientInfo[];
+  export_updates: { name: string; export_status: ExportStatus }[];
+  completed: number;
+  total: number;
+  reset: boolean;
+  client_names: string[];
+  partial: boolean;
+  removed_names: string[];
+};
+
+type ClientsChanged = { project_root: string; client_names: string[]; all_clients: boolean };
 
 type ExportVersion = {
   version: number;
   filename: string;
+  relative_path: string;
+  added_at: string;
 };
 
 type ExportStatus = {
@@ -32,11 +50,15 @@ type ExportStatus = {
   latest_version: number | null;
   latest_filename: string | null;
   approval_ready: boolean;
+  approval_in_progress: boolean;
+  approval_progress_phase: string | null;
   final_version: number | null;
   final_filename: string | null;
   final_current: boolean;
   issue: string | null;
 };
+
+type ProjectRootOption = { name: string; path: string; number: number };
 
 type SortEntry = {
   timestamp: string;
@@ -157,9 +179,11 @@ const isFinalised = (client: ClientInfo) =>
 export default function App() {
   const [screen] = useState<"home" | "sort">("sort");
   const [projectRoot, setProjectRoot] = useState<string>("");
+  const [projectRoots, setProjectRoots] = useState<ProjectRootOption[]>([]);
   const [clients, setClients] = useState<ClientInfo[]>([]);
-  const [clientSort, setClientSort] = useState<ClientSort>({ column: "name", direction: "asc" });
-  const [promotingClient, setPromotingClient] = useState<string | null>(null);
+  const [expandedClients, setExpandedClients] = useState<Set<string>>(() => new Set());
+  const [clientSort, setClientSort] = useState<ClientSort>({ column: "status", direction: "asc" });
+  const [publishingClientPath, setPublishingClientPath] = useState<string | null>(null);
   const [pendingPromotion, setPendingPromotion] = useState<ClientInfo | null>(null);
   const promotionDialogRef = useRef<HTMLDialogElement | null>(null);
   useEffect(() => {
@@ -168,6 +192,7 @@ export default function App() {
     }
   }, [pendingPromotion]);
   const [loading, setLoading] = useState(false);
+  const [scanProgress, setScanProgress] = useState<{ phase: "clients" | "exports"; completed: number; total: number } | null>(null);
   const [lastClientsCheckedAt, setLastClientsCheckedAt] = useState<Date | null>(null);
   const [search, setSearch] = useState("");
   const [showNonClients, setShowNonClients] = useState(false);
@@ -193,7 +218,14 @@ export default function App() {
   const sortableClientsRef = useRef<ClientInfo[]>([]);
   const busyRef = useRef(false);
   const pendingRefreshRef = useRef(false);
-  const clientsScanInFlightRef = useRef(false);
+  const clientsScansInFlightRef = useRef(0);
+  const clientsScanSequenceRef = useRef(0);
+  const scanProgressVisibleRef = useRef(false);
+  const watcherRefreshTimerRef = useRef<number | null>(null);
+  const watcherRefreshPendingRef = useRef(false);
+  const watcherRefreshAllRef = useRef(false);
+  const watcherChangedClientsRef = useRef(new Set<string>());
+  const lastWatcherRefreshAtRef = useRef(0);
   const [debugPoint, setDebugPoint] = useState<{ x: number; y: number } | null>(null);
   const [debugInfo, setDebugInfo] = useState<{
     physical: { x: number; y: number };
@@ -290,6 +322,12 @@ export default function App() {
 
   useEffect(() => {
     const loadConfig = async () => {
+      void invoke<ProjectRootOption[]>("list_project_roots")
+        .then(setProjectRoots)
+        .catch((err) => {
+          console.error("Unable to load project folders", err);
+          setError(`Unable to load project folders: ${String(err)}`);
+        });
       await CONFIG_STORE.init();
       const savedRoot = await CONFIG_STORE.get<string>("projectRoot");
       const savedShowNonClients = await CONFIG_STORE.get<boolean>("showNonClients");
@@ -297,9 +335,11 @@ export default function App() {
       const savedOperation = await CONFIG_STORE.get<string>("lastOperation");
       const savedApproval = await CONFIG_STORE.get<boolean>("showApprovalMode");
       const savedAlwaysOnTop = await CONFIG_STORE.get<boolean>("alwaysOnTop");
+      const migratedRoots = (await CONFIG_STORE.get<string[]>("legacyFinalMigrationRoots")) ?? [];
 
       if (typeof savedRoot === "string") {
         setProjectRoot(savedRoot);
+        projectRootRef.current = savedRoot;
       }
       if (typeof savedShowNonClients === "boolean") {
         setShowNonClients(savedShowNonClients);
@@ -321,6 +361,16 @@ export default function App() {
       }
 
       if (typeof savedRoot === "string") {
+        await unlistenClientScanPromise;
+        if (!migratedRoots.includes(savedRoot)) {
+          try {
+            const count = await invoke<number>("migrate_project_finals", { projectRoot: savedRoot });
+            await CONFIG_STORE.set("legacyFinalMigrationRoots", [...migratedRoots, savedRoot]);
+            if (count > 0) console.info(`Marked ${count} existing FINAL files as published.`);
+          } catch (error) {
+            console.error("Could not migrate existing FINAL status", error);
+          }
+        }
         await refreshClients(savedRoot);
       }
     };
@@ -328,21 +378,102 @@ export default function App() {
     const unlistenPromise = listen<SortProgress>("sort-progress", (event) => {
       setProgress(event.payload);
     });
-    const unlistenClientsPromise = listen<string>("clients-changed", () => {
+    const unlistenClientScanPromise = listen<ClientScanProgress>("clients-scan-progress", (event) => {
+      const scan = event.payload;
+      if (scan.scan_id !== clientsScanSequenceRef.current || scan.project_root !== projectRootRef.current) return;
+
+      if (scan.phase === "clients") {
+        if (scanProgressVisibleRef.current) {
+          setScanProgress({ phase: "clients", completed: scan.completed, total: scan.total });
+        }
+        setClients((current) => {
+          const existing = new Map(current.map((client) => [client.name, client]));
+          const incoming = scan.clients.map((client) => ({
+            ...(existing.get(client.name) ?? {}),
+            ...client,
+            export_status: existing.get(client.name)?.export_status ?? client.export_status,
+            exportStatusLoading: scan.reset || !existing.has(client.name)
+              ? client.status !== "Not a client"
+              : existing.get(client.name)?.exportStatusLoading ?? false,
+          }));
+          if (scan.reset) return incoming;
+          const received = new Set(incoming.map((client) => client.name));
+          return [...current.filter((client) => !received.has(client.name)), ...incoming];
+        });
+      } else if (scan.phase === "exports") {
+        if (scanProgressVisibleRef.current) {
+          setScanProgress({ phase: "exports", completed: scan.completed, total: scan.total });
+        }
+        setClients((current) => current.map((client) => {
+          const update = scan.export_updates.find((item) => item.name === client.name);
+          if (!update) return client;
+          const unchanged = JSON.stringify(client.export_status) === JSON.stringify(update.export_status);
+          if (unchanged && !client.exportStatusLoading) return client;
+          return { ...client, export_status: update.export_status, exportStatusLoading: false };
+        }));
+      } else {
+        const currentNames = new Set(scan.client_names);
+        if (scan.partial) {
+          if (scan.removed_names.length) {
+            const removedNames = new Set(scan.removed_names);
+            setClients((current) => current.filter((client) => !removedNames.has(client.name)));
+          }
+        } else {
+          setClients((current) => current.filter((client) => currentNames.has(client.name)));
+        }
+        setScanProgress(null);
+        scanProgressVisibleRef.current = false;
+      }
+    });
+    const unlistenClientsPromise = listen<ClientsChanged>("clients-changed", (event) => {
       const root = projectRootRef.current;
-      if (!root) return;
+      if (!root || event.payload.project_root !== root) return;
+      if (event.payload.all_clients) {
+        watcherRefreshAllRef.current = true;
+        watcherChangedClientsRef.current.clear();
+      } else if (!watcherRefreshAllRef.current) {
+        event.payload.client_names.forEach((name) => watcherChangedClientsRef.current.add(name));
+      }
+      if (!watcherRefreshAllRef.current && watcherChangedClientsRef.current.size === 0) return;
       if (busyRef.current) {
         pendingRefreshRef.current = true;
         return;
       }
-      refreshClients(root, false).catch(console.error);
+      if (watcherRefreshTimerRef.current !== null) {
+        window.clearTimeout(watcherRefreshTimerRef.current);
+      }
+      const elapsed = Date.now() - lastWatcherRefreshAtRef.current;
+      const delay = Math.max(1_000, 5_000 - elapsed);
+      watcherRefreshTimerRef.current = window.setTimeout(() => {
+        watcherRefreshTimerRef.current = null;
+        if (root !== projectRootRef.current) return;
+        if (busyRef.current) {
+          pendingRefreshRef.current = true;
+          return;
+        }
+        if (clientsScansInFlightRef.current > 0) {
+          watcherRefreshPendingRef.current = true;
+          return;
+        }
+        lastWatcherRefreshAtRef.current = Date.now();
+        const clientNames = watcherRefreshAllRef.current
+          ? undefined
+          : Array.from(watcherChangedClientsRef.current);
+        watcherRefreshAllRef.current = false;
+        watcherChangedClientsRef.current.clear();
+        refreshClients(root, false, false, false, clientNames).catch(console.error);
+      }, delay);
     });
 
     loadConfig().catch(console.error);
 
     return () => {
       unlistenPromise.then((unlisten) => unlisten()).catch(() => undefined);
+      unlistenClientScanPromise.then((unlisten) => unlisten()).catch(() => undefined);
       unlistenClientsPromise.then((unlisten) => unlisten()).catch(() => undefined);
+      if (watcherRefreshTimerRef.current !== null) {
+        window.clearTimeout(watcherRefreshTimerRef.current);
+      }
     };
   }, []);
 
@@ -638,58 +769,135 @@ export default function App() {
     await CONFIG_STORE.save();
   };
 
-  const refreshClients = async (rootOverride?: string, showLoading = true) => {
+  const migrateLegacyFinalsOnce = async (root: string) => {
+    const migratedRoots = (await CONFIG_STORE.get<string[]>("legacyFinalMigrationRoots")) ?? [];
+    if (migratedRoots.includes(root)) return;
+    const count = await invoke<number>("migrate_project_finals", { projectRoot: root });
+    await CONFIG_STORE.set("legacyFinalMigrationRoots", [...migratedRoots, root]);
+    if (count > 0) console.info(`Marked ${count} existing FINAL files as published.`);
+  };
+
+  const refreshClients = async (
+    rootOverride?: string,
+    showLoading = true,
+    force = false,
+    replaceExisting = false,
+    clientNames?: string[]
+  ) => {
     const root = rootOverride ?? projectRoot;
-    if (!root || clientsScanInFlightRef.current) return;
-    clientsScanInFlightRef.current = true;
+    if (!root || (clientsScansInFlightRef.current > 0 && !force)) return;
+    const scanSequence = ++clientsScanSequenceRef.current;
+    clientsScansInFlightRef.current += 1;
     const scrollTop = tableScrollRef.current?.scrollTop ?? 0;
     if (showLoading) {
       setLoading(true);
     }
+    scanProgressVisibleRef.current = showLoading;
+    if (showLoading) setScanProgress({ phase: "clients", completed: 0, total: 0 });
     setError(null);
     try {
-      const data = await invoke<ClientInfo[]>("scan_project_root", {
+      await invoke("scan_project_root", {
         projectRoot: root,
+        scanId: scanSequence,
+        replaceExisting,
+        clientNames: clientNames ?? null,
       });
-      setClients(data);
-      window.requestAnimationFrame(() => {
-        if (tableScrollRef.current) {
-          tableScrollRef.current.scrollTop = scrollTop;
-        }
-      });
+      if (scanSequence === clientsScanSequenceRef.current && root === projectRootRef.current) {
+        window.requestAnimationFrame(() => {
+          if (tableScrollRef.current) tableScrollRef.current.scrollTop = scrollTop;
+        });
+      }
     } catch (err) {
-      setError(String(err));
+      if (scanSequence === clientsScanSequenceRef.current && root === projectRootRef.current) {
+        setError(String(err));
+      }
     } finally {
-      setLastClientsCheckedAt(new Date());
-      clientsScanInFlightRef.current = false;
-      if (showLoading) {
+      clientsScansInFlightRef.current = Math.max(0, clientsScansInFlightRef.current - 1);
+      if (scanSequence === clientsScanSequenceRef.current && root === projectRootRef.current) {
+        setLastClientsCheckedAt(new Date());
+        if (showLoading) setScanProgress(null);
+        scanProgressVisibleRef.current = false;
+      }
+      if (showLoading && scanSequence === clientsScanSequenceRef.current) {
         setLoading(false);
       }
+      if (watcherRefreshPendingRef.current && root === projectRootRef.current && !busyRef.current) {
+        watcherRefreshPendingRef.current = false;
+        window.setTimeout(() => {
+          if (root === projectRootRef.current && clientsScansInFlightRef.current === 0 && !busyRef.current) {
+            lastWatcherRefreshAtRef.current = Date.now();
+            const clientNames = watcherRefreshAllRef.current
+              ? undefined
+              : Array.from(watcherChangedClientsRef.current);
+            watcherRefreshAllRef.current = false;
+            watcherChangedClientsRef.current.clear();
+            void refreshClients(root, false, false, false, clientNames).catch(console.error);
+          }
+        }, 1_000);
+      }
     }
+  };
+
+  const changeProjectRoot = async (nextRoot: string) => {
+    if (nextRoot === projectRootRef.current) return;
+    projectRootRef.current = nextRoot;
+    if (watcherRefreshTimerRef.current !== null) {
+      window.clearTimeout(watcherRefreshTimerRef.current);
+      watcherRefreshTimerRef.current = null;
+    }
+    watcherRefreshAllRef.current = false;
+    watcherChangedClientsRef.current.clear();
+    watcherRefreshPendingRef.current = false;
+    setProjectRoot(nextRoot);
+    setClients([]);
+    setExpandedClients(new Set());
+    setLastClientsCheckedAt(null);
+    setError(null);
+    setLoading(Boolean(nextRoot));
+    if (!nextRoot) {
+      setLoading(false);
+      try {
+        await saveConfigValue("projectRoot", "");
+      } catch (err) {
+        setError(`Could not save project selection: ${String(err)}`);
+      }
+      return;
+    }
+    try {
+      await saveConfigValue("projectRoot", nextRoot);
+    } catch (err) {
+      setError(`Could not save project selection: ${String(err)}`);
+    }
+    try {
+      await migrateLegacyFinalsOnce(nextRoot);
+    } catch (err) {
+      console.error("Could not migrate existing FINAL status", err);
+    }
+    await refreshClients(nextRoot, true, true, true);
   };
 
   useEffect(() => {
     if (!projectRoot || busy) return;
     const id = window.setInterval(() => {
-      if (!clientsScanInFlightRef.current && !busyRef.current) {
-        void refreshClients(projectRoot, false);
+      if (
+        document.visibilityState === "visible" &&
+        document.hasFocus() &&
+        clientsScansInFlightRef.current === 0 &&
+        !busyRef.current
+      ) {
+        void refreshClients(projectRoot, false).catch(console.error);
       }
-    }, 30_000);
+    }, 120_000);
     return () => window.clearInterval(id);
-  }, [projectRoot, busy]);
+  }, [projectRoot, busy, lastClientsCheckedAt]);
 
-  const pickProjectRoot = async () => {
-    const selection = await openDialog({
-      directory: true,
-      multiple: false,
-      title: "Select Project Root",
+  const toggleClientExpanded = (name: string) => {
+    setExpandedClients((current) => {
+      const next = new Set(current);
+      if (next.has(name)) next.delete(name);
+      else next.add(name);
+      return next;
     });
-
-    if (typeof selection === "string") {
-      setProjectRoot(selection);
-      await saveConfigValue("projectRoot", selection);
-      await refreshClients(selection);
-    }
   };
 
   const handleAddClient = async () => {
@@ -749,7 +957,7 @@ export default function App() {
     const exportStatus = client.export_status;
     if (!exportStatus.latest_filename || exportStatus.issue) return;
     setPendingPromotion(null);
-    setPromotingClient(client.name);
+    setPublishingClientPath(client.path);
     setError(null);
     try {
       const message = await invoke<string>("promote_latest_export", {
@@ -757,11 +965,11 @@ export default function App() {
         expectedFilename: exportStatus.latest_filename,
       });
       setToast({ message, tone: "success" });
-      await refreshClients(undefined, false);
+      await refreshClients(undefined, false, true);
     } catch (err) {
-      setError(`FINAL promotion failed: ${String(err)}`);
+      setError(`Publish failed: ${String(err)}`);
     } finally {
-      setPromotingClient(null);
+      setPublishingClientPath(null);
     }
   };
 
@@ -839,6 +1047,8 @@ export default function App() {
       setQueueMeta(null);
       if (pendingRefreshRef.current) {
         pendingRefreshRef.current = false;
+        watcherRefreshAllRef.current = false;
+        watcherChangedClientsRef.current.clear();
         await refreshClients(root, false);
       }
     }
@@ -969,18 +1179,6 @@ export default function App() {
           }
         }}
       >
-        <div className="project-root">
-          <div className="label">Project Root</div>
-          {projectRoot ? (
-            <button className="path-button" onClick={pickProjectRoot}>
-              {projectRoot}
-            </button>
-          ) : (
-            <button className="path-button empty" onClick={pickProjectRoot}>
-              Select project root…
-            </button>
-          )}
-        </div>
         <div className="topbar-actions window-controls">
           <button
             type="button"
@@ -1022,16 +1220,22 @@ export default function App() {
       <div className="app-content">
         <section className="panel">
           <div className="panel-project-root">
-            <div className="label">Project Root</div>
-            {projectRoot ? (
-              <button className="path-button" title={projectRoot} onClick={pickProjectRoot}>
-                <span className="path-text">{projectRoot}</span>
-              </button>
-            ) : (
-              <button className="path-button empty" onClick={pickProjectRoot}>
-                Select project root...
-              </button>
-            )}
+            <label className="label" htmlFor="project-root-select">Project</label>
+            <select
+              id="project-root-select"
+              className="project-root-select"
+              value={projectRoot}
+              onChange={(event) => void changeProjectRoot(event.target.value)}
+              aria-label="Select numbered production project"
+            >
+              <option value="">Select a numbered project…</option>
+              {projectRoot && !projectRoots.some((project) => project.path === projectRoot) && (
+                <option value={projectRoot}>{projectRoot}</option>
+              )}
+              {projectRoots.map((project) => (
+                <option key={project.path} value={project.path}>{project.name}</option>
+              ))}
+            </select>
           </div>
           {DEBUG_ENABLED && debugInfo && (
             <div className="debug-info">
@@ -1312,15 +1516,23 @@ export default function App() {
               <div className="table-row">Loading…</div>
             )}
             {visibleClients.length === 0 && !loading && (
-              <div className="table-row">No clients found.</div>
+              <div className="table-row">
+                {projectRoot ? "No clients found." : "Select a numbered project to view clients."}
+              </div>
             )}
             {visibleClients.map((client) => {
                 const label = parseClientLabel(client.name);
                 const droppable = screen === "sort" && client.status !== "Not a client";
                 const exports = client.export_status;
                 const version = exports.latest_version ?? exports.final_version;
-                const exportLabel = exports.issue
+                const expanded = expandedClients.has(client.name);
+                const published = isFinalised(client);
+                const exportLabel = client.exportStatusLoading
+                  ? "Loading exports…"
+                  : exports.issue
                   ? "Check exports"
+                  : exports.approval_in_progress
+                    ? "Approval export in progress"
                   : isFinalised(client)
                     ? "FINAL"
                     : exports.latest_filename
@@ -1329,21 +1541,26 @@ export default function App() {
                           ? "FINAL outdated" : "FINAL unverified"
                         : exports.approval_ready ? "Approval ready" : "Export ready"
                       : "No exports";
-                const exportTone = exports.issue || exportLabel === "FINAL outdated" || exportLabel === "FINAL unverified"
+                const exportTone = client.exportStatusLoading
+                  ? "ready"
+                  : exports.issue || exportLabel === "FINAL outdated" || exportLabel === "FINAL unverified"
                   ? "warning"
                   : exportLabel === "FINAL" ? "complete"
                     : exports.latest_filename ? "ready" : "empty";
-                const exportDetails = exports.issue ?? [
+                const exportDetails = client.exportStatusLoading
+                  ? "Checking this client's exports…"
+                  : exports.issue ?? [
                   exports.latest_filename && `Latest: ${exports.latest_filename}`,
+                  exports.approval_in_progress && "Approval copy is being rendered and validated",
                   exports.final_filename && `FINAL: ${exports.final_filename}`,
                   exports.versions.length > 0 && `Versions: ${exports.versions.map((item) => `V${item.version}`).join(", ")}`,
                 ].filter(Boolean).join("\n");
                 return (
+                  <Fragment key={client.name}>
                   <div
-                    key={client.name}
                     className={`table-row client-row ${droppable ? "droppable-row" : ""} ${
                       dragTarget === client.name ? "drag-over" : ""
-                    }`}
+                    } ${published ? "published-row" : ""}`}
                     data-client={droppable ? client.name : undefined}
                     onDragOver={
                       droppable
@@ -1378,6 +1595,16 @@ export default function App() {
                   >
                     <div>
                       <div className="client-title">
+                        <button
+                          type="button"
+                          className="expand-client-button"
+                          aria-expanded={expanded}
+                          aria-label={`${expanded ? "Collapse" : "Expand"} ${label.name} versions`}
+                          title={`${expanded ? "Hide" : "Show"} export versions`}
+                          onClick={() => toggleClientExpanded(client.name)}
+                        >
+                          {expanded ? <ChevronDown size={16} /> : <ChevronRight size={16} />}
+                        </button>
                         <span className="client-name">{label.name}</span>
                         {label.type && (
                           <span className={`client-tag ${label.type.toLowerCase()}`}>
@@ -1403,9 +1630,26 @@ export default function App() {
                       )}
                       {client.status !== "Not a client" && (
                         <>
-                          <span className={`badge export-${exportTone}`} title={exportDetails}>
-                            {exportLabel}
-                          </span>
+                          {client.exportStatusLoading ? (
+                            <span className="badge export-ready export-progress" title={exportDetails}>
+                              <LoaderCircle className="approval-progress-spinner" size={13} aria-hidden="true" />
+                              {exportLabel}
+                            </span>
+                          ) : exports.approval_in_progress && !exports.issue ? (
+                            <span className="approval-progress-wrap" title={exportDetails}>
+                              <span className="badge export-ready export-progress">
+                                <LoaderCircle className="approval-progress-spinner" size={13} aria-hidden="true" />
+                                {exportLabel}
+                              </span>
+                              <span className="approval-progress-detail">
+                                {exports.approval_progress_phase ?? "Preparing approval copy"}
+                              </span>
+                            </span>
+                          ) : (
+                            <span className={`badge export-${exportTone}`} title={exportDetails}>
+                              {exportLabel}
+                            </span>
+                          )}
                           {version !== null && (
                             <span className="export-version" title={exportDetails}>V{version}</span>
                           )}
@@ -1440,10 +1684,14 @@ export default function App() {
                           type="button"
                           className="ghost promote-button"
                           onClick={() => setPendingPromotion(client)}
-                          disabled={Boolean(busy || promotingClient || !exports.latest_filename || exports.issue || exports.final_current)}
-                          title={exports.issue ?? (exports.final_current ? "Latest export is already in FINAL" : exports.latest_filename ? `Promote ${exports.latest_filename} to FINAL` : "No source export available to promote")}
+                          disabled={Boolean(busy || publishingClientPath || !exports.latest_filename || exports.issue || published)}
+                          title={exports.issue ?? (published ? "Latest export has been published" : exports.latest_filename ? `Publish ${exports.latest_filename}` : "No source export available to publish")}
                         >
-                          {promotingClient === client.name ? "Promoting…" : exportLabel === "FINAL" ? "In FINAL" : "Promote to FINAL"}
+                          {publishingClientPath === client.path ? (
+                            <><LoaderCircle className="approval-progress-spinner" size={14} aria-hidden="true" /> Publishing…</>
+                          ) : published ? (
+                            <><Check size={15} aria-hidden="true" /> Published</>
+                          ) : "Publish"}
                         </button>
                       )}
                       {client.status === "Missing folders" && (
@@ -1458,8 +1706,52 @@ export default function App() {
                       )}
                     </div>
                 </div>
+                {expanded && (
+                  <div className="client-details">
+                    <div className="client-details-heading">
+                      <strong>Export versions</strong>
+                      {exports.approval_in_progress && (
+                        <span className="approval-detail-line">
+                          <LoaderCircle className="approval-progress-spinner" size={13} aria-hidden="true" />
+                          Approval copy: {exports.approval_progress_phase ?? "Preparing approval copy"}
+                        </span>
+                      )}
+                    </div>
+                    {client.exportStatusLoading ? (
+                      <div className="versions-empty"><LoaderCircle className="approval-progress-spinner" size={14} aria-hidden="true" /> Loading export versions…</div>
+                    ) : exports.versions.length === 0 ? (
+                      <div className="versions-empty">No source versions found.</div>
+                    ) : exports.versions.map((exportVersion) => {
+                      const relativePath = exportVersion.relative_path.replace(/[\\/]+/g, "\\");
+                      const videoPath = `${client.path.replace(/[\\/]+$/, "")}\\03_EXPORTS\\${relativePath}`;
+                      return (
+                        <article className="export-version-card" key={`${exportVersion.version}-${exportVersion.filename}`}>
+                          <div className="export-version-heading">
+                            <strong>V{exportVersion.version}</strong>
+                            <span>{exportVersion.filename}</span>
+                          </div>
+                          <time dateTime={exportVersion.added_at}>
+                            Added {new Date(exportVersion.added_at).toLocaleString()}
+                          </time>
+                          <video controls preload="none" src={convertFileSrc(videoPath)} />
+                        </article>
+                      );
+                    })}
+                  </div>
+                )}
+                </Fragment>
               );
             })}
+            {scanProgress && visibleClients.length > 0 && (
+              <div className="table-row scan-progress-row">
+                <span>
+                  <LoaderCircle className="approval-progress-spinner" size={14} aria-hidden="true" />
+                  {scanProgress.phase === "clients"
+                    ? `Loading clients ${scanProgress.completed}${scanProgress.total ? ` of ${scanProgress.total}` : ""}…`
+                    : `Checking exports ${scanProgress.completed} of ${scanProgress.total}…`}
+                </span>
+              </div>
+            )}
             </div>
           </div>
         </section>
@@ -1502,7 +1794,7 @@ export default function App() {
             setPendingPromotion(null);
           }}
         >
-          <h2 id="promotion-title">Promote to FINAL?</h2>
+          <h2 id="promotion-title">Publish version?</h2>
           <p id="promotion-description">
             Publish <strong>V{pendingPromotion.export_status.latest_version}</strong> for{" "}
             <strong>{parseClientLabel(pendingPromotion.name).name}</strong> to 04_FINAL.
@@ -1519,7 +1811,7 @@ export default function App() {
               Cancel
             </button>
             <button type="button" className="primary" onClick={() => void handlePromoteLatest(pendingPromotion)}>
-              Promote to FINAL
+              Publish
             </button>
           </div>
         </dialog>

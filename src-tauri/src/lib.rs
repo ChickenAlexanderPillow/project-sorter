@@ -27,6 +27,8 @@ struct ExportStatus {
     latest_version: Option<u32>,
     latest_filename: Option<String>,
     approval_ready: bool,
+    approval_in_progress: bool,
+    approval_progress_phase: Option<String>,
     final_version: Option<u32>,
     final_filename: Option<String>,
     final_current: bool,
@@ -38,6 +40,42 @@ struct ExportVersion {
     version: u32,
     filename: String,
     relative_path: String,
+    added_at: String,
+}
+
+#[derive(Debug, Serialize, Clone)]
+struct ProjectRootOption {
+    name: String,
+    path: String,
+    number: u32,
+}
+
+#[derive(Debug, Serialize, Clone)]
+struct ClientExportStatusUpdate {
+    name: String,
+    export_status: ExportStatus,
+}
+
+#[derive(Debug, Serialize, Clone)]
+struct ClientScanProgress {
+    project_root: String,
+    scan_id: u64,
+    phase: String,
+    clients: Vec<ClientInfo>,
+    export_updates: Vec<ClientExportStatusUpdate>,
+    completed: usize,
+    total: usize,
+    reset: bool,
+    client_names: Vec<String>,
+    partial: bool,
+    removed_names: Vec<String>,
+}
+
+#[derive(Debug, Serialize, Clone)]
+struct ClientsChanged {
+    project_root: String,
+    client_names: Vec<String>,
+    all_clients: bool,
 }
 
 #[derive(Debug, Serialize, Deserialize, PartialEq, Eq, Hash)]
@@ -53,9 +91,12 @@ struct FinalPromotionRecord {
     final_filename: String,
     source: VideoFingerprint,
     published: VideoFingerprint,
+    #[serde(default)]
+    migrated: bool,
 }
 
 const FINAL_PROMOTION_RECORD: &str = ".pepper-final.json";
+const PRODUCTION_PROJECTS_ROOT: &str = r"Z:\The Huddle\Production";
 
 fn video_fingerprint(path: &Path) -> io::Result<VideoFingerprint> {
     let metadata = fs::metadata(path)?;
@@ -281,6 +322,49 @@ fn scan_video_versions(directory: &Path) -> Result<Vec<ExportVersion>, String> {
     validate_video_versions(files)
 }
 
+fn include_superseded_versions(active: &[ExportVersion], exports_dir: &Path) -> Vec<ExportVersion> {
+    // Superseded approval sources remain useful in the version player, but are
+    // deliberately excluded from the active list used for publishing.
+    let superseded_dir = exports_dir.join("APPROVAL/PENDING/_SUPERSEDED");
+    let Ok(superseded) = scan_video_versions_in(exports_dir, &superseded_dir) else {
+        return active.to_vec();
+    };
+    let active_base = active.first().and_then(|version| {
+        Path::new(&version.filename)
+            .file_stem()
+            .and_then(|stem| stem.to_str())
+            .and_then(|stem| versioned_stem(stem).ok())
+            .map(|(base, _)| base.to_lowercase())
+    });
+    let mut versions = active.to_vec();
+    for version in superseded {
+        let Some((base, _)) = Path::new(&version.filename)
+            .file_stem()
+            .and_then(|stem| stem.to_str())
+            .and_then(|stem| versioned_stem(stem).ok())
+        else {
+            continue;
+        };
+        if active_base
+            .as_ref()
+            .is_some_and(|active_base| !base.eq_ignore_ascii_case(active_base))
+            || versions.iter().any(|current| {
+                current.relative_path.eq_ignore_ascii_case(&version.relative_path)
+                    || current.version == version.version
+            })
+        {
+            continue;
+        }
+        versions.push(version);
+    }
+    versions.sort_by(|left, right| {
+        left.version
+            .cmp(&right.version)
+            .then_with(|| left.filename.to_lowercase().cmp(&right.filename.to_lowercase()))
+    });
+    versions
+}
+
 fn scan_video_versions_in(root: &Path, directory: &Path) -> Result<Vec<ExportVersion>, String> {
     let entries = match fs::read_dir(directory) {
         Ok(entries) => entries,
@@ -291,12 +375,8 @@ fn scan_video_versions_in(root: &Path, directory: &Path) -> Result<Vec<ExportVer
     let mut files = Vec::new();
     for entry in entries {
         let entry = entry.map_err(|error| error.to_string())?;
-        if !entry
-            .file_type()
-            .map_err(|error| error.to_string())?
-            .is_file()
-            || !is_video_file(&entry.path())
-        {
+        let metadata = entry.metadata().map_err(|error| error.to_string())?;
+        if !metadata.is_file() || !is_video_file(&entry.path()) {
             continue;
         }
         let path = entry.path();
@@ -318,6 +398,13 @@ fn scan_video_versions_in(root: &Path, directory: &Path) -> Result<Vec<ExportVer
                 .map_err(|error| error.to_string())?
                 .to_string_lossy()
                 .to_string(),
+            added_at: chrono::DateTime::<chrono::Utc>::from(
+                metadata
+                    .created()
+                    .or_else(|_| metadata.modified())
+                    .map_err(|error| error.to_string())?,
+            )
+            .to_rfc3339(),
         });
     }
     Ok(files)
@@ -350,13 +437,20 @@ fn validate_video_versions(files: Vec<ExportVersion>) -> Result<Vec<ExportVersio
         }
     }
 
-    if !unversioned.is_empty() && (!versioned.is_empty() || unversioned.len() > 1) {
-        return Err("Unversioned video exports conflict with other versions".to_string());
+    if unversioned.len() > 1 {
+        return Err("Multiple unversioned video exports found".to_string());
     }
     let mut files = if versioned.is_empty() {
         unversioned
     } else {
-        versioned
+        // A lone unversioned source with the same base name is the original V1.
+        // This supports folders that gained explicit _V2, _V3, etc. suffixes later.
+        let mut files = versioned;
+        if let Some(mut original) = unversioned.into_iter().next() {
+            original.version = 1;
+            files.push(original);
+        }
+        files
     };
     files.sort_by(|a, b| {
         a.version
@@ -378,6 +472,7 @@ fn scan_export_status(client_path: &Path) -> ExportStatus {
         Ok(versions) => (versions, None),
         Err(issue) => (Vec::new(), Some(issue)),
     };
+    let display_versions = include_superseded_versions(&exports, &exports_dir);
     let latest = exports.last();
     let mut final_files: Vec<(String, std::time::SystemTime)> = fs::read_dir(&final_dir)
         .ok()
@@ -401,34 +496,57 @@ fn scan_export_status(client_path: &Path) -> ExportStatus {
         .and_then(|bytes| serde_json::from_slice::<FinalPromotionRecord>(&bytes).ok())
         .filter(|record| {
             // Only use the record for the expected client filename and unchanged published video.
-            final_export_filename(client_path, &record.source_filename).as_deref()
-                == Ok(record.final_filename.as_str())
+            (record.migrated
+                || final_export_filename(client_path, &record.source_filename).as_deref()
+                    == Ok(record.final_filename.as_str()))
                 && video_fingerprint(&final_dir.join(&record.final_filename))
                     .ok()
                     .as_ref()
                     == Some(&record.published)
         });
-    let approval_ready = latest
-        .map(|export| {
-            let source_stem = Path::new(&export.filename)
-                .file_stem()
-                .and_then(|value| value.to_str())
-                .unwrap_or_default();
-            let expected = format!("{source_stem}_APPROVAL_1080p_WM_TC.mp4").to_lowercase();
-            fs::read_dir(exports_dir.join("APPROVAL"))
-                .ok()
-                .into_iter()
-                .flatten()
-                .flatten()
-                .any(|entry| {
-                    entry
-                        .file_type()
-                        .map(|kind| kind.is_file())
-                        .unwrap_or(false)
-                        && entry.file_name().to_string_lossy().to_lowercase() == expected
-                })
-        })
-        .unwrap_or(false);
+    let approval_ready = latest.is_some_and(|export| {
+        let source_stem = Path::new(&export.filename)
+            .file_stem()
+            .and_then(|value| value.to_str())
+            .unwrap_or_default();
+        let expected = format!("{source_stem}_APPROVAL_1080p_WM_TC.mp4");
+        exports_dir.join("APPROVAL").join(expected).is_file()
+    });
+    let approval_in_progress = latest.is_some_and(|export| {
+        let source_stem = Path::new(&export.filename)
+            .file_stem()
+            .and_then(|value| value.to_str())
+            .unwrap_or_default();
+        let review_name = format!("{source_stem}_APPROVAL_1080p_WM_TC.mp4.progress.json");
+        let marker = exports_dir.join("APPROVAL/JSON/.staging").join(review_name);
+        fs::metadata(marker)
+            .and_then(|metadata| metadata.modified())
+            .is_ok_and(|modified| {
+                std::time::SystemTime::now()
+                    .duration_since(modified)
+                    .map(|age| age <= Duration::from_secs(90))
+                    .unwrap_or(true)
+            })
+    });
+    let approval_progress_phase = latest.and_then(|export| {
+        let source_stem = Path::new(&export.filename).file_stem()?.to_str()?;
+        let review_name = format!("{source_stem}_APPROVAL_1080p_WM_TC.mp4.progress.json");
+        let marker = exports_dir.join("APPROVAL/JSON/.staging").join(review_name);
+        let modified = fs::metadata(&marker).ok()?.modified().ok()?;
+        let age = std::time::SystemTime::now()
+            .duration_since(modified)
+            .unwrap_or_default();
+        if age > Duration::from_secs(90) {
+            return None;
+        }
+        #[derive(Deserialize)]
+        struct ProgressMarker {
+            phase: Option<String>,
+        }
+        serde_json::from_slice::<ProgressMarker>(&fs::read(marker).ok()?)
+            .ok()
+            .and_then(|progress| progress.phase)
+    });
     let recorded_current = latest.is_some_and(|export| {
         promotion_record.as_ref().is_some_and(|record| {
             record.source_filename == export.filename
@@ -509,10 +627,12 @@ fn scan_export_status(client_path: &Path) -> ExportStatus {
     let latest_version = latest.map(|export| export.version);
     let latest_filename = latest.map(|export| export.filename.clone());
     ExportStatus {
-        versions: exports,
+        versions: display_versions,
         latest_version,
         latest_filename,
         approval_ready,
+        approval_in_progress,
+        approval_progress_phase,
         final_version,
         final_filename,
         final_current,
@@ -660,6 +780,7 @@ fn promote_latest_export_for_client(
                     .map_err(|error| error.to_string())?,
             },
             published: video_fingerprint(&stage).map_err(|error| error.to_string())?,
+            migrated: false,
         };
         let bytes = serde_json::to_vec_pretty(&record).map_err(|error| error.to_string())?;
         let mut file = fs::OpenOptions::new()
@@ -756,6 +877,61 @@ fn promote_latest_export_for_client(
             .map(|path| format!("; previous videos archived in {}", path.display()))
             .unwrap_or_default()
     ))
+}
+
+pub fn migrate_existing_finals(project_root: &Path) -> Result<usize, String> {
+    if !project_root.is_dir() {
+        return Err(format!("Project folder is unavailable: {}", project_root.display()));
+    }
+    let entries = fs::read_dir(project_root).map_err(|error| error.to_string())?;
+    let mut migrated_count = 0;
+    for entry in entries {
+        let entry = entry.map_err(|error| error.to_string())?;
+        let client_path = entry.path();
+        if !client_path.is_dir() || !client_path.join("04_FINAL").is_dir() {
+            continue;
+        }
+        let status = scan_export_status(&client_path);
+        let (Some(source_filename), Some(final_filename)) =
+            (status.latest_filename, status.final_filename)
+        else {
+            continue;
+        };
+        if status.issue.is_some() || status.final_current {
+            continue;
+        }
+        let final_dir = client_path.join("04_FINAL");
+        let final_path = final_dir.join(&final_filename);
+        let source_path = client_path.join("03_EXPORTS").join(
+            status.versions.iter()
+                .find(|version| version.filename == source_filename)
+                .map(|version| version.relative_path.as_str())
+                .unwrap_or(&source_filename),
+        );
+        let Ok(source) = video_fingerprint(&source_path) else { continue };
+        let Ok(published) = video_fingerprint(&final_path) else { continue };
+        let record = FinalPromotionRecord {
+            source_filename,
+            version: status.latest_version.unwrap_or(1),
+            final_filename,
+            source,
+            published,
+            migrated: true,
+        };
+        let bytes = serde_json::to_vec_pretty(&record).map_err(|error| error.to_string())?;
+        let staged_record = final_dir.join(format!("{FINAL_PROMOTION_RECORD}.migration.part"));
+        fs::write(&staged_record, bytes).map_err(|error| error.to_string())?;
+        let record_path = final_dir.join(FINAL_PROMOTION_RECORD);
+        if record_path.exists() {
+            fs::remove_file(&record_path).map_err(|error| error.to_string())?;
+        }
+        if let Err(error) = fs::rename(&staged_record, &record_path) {
+            let _ = fs::remove_file(staged_record);
+            return Err(format!("Unable to write published status for {}: {error}", client_path.display()));
+        }
+        migrated_count += 1;
+    }
+    Ok(migrated_count)
 }
 
 fn ensure_dir(path: &Path) -> Result<(), io::Error> {
@@ -981,116 +1157,298 @@ fn clear_debug_log() -> Result<(), String> {
     Ok(())
 }
 
-fn event_in_scope(event: &Event, root: &Path) -> bool {
-    event.paths.iter().any(|path| {
-        if path.starts_with(root) {
-            return true;
+fn affected_clients(event: &Event, root: &Path) -> (bool, HashSet<String>) {
+    let mut all_clients = false;
+    let mut clients = HashSet::new();
+    for event_path in &event.paths {
+        let path = if event_path.starts_with(root) {
+            event_path.clone()
+        } else if let Ok(canonical) = event_path.canonicalize() {
+            canonical
+        } else {
+            continue;
+        };
+        let Ok(relative) = path.strip_prefix(root) else {
+            continue;
+        };
+        if relative.as_os_str().is_empty() {
+            all_clients = true;
+            clients.clear();
+            break;
         }
-        if let Ok(canon) = path.canonicalize() {
-            return canon.starts_with(root);
+        let mut components = relative.components();
+        let Some(client_component) = components.next() else {
+            continue;
+        };
+        let client_name = client_component.as_os_str().to_string_lossy().to_string();
+        if client_name == "_logs" {
+            continue;
         }
-        false
-    })
+        let Some(section_component) = components.next() else {
+            clients.insert(client_name);
+            continue;
+        };
+        let section = section_component.as_os_str().to_string_lossy();
+        let template_relative = relative
+            .components()
+            .skip(1)
+            .map(|component| component.as_os_str().to_string_lossy())
+            .collect::<Vec<_>>()
+            .join("/");
+        let template_path_changed = TEMPLATE_DIRS
+            .iter()
+            .any(|template| template.eq_ignore_ascii_case(&template_relative));
+        if template_path_changed
+            || section.eq_ignore_ascii_case("03_EXPORTS")
+            || section.eq_ignore_ascii_case("04_FINAL")
+        {
+            clients.insert(client_name);
+        }
+    }
+    (all_clients, clients)
+}
+
+fn scan_client_folders(name: &str, path: &Path) -> ClientInfo {
+    if name.starts_with("XX") {
+        return ClientInfo {
+            name: name.to_string(),
+            path: path.to_string_lossy().to_string(),
+            status: "Not a client".to_string(),
+            missing: Vec::new(),
+            export_status: ExportStatus::default(),
+        };
+    }
+
+    let mut child_dirs = HashSet::new();
+    if let Ok(entries) = fs::read_dir(path) {
+        for entry in entries.flatten() {
+            let entry_path = entry.path();
+            if entry_path.is_dir() {
+                if let Some(name) = entry_path.file_name().and_then(|n| n.to_str()) {
+                    child_dirs.insert(name.to_string());
+                }
+            }
+        }
+    }
+
+    let mut subdir_cache: HashMap<String, HashSet<String>> = HashMap::new();
+    let mut missing = Vec::new();
+    for dir in TEMPLATE_DIRS.iter() {
+        if let Some((parent, child)) = dir.split_once('/') {
+            if !child_dirs.contains(parent) {
+                missing.push(dir.to_string());
+                continue;
+            }
+            let subdirs = subdir_cache.entry(parent.to_string()).or_insert_with(|| {
+                let mut set = HashSet::new();
+                let parent_path = path.join(parent);
+                if let Ok(entries) = fs::read_dir(parent_path) {
+                    for entry in entries.flatten() {
+                        let entry_path = entry.path();
+                        if entry_path.is_dir() {
+                            if let Some(name) = entry_path.file_name().and_then(|n| n.to_str()) {
+                                set.insert(name.to_string());
+                            }
+                        }
+                    }
+                }
+                set
+            });
+            if !subdirs.contains(child) {
+                missing.push(dir.to_string());
+            }
+        } else if !child_dirs.contains(*dir) {
+            missing.push(dir.to_string());
+        }
+    }
+
+    let has_all_required = REQUIRED_DIRS.iter().all(|dir| child_dirs.contains(*dir));
+    let status = if has_all_required && missing.is_empty() {
+        "OK"
+    } else {
+        "Missing folders"
+    };
+
+    ClientInfo {
+        name: name.to_string(),
+        path: path.to_string_lossy().to_string(),
+        status: status.to_string(),
+        missing,
+        export_status: ExportStatus::default(),
+    }
 }
 
 #[tauri::command]
-async fn scan_project_root(project_root: String) -> Result<Vec<ClientInfo>, String> {
+async fn scan_project_root(
+    app_handle: tauri::AppHandle,
+    project_root: String,
+    scan_id: u64,
+    replace_existing: bool,
+    client_names: Option<Vec<String>>,
+) -> Result<(), String> {
     tauri::async_runtime::spawn_blocking(move || {
         let root = PathBuf::from(&project_root);
-        let mut clients = Vec::new();
+        let partial = client_names.is_some();
+        let requested_names: HashSet<String> =
+            client_names.unwrap_or_default().into_iter().collect();
+        let mut client_paths = Vec::new();
+        let mut removed_names = Vec::new();
+        if partial {
+            for name in &requested_names {
+                if name == "_logs" || Path::new(name).components().count() != 1 {
+                    continue;
+                }
+                let path = root.join(name);
+                if path.is_dir() {
+                    client_paths.push((name.clone(), path));
+                } else {
+                    removed_names.push(name.clone());
+                }
+            }
+        } else {
+            let entries = fs::read_dir(&root).map_err(|e| e.to_string())?;
+            for entry in entries.flatten() {
+                let path = entry.path();
+                if !entry.file_type().map(|kind| kind.is_dir()).unwrap_or(false) {
+                    continue;
+                }
+                let name = match path.file_name().and_then(|n| n.to_str()) {
+                    Some(name) => name.to_string(),
+                    None => continue,
+                };
+                if name == "_logs" {
+                    continue;
+                }
+                client_paths.push((name, path));
+            }
+        }
+        client_paths.sort_by(|a, b| a.0.to_lowercase().cmp(&b.0.to_lowercase()));
+        removed_names.sort();
+        let total = client_paths.len();
+        let mut clients = Vec::with_capacity(total);
 
-        let entries = fs::read_dir(&root).map_err(|e| e.to_string())?;
+        // Send the first client rows before checking the rest of the project.
+        // Export inspection runs in a second pass and arrives in separate batches.
+        for path_chunk in client_paths.chunks(5) {
+            let batch: Vec<ClientInfo> = path_chunk
+                .iter()
+                .map(|(name, path)| scan_client_folders(name, path))
+                .collect();
+            clients.extend(batch.iter().cloned());
+            let completed = clients.len();
+            app_handle
+                .emit(
+                    "clients-scan-progress",
+                    ClientScanProgress {
+                        project_root: project_root.clone(),
+                        scan_id,
+                        phase: "clients".to_string(),
+                        clients: batch.clone(),
+                        export_updates: Vec::new(),
+                        completed,
+                        total,
+                        reset: replace_existing && completed == batch.len(),
+                        client_names: Vec::new(),
+                        partial,
+                        removed_names: Vec::new(),
+                    },
+                )
+                .map_err(|error| error.to_string())?;
+        }
+
+        // Export status is more expensive. Inspect one client, publish that result,
+        // then move on to the next client to avoid a burst of NAS activity.
+        for (index, client) in clients.iter().enumerate() {
+            if client.status != "Not a client" {
+                let update = ClientExportStatusUpdate {
+                    name: client.name.clone(),
+                    export_status: scan_export_status(Path::new(&client.path)),
+                };
+                app_handle
+                    .emit(
+                        "clients-scan-progress",
+                        ClientScanProgress {
+                            project_root: project_root.clone(),
+                            scan_id,
+                            phase: "exports".to_string(),
+                            clients: Vec::new(),
+                            export_updates: vec![update],
+                            completed: index + 1,
+                            total,
+                            reset: false,
+                            client_names: Vec::new(),
+                            partial,
+                            removed_names: Vec::new(),
+                        },
+                    )
+                    .map_err(|error| error.to_string())?;
+            }
+        }
+
+        app_handle
+            .emit(
+                "clients-scan-progress",
+                ClientScanProgress {
+                    project_root,
+                    scan_id,
+                    phase: "complete".to_string(),
+                    clients: Vec::new(),
+                    export_updates: Vec::new(),
+                    completed: total,
+                    total,
+                    reset: replace_existing && clients.is_empty() && !partial,
+                    client_names: clients.iter().map(|client| client.name.clone()).collect(),
+                    partial,
+                    removed_names,
+                },
+            )
+            .map_err(|error| error.to_string())?;
+        Ok(())
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+#[tauri::command]
+async fn list_project_roots() -> Result<Vec<ProjectRootOption>, String> {
+    tauri::async_runtime::spawn_blocking(|| {
+        let root = Path::new(PRODUCTION_PROJECTS_ROOT);
+        let entries = fs::read_dir(root).map_err(|error| {
+            format!("Unable to read project list at {}: {error}", root.display())
+        })?;
+        let mut projects = Vec::new();
         for entry in entries.flatten() {
             let path = entry.path();
             if !path.is_dir() {
                 continue;
             }
-            let name = match path.file_name().and_then(|n| n.to_str()) {
-                Some(name) => name.to_string(),
-                None => continue,
+            let Some(name) = path.file_name().and_then(|value| value.to_str()) else {
+                continue;
             };
-            if name == "_logs" {
+            let Some((number, _)) = name.split_once('_') else {
+                continue;
+            };
+            if number.is_empty() || !number.chars().all(|character| character.is_ascii_digit()) {
                 continue;
             }
-
-            let is_excluded = name.starts_with("XX");
-            if is_excluded {
-                clients.push(ClientInfo {
-                    name,
-                    path: path.to_string_lossy().to_string(),
-                    status: "Not a client".to_string(),
-                    missing: Vec::new(),
-                    export_status: ExportStatus::default(),
-                });
+            let Ok(number) = number.parse::<u32>() else {
                 continue;
-            }
-
-            let mut child_dirs = HashSet::new();
-            if let Ok(entries) = fs::read_dir(&path) {
-                for entry in entries.flatten() {
-                    let entry_path = entry.path();
-                    if entry_path.is_dir() {
-                        if let Some(name) = entry_path.file_name().and_then(|n| n.to_str()) {
-                            child_dirs.insert(name.to_string());
-                        }
-                    }
-                }
-            }
-
-            let mut subdir_cache: HashMap<String, HashSet<String>> = HashMap::new();
-            let mut missing = Vec::new();
-            for dir in TEMPLATE_DIRS.iter() {
-                if let Some((parent, child)) = dir.split_once('/') {
-                    if !child_dirs.contains(parent) {
-                        missing.push(dir.to_string());
-                        continue;
-                    }
-                    let subdirs = subdir_cache.entry(parent.to_string()).or_insert_with(|| {
-                        let mut set = HashSet::new();
-                        let parent_path = path.join(parent);
-                        if let Ok(entries) = fs::read_dir(parent_path) {
-                            for entry in entries.flatten() {
-                                let entry_path = entry.path();
-                                if entry_path.is_dir() {
-                                    if let Some(name) =
-                                        entry_path.file_name().and_then(|n| n.to_str())
-                                    {
-                                        set.insert(name.to_string());
-                                    }
-                                }
-                            }
-                        }
-                        set
-                    });
-                    if !subdirs.contains(child) {
-                        missing.push(dir.to_string());
-                    }
-                } else if !child_dirs.contains(*dir) {
-                    missing.push(dir.to_string());
-                }
-            }
-
-            let has_all_required = REQUIRED_DIRS.iter().all(|dir| child_dirs.contains(*dir));
-            let status = if has_all_required && missing.is_empty() {
-                "OK"
-            } else {
-                "Missing folders"
             };
-
-            clients.push(ClientInfo {
-                name,
+            projects.push(ProjectRootOption {
+                name: name.to_string(),
                 path: path.to_string_lossy().to_string(),
-                status: status.to_string(),
-                missing,
-                export_status: scan_export_status(&path),
+                number,
             });
         }
-
-        clients.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
-        Ok(clients)
+        projects.sort_by(|left, right| {
+            left.number
+                .cmp(&right.number)
+                .then_with(|| left.name.to_lowercase().cmp(&right.name.to_lowercase()))
+        });
+        Ok(projects)
     })
     .await
-    .map_err(|e| e.to_string())?
+    .map_err(|error| error.to_string())?
 }
 
 #[tauri::command]
@@ -1103,6 +1461,13 @@ async fn promote_latest_export(
     })
     .await
     .map_err(|error| error.to_string())?
+}
+
+#[tauri::command]
+async fn migrate_project_finals(project_root: String) -> Result<usize, String> {
+    tauri::async_runtime::spawn_blocking(move || migrate_existing_finals(Path::new(&project_root)))
+        .await
+        .map_err(|error| error.to_string())?
 }
 
 #[tauri::command]
@@ -1150,6 +1515,8 @@ fn set_watch_root(
     let handle = std::thread::spawn(move || {
         let debounce = Duration::from_millis(500);
         let mut pending = false;
+        let mut pending_all_clients = false;
+        let mut pending_clients = HashSet::new();
         let mut last_event = Instant::now();
 
         loop {
@@ -1159,13 +1526,22 @@ fn set_watch_root(
 
             match event_rx.recv_timeout(Duration::from_millis(100)) {
                 Ok(Ok(event)) => {
-                    if event_in_scope(&event, &root_for_thread) {
+                    let (all_clients, changed_clients) = affected_clients(&event, &root_for_thread);
+                    if all_clients || !changed_clients.is_empty() {
                         pending = true;
+                        pending_all_clients |= all_clients;
+                        if all_clients {
+                            pending_clients.clear();
+                        } else if !pending_all_clients {
+                            pending_clients.extend(changed_clients);
+                        }
                         last_event = Instant::now();
                     }
                 }
                 Ok(Err(_)) => {
                     pending = true;
+                    pending_all_clients = true;
+                    pending_clients.clear();
                     last_event = Instant::now();
                 }
                 Err(mpsc::RecvTimeoutError::Timeout) => {}
@@ -1173,8 +1549,18 @@ fn set_watch_root(
             }
 
             if pending && last_event.elapsed() >= debounce {
-                let _ = app_handle.emit("clients-changed", project_root_clone.clone());
+                let mut client_names: Vec<String> = pending_clients.drain().collect();
+                client_names.sort();
+                let _ = app_handle.emit(
+                    "clients-changed",
+                    ClientsChanged {
+                        project_root: project_root_clone.clone(),
+                        client_names,
+                        all_clients: pending_all_clients,
+                    },
+                );
                 pending = false;
+                pending_all_clients = false;
             }
         }
     });
@@ -1676,8 +2062,10 @@ pub fn run() {
         .plugin(tauri_plugin_store::Builder::default().build())
         .plugin(tauri_plugin_clipboard_manager::init())
         .invoke_handler(tauri::generate_handler![
+            list_project_roots,
             scan_project_root,
             promote_latest_export,
+            migrate_project_finals,
             set_watch_root,
             create_client,
             open_folder,
