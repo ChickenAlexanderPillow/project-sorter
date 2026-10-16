@@ -578,6 +578,31 @@ button.accent {
   color: #60656d;
 }
 
+.table-head .column-sort {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  padding: 4px 0;
+  border: 0;
+  border-radius: 3px;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  letter-spacing: inherit;
+  text-transform: inherit;
+  cursor: pointer;
+}
+
+.table-head .column-sort.active,
+.table-head .column-sort:hover {
+  color: #e7ebf0;
+}
+
+.table-head .column-sort:focus-visible {
+  outline: 2px solid #8ab8ff;
+  outline-offset: 4px;
+}
+
 .client-name {
   font-size: 1rem;
   font-weight: 700;
@@ -624,6 +649,49 @@ button.accent {
   color: #5f6670;
 }
 
+.client-row,
+.table-row.table-head {
+  grid-template-columns: minmax(180px, 1fr) minmax(250px, 1.2fr) 200px;
+}
+
+.client-statuses {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 7px;
+}
+
+.client-statuses .badge {
+  white-space: nowrap;
+}
+
+.export-version {
+  color: #dce3eb;
+  font-size: 0.82rem;
+  font-weight: 800;
+  font-variant-numeric: tabular-nums;
+}
+
+.badge.export-complete {
+  background: #e7f6ee;
+  color: #1e5f43;
+}
+
+.badge.export-ready {
+  background: #e0edff;
+  color: #1d4b7a;
+}
+
+.badge.export-warning {
+  background: #fff2cc;
+  color: #7a520f;
+}
+
+.badge.export-empty {
+  background: #343d49;
+  color: #c1cad6;
+}
+
 .badge {
   display: inline-flex;
   align-items: center;
@@ -651,11 +719,27 @@ button.accent {
 .actions {
   display: flex;
   gap: 8px;
+  align-items: center;
+  flex-wrap: wrap;
 }
 
 .actions button {
   background: #eef0f2;
   color: #2b3036;
+}
+
+.actions .promote-button {
+  min-height: 34px;
+  padding: 7px 10px;
+  border-radius: 9px;
+  white-space: nowrap;
+  font-size: 0.76rem;
+  font-weight: 700;
+}
+
+.actions .promote-button:disabled {
+  opacity: 0.55;
+  cursor: default;
 }
 
 .mode-controls {
@@ -1191,6 +1275,18 @@ button.accent {
 
 .update-modal {
   width: min(420px, calc(100vw - 36px));
+}
+
+.promotion-modal {
+  border: 1px solid #39424f;
+}
+
+.promotion-modal::backdrop {
+  background: rgba(0, 0, 0, 0.68);
+}
+
+.promotion-modal .promotion-filename {
+  overflow-wrap: anywhere;
 }
 
 .update-modal p {

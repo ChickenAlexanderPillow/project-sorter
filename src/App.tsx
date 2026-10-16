@@ -8,16 +8,34 @@ import { cursorPosition, getCurrentWindow, LogicalSize } from "@tauri-apps/api/w
 import { type DragDropEvent } from "@tauri-apps/api/webview";
 import { writeText } from "@tauri-apps/plugin-clipboard-manager";
 import { check, type Update } from "@tauri-apps/plugin-updater";
-import { Check, Maximize2, Minus, RefreshCw, Wrench, X } from "lucide-react";
+import { ArrowDown, ArrowUp, ArrowUpDown, Check, Maximize2, Minus, RefreshCw, Wrench, X } from "lucide-react";
 import "./App.css";
 
 type ClientStatus = "OK" | "Missing folders" | "Not a client";
+type ClientSort = { column: "name" | "status"; direction: "asc" | "desc" };
 
 type ClientInfo = {
   name: string;
   path: string;
   status: ClientStatus;
   missing: string[];
+  export_status: ExportStatus;
+};
+
+type ExportVersion = {
+  version: number;
+  filename: string;
+};
+
+type ExportStatus = {
+  versions: ExportVersion[];
+  latest_version: number | null;
+  latest_filename: string | null;
+  approval_ready: boolean;
+  final_version: number | null;
+  final_filename: string | null;
+  final_current: boolean;
+  issue: string | null;
 };
 
 type SortEntry = {
@@ -130,10 +148,25 @@ const parseClientLabel = (raw: string) => {
   return { name: normalized.replace(/_/g, " "), type: null as string | null, normalized };
 };
 
+const isFinalised = (client: ClientInfo) =>
+  !client.export_status.issue && Boolean(
+    client.export_status.final_current ||
+    (client.export_status.final_filename && !client.export_status.latest_filename)
+  );
+
 export default function App() {
   const [screen] = useState<"home" | "sort">("sort");
   const [projectRoot, setProjectRoot] = useState<string>("");
   const [clients, setClients] = useState<ClientInfo[]>([]);
+  const [clientSort, setClientSort] = useState<ClientSort>({ column: "name", direction: "asc" });
+  const [promotingClient, setPromotingClient] = useState<string | null>(null);
+  const [pendingPromotion, setPendingPromotion] = useState<ClientInfo | null>(null);
+  const promotionDialogRef = useRef<HTMLDialogElement | null>(null);
+  useEffect(() => {
+    if (pendingPromotion && !promotionDialogRef.current?.open) {
+      promotionDialogRef.current?.showModal();
+    }
+  }, [pendingPromotion]);
   const [loading, setLoading] = useState(false);
   const [search, setSearch] = useState("");
   const [showNonClients, setShowNonClients] = useState(false);
@@ -385,13 +418,30 @@ export default function App() {
 
   const visibleClients = useMemo(() => {
     const filtered = clients.filter((client) =>
-      client.name.toLowerCase().includes(search.toLowerCase())
+      client.name.toLowerCase().includes(search.toLowerCase()) &&
+      (showNonClients || client.status !== "Not a client")
     );
-    if (showNonClients) {
-      return filtered;
-    }
-    return filtered.filter((client) => client.status !== "Not a client");
-  }, [clients, search, showNonClients]);
+    return filtered.sort((left, right) => {
+      const alphabetical = left.name.localeCompare(right.name, undefined, { sensitivity: "base" });
+      const direction = clientSort.direction === "asc" ? 1 : -1;
+      if (clientSort.column === "name") return alphabetical * direction;
+      const completionOrder = Number(isFinalised(left)) - Number(isFinalised(right));
+      return completionOrder * direction || alphabetical;
+    });
+  }, [clients, search, showNonClients, clientSort]);
+
+  const toggleClientSort = (column: ClientSort["column"]) => {
+    setClientSort((current) => ({
+      column,
+      direction: current.column === column && current.direction === "asc" ? "desc" : "asc",
+    }));
+  };
+
+  const sortIcon = (column: ClientSort["column"]) => {
+    const Icon = clientSort.column !== column ? ArrowUpDown
+      : clientSort.direction === "asc" ? ArrowUp : ArrowDown;
+    return <Icon size={14} strokeWidth={1.8} aria-hidden="true" />;
+  };
 
   const sortableClients = useMemo(
     () => clients.filter((client) => client.status !== "Not a client"),
@@ -677,6 +727,26 @@ export default function App() {
       await refreshClients();
     } catch (err) {
       setError(String(err));
+    }
+  };
+
+  const handlePromoteLatest = async (client: ClientInfo) => {
+    const exportStatus = client.export_status;
+    if (!exportStatus.latest_filename || exportStatus.issue) return;
+    setPendingPromotion(null);
+    setPromotingClient(client.name);
+    setError(null);
+    try {
+      const message = await invoke<string>("promote_latest_export", {
+        clientPath: client.path,
+        expectedFilename: exportStatus.latest_filename,
+      });
+      setToast({ message, tone: "success" });
+      await refreshClients(undefined, false);
+    } catch (err) {
+      setError(`FINAL promotion failed: ${String(err)}`);
+    } finally {
+      setPromotingClient(null);
     }
   };
 
@@ -1195,8 +1265,27 @@ export default function App() {
                 </div>
               </div>
             <div className="table-row table-head">
-              <div>Client Name</div>
-              <div>Status</div>
+              <div>
+                <button
+                  type="button"
+                  className={`column-sort ${clientSort.column === "name" ? "active" : ""}`}
+                  onClick={() => toggleClientSort("name")}
+                  aria-label={clientSort.column === "name" && clientSort.direction === "asc" ? "Client name: A to Z. Click to sort Z to A" : "Sort client names A to Z"}
+                >
+                  Client Name {sortIcon("name")}
+                </button>
+              </div>
+              <div>
+                <button
+                  type="button"
+                  className={`column-sort ${clientSort.column === "status" ? "active" : ""}`}
+                  onClick={() => toggleClientSort("status")}
+                  aria-label={clientSort.column === "status" && clientSort.direction === "asc" ? "Project status: unfinished first. Click to show finalised first" : "Sort project status: unfinished first"}
+                  title={clientSort.column === "status" && clientSort.direction === "asc" ? "Show finalised projects first" : "Show unfinished projects first"}
+                >
+                  Project status {sortIcon("status")}
+                </button>
+              </div>
               <div>Actions</div>
             </div>
             {loading && visibleClients.length === 0 && (
@@ -1208,10 +1297,31 @@ export default function App() {
             {visibleClients.map((client) => {
                 const label = parseClientLabel(client.name);
                 const droppable = screen === "sort" && client.status !== "Not a client";
+                const exports = client.export_status;
+                const version = exports.latest_version ?? exports.final_version;
+                const exportLabel = exports.issue
+                  ? "Check exports"
+                  : isFinalised(client)
+                    ? "FINAL"
+                    : exports.latest_filename
+                      ? exports.final_filename
+                        ? exports.final_version !== null && exports.latest_version !== null && exports.final_version < exports.latest_version
+                          ? "FINAL outdated" : "FINAL unverified"
+                        : exports.approval_ready ? "Approval ready" : "Export ready"
+                      : "No exports";
+                const exportTone = exports.issue || exportLabel === "FINAL outdated" || exportLabel === "FINAL unverified"
+                  ? "warning"
+                  : exportLabel === "FINAL" ? "complete"
+                    : exports.latest_filename ? "ready" : "empty";
+                const exportDetails = exports.issue ?? [
+                  exports.latest_filename && `Latest: ${exports.latest_filename}`,
+                  exports.final_filename && `FINAL: ${exports.final_filename}`,
+                  exports.versions.length > 0 && `Versions: ${exports.versions.map((item) => `V${item.version}`).join(", ")}`,
+                ].filter(Boolean).join("\n");
                 return (
                   <div
                     key={client.name}
-                    className={`table-row ${droppable ? "droppable-row" : ""} ${
+                    className={`table-row client-row ${droppable ? "droppable-row" : ""} ${
                       dragTarget === client.name ? "drag-over" : ""
                     }`}
                     data-client={droppable ? client.name : undefined}
@@ -1261,7 +1371,8 @@ export default function App() {
                         </div>
                       )}
                     </div>
-                    <div>
+                    <div className="client-statuses">
+                      {client.status !== "OK" && (
                       <span
                         className={`badge ${client.status
                           .toLowerCase()
@@ -1269,6 +1380,17 @@ export default function App() {
                       >
                         {client.status}
                       </span>
+                      )}
+                      {client.status !== "Not a client" && (
+                        <>
+                          <span className={`badge export-${exportTone}`} title={exportDetails}>
+                            {exportLabel}
+                          </span>
+                          {version !== null && (
+                            <span className="export-version" title={exportDetails}>V{version}</span>
+                          )}
+                        </>
+                      )}
                     </div>
                     <div className="actions">
                       <button
@@ -1293,6 +1415,17 @@ export default function App() {
                           />
                         </svg>
                       </button>
+                      {client.status !== "Not a client" && (
+                        <button
+                          type="button"
+                          className="ghost promote-button"
+                          onClick={() => setPendingPromotion(client)}
+                          disabled={Boolean(busy || promotingClient || !exports.latest_filename || exports.issue || exports.final_current)}
+                          title={exports.issue ?? (exports.final_current ? "Latest export is already in FINAL" : exports.latest_filename ? `Promote ${exports.latest_filename} to FINAL` : "No source export available to promote")}
+                        >
+                          {promotingClient === client.name ? "Promoting…" : exportLabel === "FINAL" ? "In FINAL" : "Promote to FINAL"}
+                        </button>
+                      )}
                       {client.status === "Missing folders" && (
                         <button
                           className="ghost icon-button"
@@ -1337,6 +1470,40 @@ export default function App() {
           </button>
         </div>
       </footer>
+
+      {pendingPromotion && (
+        <dialog
+          ref={promotionDialogRef}
+          className="modal update-modal promotion-modal"
+          aria-labelledby="promotion-title"
+          aria-describedby="promotion-description"
+          onCancel={(event) => {
+            event.preventDefault();
+            setPendingPromotion(null);
+          }}
+        >
+          <h2 id="promotion-title">Promote to FINAL?</h2>
+          <p id="promotion-description">
+            Publish <strong>V{pendingPromotion.export_status.latest_version}</strong> for{" "}
+            <strong>{parseClientLabel(pendingPromotion.name).name}</strong> to 04_FINAL.
+            The source export will be kept.
+          </p>
+          <p className="update-notes promotion-filename">
+            {pendingPromotion.name}_FINAL{pendingPromotion.export_status.latest_filename?.match(/\.[^.]+$/)?.[0]}
+          </p>
+          {pendingPromotion.export_status.final_filename && (
+            <p>Existing FINAL videos will be moved into a timestamped archive folder.</p>
+          )}
+          <div className="modal-actions">
+            <button type="button" className="ghost" autoFocus onClick={() => setPendingPromotion(null)}>
+              Cancel
+            </button>
+            <button type="button" className="primary" onClick={() => void handlePromoteLatest(pendingPromotion)}>
+              Promote to FINAL
+            </button>
+          </div>
+        </dialog>
+      )}
 
       {pendingUpdate && (
         <div className="modal-backdrop" onClick={() => !installingUpdate && setPendingUpdate(null)}>

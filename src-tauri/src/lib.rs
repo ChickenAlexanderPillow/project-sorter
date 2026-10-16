@@ -3,10 +3,10 @@ use notify::{Event, RecommendedWatcher, RecursiveMode, Watcher};
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 use std::fs;
-use std::io;
+use std::io::{self, Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::Command;
-use std::sync::{mpsc, Mutex};
+use std::sync::{mpsc, Mutex, OnceLock};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 use tauri::{Emitter, Manager};
@@ -18,6 +18,63 @@ struct ClientInfo {
     path: String,
     status: String,
     missing: Vec<String>,
+    export_status: ExportStatus,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone, Default)]
+struct ExportStatus {
+    versions: Vec<ExportVersion>,
+    latest_version: Option<u32>,
+    latest_filename: Option<String>,
+    approval_ready: bool,
+    final_version: Option<u32>,
+    final_filename: Option<String>,
+    final_current: bool,
+    issue: Option<String>,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+struct ExportVersion {
+    version: u32,
+    filename: String,
+    relative_path: String,
+}
+
+#[derive(Debug, Serialize, Deserialize, PartialEq, Eq, Hash)]
+struct VideoFingerprint {
+    size: u64,
+    modified: std::time::SystemTime,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+struct FinalPromotionRecord {
+    source_filename: String,
+    version: u32,
+    final_filename: String,
+    source: VideoFingerprint,
+    published: VideoFingerprint,
+}
+
+const FINAL_PROMOTION_RECORD: &str = ".pepper-final.json";
+
+fn video_fingerprint(path: &Path) -> io::Result<VideoFingerprint> {
+    let metadata = fs::metadata(path)?;
+    Ok(VideoFingerprint {
+        size: metadata.len(),
+        modified: metadata.modified()?,
+    })
+}
+
+fn final_export_filename(client_path: &Path, source_filename: &str) -> Result<String, String> {
+    let client_name = client_path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .ok_or_else(|| "Unable to determine the client folder name".to_string())?;
+    let extension = Path::new(source_filename)
+        .extension()
+        .and_then(|ext| ext.to_str())
+        .ok_or_else(|| "Source export has no file extension".to_string())?;
+    Ok(format!("{client_name}_FINAL.{extension}"))
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -80,10 +137,11 @@ struct WatchState {
 
 const REQUIRED_DIRS: [&str; 4] = ["01_MEDIA", "02_EDIT", "03_EXPORTS", "04_FINAL"];
 const WINDOWS_NOT_SAME_DEVICE: i32 = 17;
-const CLIENT_TEMPLATE_PROJECT_SOURCE: &str =
-    r#"Z:\The Huddle\Templates\Copied_Huddle Master Template 2026_4K_2\Huddle Master Template 2026_4K_2.prproj"#;
-const CLIENT_SCENE_SWITCHING_TEMPLATE_SOURCE: &str =
-    r#"Z:\The Huddle\Templates\Copied_Huddle Master Template Scenes Switching 2026 4K_1\Huddle Master Template Scenes Switching 2026 4K_1.prproj"#;
+const VIDEO_EXTENSIONS: [&str; 9] = [
+    "mp4", "mov", "mxf", "m4v", "webm", "avi", "mkv", "mpg", "mpeg",
+];
+const CLIENT_TEMPLATE_PROJECT_SOURCE: &str = r#"Z:\The Huddle\Templates\Copied_Huddle Master Template 2026_4K_2\Huddle Master Template 2026_4K_2.prproj"#;
+const CLIENT_SCENE_SWITCHING_TEMPLATE_SOURCE: &str = r#"Z:\The Huddle\Templates\Copied_Huddle Master Template Scenes Switching 2026 4K_1\Huddle Master Template Scenes Switching 2026 4K_1.prproj"#;
 const CLIENT_TYPES: [&str; 5] = ["EXHIBITOR", "HUDDLE", "PRODUCT", "MARIYAMEETS", "SOCIAL"];
 const TEMPLATE_DIRS: [&str; 11] = [
     "01_MEDIA",
@@ -124,48 +182,26 @@ fn is_allowed_for_mode(mode: &str, path: &Path) -> bool {
     match mode {
         "VIDEO PROXY" | "VIDEO RAW" => matches!(
             ext.as_str(),
-            "mov"
-                | "mp4"
-                | "mxf"
-                | "mkv"
-                | "avi"
-                | "mpg"
-                | "mpeg"
-                | "m4v"
-                | "webm"
-                | "r3d"
+            "mov" | "mp4" | "mxf" | "mkv" | "avi" | "mpg" | "mpeg" | "m4v" | "webm" | "r3d"
         ),
         "AUDIO CLEAN" | "AUDIO RAW" => matches!(
             ext.as_str(),
-            "wav"
-                | "mp3"
-                | "aif"
-                | "aiff"
-                | "flac"
-                | "m4a"
-                | "aac"
-                | "ogg"
-                | "opus"
+            "wav" | "mp3" | "aif" | "aiff" | "flac" | "m4a" | "aac" | "ogg" | "opus"
         ),
         "STILLS" => matches!(
             ext.as_str(),
-            "jpg"
-                | "jpeg"
-                | "png"
-                | "tif"
-                | "tiff"
-                | "heic"
-                | "heif"
-                | "webp"
-                | "bmp"
-                | "gif"
+            "jpg" | "jpeg" | "png" | "tif" | "tiff" | "heic" | "heif" | "webp" | "bmp" | "gif"
         ),
         _ => true,
     }
 }
 
 fn detect_mode_for_path(path: &Path) -> Option<&'static str> {
-    let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("").to_lowercase();
+    let ext = path
+        .extension()
+        .and_then(|e| e.to_str())
+        .unwrap_or("")
+        .to_lowercase();
     if ext.is_empty() {
         return None;
     }
@@ -207,8 +243,519 @@ fn detect_mode_for_path(path: &Path) -> Option<&'static str> {
     None
 }
 
-fn has_dir(path: &Path, child: &str) -> bool {
-    path.join(child).is_dir()
+fn is_video_file(path: &Path) -> bool {
+    path.extension()
+        .and_then(|ext| ext.to_str())
+        .map(|ext| {
+            VIDEO_EXTENSIONS
+                .iter()
+                .any(|candidate| ext.eq_ignore_ascii_case(candidate))
+        })
+        .unwrap_or(false)
+}
+
+fn versioned_stem(stem: &str) -> Result<(String, Option<u32>), String> {
+    let upper = stem.to_ascii_uppercase();
+    if let Some(index) = upper.rfind("_V") {
+        let suffix = &stem[index + 2..];
+        if suffix.is_empty() || !suffix.chars().all(|character| character.is_ascii_digit()) {
+            return Err(format!("Malformed version suffix in {stem}"));
+        }
+        let version = suffix
+            .parse::<u32>()
+            .map_err(|_| format!("Invalid version number in {stem}"))?;
+        if version == 0 {
+            return Err(format!("Version numbers start at 1: {stem}"));
+        }
+        return Ok((stem[..index].to_string(), Some(version)));
+    }
+    Ok((stem.to_string(), None))
+}
+
+fn scan_video_versions(directory: &Path) -> Result<Vec<ExportVersion>, String> {
+    let mut files = scan_video_versions_in(directory, directory)?;
+    files.extend(scan_video_versions_in(
+        directory,
+        &directory.join("APPROVAL/PENDING"),
+    )?);
+    validate_video_versions(files)
+}
+
+fn scan_video_versions_in(root: &Path, directory: &Path) -> Result<Vec<ExportVersion>, String> {
+    let entries = match fs::read_dir(directory) {
+        Ok(entries) => entries,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(error) => return Err(format!("Unable to read {}: {error}", directory.display())),
+    };
+
+    let mut files = Vec::new();
+    for entry in entries {
+        let entry = entry.map_err(|error| error.to_string())?;
+        if !entry
+            .file_type()
+            .map_err(|error| error.to_string())?
+            .is_file()
+            || !is_video_file(&entry.path())
+        {
+            continue;
+        }
+        let path = entry.path();
+        let stem = path
+            .file_stem()
+            .and_then(|value| value.to_str())
+            .unwrap_or_default();
+        // Approval renders and NLE intermediates are never promotion sources.
+        let upper = stem.to_ascii_uppercase();
+        if upper.contains("_APPROVAL") || upper.contains(".PART-") {
+            continue;
+        }
+        let (_, version) = versioned_stem(stem)?;
+        files.push(ExportVersion {
+            version: version.unwrap_or(1),
+            filename: entry.file_name().to_string_lossy().to_string(),
+            relative_path: path
+                .strip_prefix(root)
+                .map_err(|error| error.to_string())?
+                .to_string_lossy()
+                .to_string(),
+        });
+    }
+    Ok(files)
+}
+
+fn validate_video_versions(files: Vec<ExportVersion>) -> Result<Vec<ExportVersion>, String> {
+    let mut normalized_stem: Option<String> = None;
+    let mut unversioned = Vec::new();
+    let mut versioned = Vec::new();
+    for file in files {
+        let stem = Path::new(&file.filename)
+            .file_stem()
+            .and_then(|value| value.to_str())
+            .unwrap_or_default();
+        let (base, version) = versioned_stem(stem)?;
+        let normalized = base.to_lowercase();
+        if let Some(previous) = &normalized_stem {
+            if previous != &normalized {
+                return Err(
+                    "Multiple video deliverables found; choose one deliverable per client folder"
+                        .to_string(),
+                );
+            }
+        } else {
+            normalized_stem = Some(normalized);
+        }
+        match version {
+            Some(_) => versioned.push(file),
+            None => unversioned.push(file),
+        }
+    }
+
+    if !unversioned.is_empty() && (!versioned.is_empty() || unversioned.len() > 1) {
+        return Err("Unversioned video exports conflict with other versions".to_string());
+    }
+    let mut files = if versioned.is_empty() {
+        unversioned
+    } else {
+        versioned
+    };
+    files.sort_by(|a, b| {
+        a.version
+            .cmp(&b.version)
+            .then_with(|| a.filename.to_lowercase().cmp(&b.filename.to_lowercase()))
+    });
+    for pair in files.windows(2) {
+        if pair[0].version == pair[1].version {
+            return Err(format!("Duplicate export version V{}", pair[0].version));
+        }
+    }
+    Ok(files)
+}
+
+fn scan_export_status(client_path: &Path) -> ExportStatus {
+    let exports_dir = client_path.join("03_EXPORTS");
+    let final_dir = client_path.join("04_FINAL");
+    let (exports, issue) = match scan_video_versions(&exports_dir) {
+        Ok(versions) => (versions, None),
+        Err(issue) => (Vec::new(), Some(issue)),
+    };
+    let latest = exports.last();
+    let mut final_files: Vec<(String, std::time::SystemTime)> = fs::read_dir(&final_dir)
+        .ok()
+        .into_iter()
+        .flatten()
+        .flatten()
+        .filter_map(|entry| {
+            let path = entry.path();
+            if !entry.file_type().ok()?.is_file() || !is_video_file(&path) {
+                return None;
+            }
+            Some((
+                entry.file_name().to_string_lossy().to_string(),
+                entry.metadata().ok()?.modified().ok()?,
+            ))
+        })
+        .collect();
+    final_files.sort_by(|left, right| right.1.cmp(&left.1));
+    let promotion_record = fs::read(final_dir.join(FINAL_PROMOTION_RECORD))
+        .ok()
+        .and_then(|bytes| serde_json::from_slice::<FinalPromotionRecord>(&bytes).ok())
+        .filter(|record| {
+            // Only use the record for the expected client filename and unchanged published video.
+            final_export_filename(client_path, &record.source_filename).as_deref()
+                == Ok(record.final_filename.as_str())
+                && video_fingerprint(&final_dir.join(&record.final_filename))
+                    .ok()
+                    .as_ref()
+                    == Some(&record.published)
+        });
+    let approval_ready = latest
+        .map(|export| {
+            let source_stem = Path::new(&export.filename)
+                .file_stem()
+                .and_then(|value| value.to_str())
+                .unwrap_or_default();
+            let expected = format!("{source_stem}_APPROVAL_1080p_WM_TC.mp4").to_lowercase();
+            fs::read_dir(exports_dir.join("APPROVAL"))
+                .ok()
+                .into_iter()
+                .flatten()
+                .flatten()
+                .any(|entry| {
+                    entry
+                        .file_type()
+                        .map(|kind| kind.is_file())
+                        .unwrap_or(false)
+                        && entry.file_name().to_string_lossy().to_lowercase() == expected
+                })
+        })
+        .unwrap_or(false);
+    let recorded_current = latest.is_some_and(|export| {
+        promotion_record.as_ref().is_some_and(|record| {
+            record.source_filename == export.filename
+                && record.version == export.version
+                && video_fingerprint(&exports_dir.join(&export.relative_path))
+                    .ok()
+                    .as_ref()
+                    == Some(&record.source)
+        })
+    });
+    // Older promotions renamed the video without recording its source version.
+    // Verify those copies by content; cache unchanged pairs to avoid rereading NAS videos.
+    let verified_legacy = if promotion_record.is_none() {
+        final_files.iter().find_map(|file| {
+            exports.iter().rev().find_map(|export| {
+                let source_stem = Path::new(&export.filename).file_stem()?.to_str()?;
+                let (base, _) = versioned_stem(source_stem).ok()?;
+                let final_stem = Path::new(&file.0).file_stem()?.to_str()?;
+                let matches_name = final_stem.eq_ignore_ascii_case(&format!("{base}_FINAL"))
+                    || final_export_filename(client_path, &export.filename)
+                        .is_ok_and(|name| name.eq_ignore_ascii_case(&file.0));
+                (matches_name
+                    && cached_files_match(
+                        &exports_dir.join(&export.relative_path),
+                        &final_dir.join(&file.0),
+                    )
+                    .unwrap_or(false))
+                .then_some((file, export))
+            })
+        })
+    } else {
+        None
+    };
+    let matching_final = latest.and_then(|export| {
+        final_files.iter().find(|(name, _)| {
+            (recorded_current
+                && promotion_record
+                    .as_ref()
+                    .is_some_and(|record| name == &record.final_filename))
+                || name.eq_ignore_ascii_case(&export.filename)
+                || verified_legacy.is_some_and(|(file, source)| {
+                    name == &file.0 && source.filename == export.filename
+                })
+        })
+    });
+    let recorded_final = promotion_record.as_ref().and_then(|record| {
+        final_files
+            .iter()
+            .find(|(name, _)| name == &record.final_filename)
+    });
+    let final_file = matching_final
+        .or(recorded_final)
+        .or(verified_legacy.map(|(file, _)| file))
+        .or_else(|| final_files.first());
+    let final_filename = final_file.map(|(name, _)| name.clone());
+    let final_version = final_file.and_then(|(name, _)| {
+        if let Some(record) = promotion_record
+            .as_ref()
+            .filter(|record| &record.final_filename == name)
+        {
+            return Some(record.version);
+        }
+        if let Some((_, export)) = verified_legacy.filter(|(file, _)| &file.0 == name) {
+            return Some(export.version);
+        }
+        if final_export_filename(client_path, name)
+            .is_ok_and(|canonical| canonical.eq_ignore_ascii_case(name))
+        {
+            return None;
+        }
+        Path::new(name)
+            .file_stem()
+            .and_then(|value| value.to_str())
+            .and_then(|stem| versioned_stem(stem).ok())
+            .and_then(|(_, version)| version)
+    });
+    let final_current = matching_final.is_some();
+    let latest_version = latest.map(|export| export.version);
+    let latest_filename = latest.map(|export| export.filename.clone());
+    ExportStatus {
+        versions: exports,
+        latest_version,
+        latest_filename,
+        approval_ready,
+        final_version,
+        final_filename,
+        final_current,
+        issue,
+    }
+}
+
+fn files_match(left: &Path, right: &Path) -> io::Result<bool> {
+    let mut left = fs::File::open(left)?;
+    let mut right = fs::File::open(right)?;
+    let mut left_buffer = vec![0u8; 1024 * 1024];
+    let mut right_buffer = vec![0u8; 1024 * 1024];
+    loop {
+        let left_read = left.read(&mut left_buffer)?;
+        if left_read == 0 {
+            return Ok(right.read(&mut right_buffer[..1])? == 0);
+        }
+        if let Err(error) = right.read_exact(&mut right_buffer[..left_read]) {
+            return if error.kind() == io::ErrorKind::UnexpectedEof {
+                Ok(false)
+            } else {
+                Err(error)
+            };
+        }
+        if left_buffer[..left_read] != right_buffer[..left_read] {
+            return Ok(false);
+        }
+    }
+}
+
+type FinalComparisonKey = (PathBuf, VideoFingerprint, PathBuf, VideoFingerprint);
+static FINAL_COMPARISONS: OnceLock<Mutex<HashMap<FinalComparisonKey, bool>>> = OnceLock::new();
+
+fn cached_files_match(source: &Path, final_file: &Path) -> io::Result<bool> {
+    let key = (
+        source.to_path_buf(),
+        video_fingerprint(source)?,
+        final_file.to_path_buf(),
+        video_fingerprint(final_file)?,
+    );
+    if key.1.size != key.3.size {
+        return Ok(false);
+    }
+    let cache = FINAL_COMPARISONS.get_or_init(|| Mutex::new(HashMap::new()));
+    if let Some(matches) = cache.lock().ok().and_then(|cache| cache.get(&key).copied()) {
+        return Ok(matches);
+    }
+    let matches = files_match(source, final_file)?;
+    if video_fingerprint(source)? != key.1 || video_fingerprint(final_file)? != key.3 {
+        return Ok(false);
+    }
+    if let Ok(mut cache) = cache.lock() {
+        if cache.len() >= 256 {
+            cache.clear();
+        }
+        cache.insert(key, matches);
+    }
+    Ok(matches)
+}
+
+fn promote_latest_export_for_client(
+    client_path: &Path,
+    expected_filename: Option<&str>,
+) -> Result<String, String> {
+    let exports_dir = client_path.join("03_EXPORTS");
+    let final_dir = client_path.join("04_FINAL");
+    let versions = scan_video_versions(&exports_dir)?;
+    let latest = versions
+        .last()
+        .ok_or_else(|| "No video export is available to promote".to_string())?;
+    if expected_filename.is_some_and(|expected| expected != latest.filename) {
+        return Err("The latest export changed. Refresh and confirm promotion again.".to_string());
+    }
+    fs::create_dir_all(&final_dir)
+        .map_err(|error| format!("Unable to create FINAL folder: {error}"))?;
+    let source = exports_dir.join(&latest.relative_path);
+    let final_filename = final_export_filename(client_path, &latest.filename)?;
+    let destination = final_dir.join(&final_filename);
+    if source.canonicalize().ok() == destination.canonicalize().ok() {
+        return Err("Export and FINAL paths unexpectedly resolve to the same file".to_string());
+    }
+
+    let staging_dir = final_dir.join(".staging");
+    fs::create_dir_all(&staging_dir)
+        .map_err(|error| format!("Unable to create FINAL staging folder: {error}"))?;
+    let stamp = chrono::Utc::now().format("%Y%m%d_%H%M%S_%3f");
+    let stage = staging_dir.join(format!(
+        "{}.{}.{}.part",
+        latest.filename,
+        std::process::id(),
+        stamp
+    ));
+    let source_before =
+        fs::metadata(&source).map_err(|error| format!("Unable to read export: {error}"))?;
+    let copied = match fs::copy(&source, &stage) {
+        Ok(copied) => copied,
+        Err(error) => {
+            let _ = fs::remove_file(&stage);
+            return Err(format!("Unable to stage FINAL copy: {error}"));
+        }
+    };
+    let validation = (|| -> Result<bool, String> {
+        let source_after = fs::metadata(&source).map_err(|error| error.to_string())?;
+        let staged = fs::metadata(&stage).map_err(|error| error.to_string())?;
+        if copied != source_before.len()
+            || staged.len() != source_before.len()
+            || source_after.len() != source_before.len()
+            || source_after.modified().ok() != source_before.modified().ok()
+        {
+            return Ok(false);
+        }
+        files_match(&source, &stage).map_err(|error| error.to_string())
+    })();
+    match validation {
+        Ok(true) => {}
+        Ok(false) => {
+            let _ = fs::remove_file(&stage);
+            return Err("Staged copy validation failed; source export was preserved".to_string());
+        }
+        Err(error) => {
+            let _ = fs::remove_file(&stage);
+            return Err(format!("Unable to validate staged copy: {error}"));
+        }
+    }
+    if let Err(error) = fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open(&stage)
+        .and_then(|file| file.sync_all())
+    {
+        let _ = fs::remove_file(&stage);
+        return Err(format!("Unable to flush staged FINAL copy: {error}"));
+    }
+
+    let staged_record = stage.with_extension("record.part");
+    let record_result = (|| -> Result<(), String> {
+        let record = FinalPromotionRecord {
+            source_filename: latest.filename.clone(),
+            version: latest.version,
+            final_filename: final_filename.clone(),
+            source: VideoFingerprint {
+                size: source_before.len(),
+                modified: source_before
+                    .modified()
+                    .map_err(|error| error.to_string())?,
+            },
+            published: video_fingerprint(&stage).map_err(|error| error.to_string())?,
+        };
+        let bytes = serde_json::to_vec_pretty(&record).map_err(|error| error.to_string())?;
+        let mut file = fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&staged_record)
+            .map_err(|error| error.to_string())?;
+        file.write_all(&bytes)
+            .and_then(|()| file.sync_all())
+            .map_err(|error| error.to_string())
+    })();
+    if let Err(error) = record_result {
+        let _ = fs::remove_file(&stage);
+        let _ = fs::remove_file(&staged_record);
+        return Err(format!("Unable to stage FINAL version record: {error}"));
+    }
+
+    let mut archive_files: Vec<PathBuf> = match fs::read_dir(&final_dir) {
+        Ok(entries) => entries,
+        Err(error) => {
+            let _ = fs::remove_file(&stage);
+            let _ = fs::remove_file(&staged_record);
+            return Err(format!("Unable to scan FINAL folder: {error}"));
+        }
+    }
+    .filter_map(Result::ok)
+    .filter_map(|entry| {
+        let path = entry.path();
+        (entry.file_type().ok()?.is_file() && is_video_file(&path)).then_some(path)
+    })
+    .collect();
+    let record_path = final_dir.join(FINAL_PROMOTION_RECORD);
+    if record_path.is_file() {
+        archive_files.push(record_path.clone());
+    }
+    let archive_dir = if archive_files.is_empty() {
+        None
+    } else {
+        let archive_root = final_dir.join("_ARCHIVE");
+        if let Err(error) = fs::create_dir_all(&archive_root) {
+            let _ = fs::remove_file(&stage);
+            let _ = fs::remove_file(&staged_record);
+            return Err(format!("Unable to create FINAL archive: {error}"));
+        }
+        let mut candidate = archive_root.join(stamp.to_string());
+        let mut suffix = 2;
+        while candidate.exists() {
+            candidate = archive_root.join(format!("{}_{}", stamp, suffix));
+            suffix += 1;
+        }
+        if let Err(error) = fs::create_dir(&candidate) {
+            let _ = fs::remove_file(&stage);
+            let _ = fs::remove_file(&staged_record);
+            return Err(format!("Unable to create FINAL archive folder: {error}"));
+        }
+        Some(candidate)
+    };
+    let mut archived = Vec::new();
+    if let Some(folder) = &archive_dir {
+        for path in &archive_files {
+            let target = folder.join(path.file_name().unwrap_or_default());
+            if let Err(error) = fs::rename(path, &target) {
+                for (original, moved) in archived.iter().rev() {
+                    let _ = fs::rename(moved, original);
+                }
+                let _ = fs::remove_file(&stage);
+                let _ = fs::remove_file(&staged_record);
+                return Err(format!("Unable to archive existing FINAL video: {error}"));
+            }
+            archived.push((path.clone(), target));
+        }
+    }
+    if let Err(error) = fs::rename(&stage, &destination) {
+        for (original, moved) in archived.iter().rev() {
+            let _ = fs::rename(moved, original);
+        }
+        let _ = fs::remove_file(&stage);
+        let _ = fs::remove_file(&staged_record);
+        return Err(format!("Unable to publish staged FINAL video: {error}"));
+    }
+    if let Err(error) = fs::rename(&staged_record, &record_path) {
+        let _ = fs::remove_file(&destination);
+        for (original, moved) in archived.iter().rev() {
+            let _ = fs::rename(moved, original);
+        }
+        let _ = fs::remove_file(&staged_record);
+        return Err(format!("Unable to publish FINAL version record: {error}"));
+    }
+    Ok(format!(
+        "Promoted {} to {}{}",
+        latest.filename,
+        final_filename,
+        archive_dir
+            .map(|path| format!("; previous videos archived in {}", path.display()))
+            .unwrap_or_default()
+    ))
 }
 
 fn ensure_dir(path: &Path) -> Result<(), io::Error> {
@@ -219,7 +766,10 @@ fn ensure_dir(path: &Path) -> Result<(), io::Error> {
 }
 
 fn client_project_filename(client_name: &str) -> String {
-    let parts: Vec<&str> = client_name.split('_').filter(|part| !part.is_empty()).collect();
+    let parts: Vec<&str> = client_name
+        .split('_')
+        .filter(|part| !part.is_empty())
+        .collect();
     let base_parts = match parts.last().copied() {
         Some(last) if CLIENT_TYPES.contains(&last) && parts.len() > 1 => &parts[..parts.len() - 1],
         _ => &parts[..],
@@ -249,9 +799,7 @@ fn remove_file_with_retry(path: &Path) -> Result<(), io::Error> {
             }
         }
     }
-    Err(last_err.unwrap_or_else(|| {
-        io::Error::new(io::ErrorKind::Other, "Failed to remove file")
-    }))
+    Err(last_err.unwrap_or_else(|| io::Error::new(io::ErrorKind::Other, "Failed to remove file")))
 }
 
 fn unique_destination_path(
@@ -472,6 +1020,7 @@ async fn scan_project_root(project_root: String) -> Result<Vec<ClientInfo>, Stri
                     path: path.to_string_lossy().to_string(),
                     status: "Not a client".to_string(),
                     missing: Vec::new(),
+                    export_status: ExportStatus::default(),
                 });
                 continue;
             }
@@ -533,6 +1082,7 @@ async fn scan_project_root(project_root: String) -> Result<Vec<ClientInfo>, Stri
                 path: path.to_string_lossy().to_string(),
                 status: status.to_string(),
                 missing,
+                export_status: scan_export_status(&path),
             });
         }
 
@@ -544,12 +1094,26 @@ async fn scan_project_root(project_root: String) -> Result<Vec<ClientInfo>, Stri
 }
 
 #[tauri::command]
+async fn promote_latest_export(
+    client_path: String,
+    expected_filename: String,
+) -> Result<String, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        promote_latest_export_for_client(Path::new(&client_path), Some(&expected_filename))
+    })
+    .await
+    .map_err(|error| error.to_string())?
+}
+
+#[tauri::command]
 fn set_watch_root(
     window: tauri::Window,
     project_root: String,
     state: tauri::State<Mutex<WatchState>>,
 ) -> Result<(), String> {
-    let mut state = state.lock().map_err(|_| "Watcher lock poisoned".to_string())?;
+    let mut state = state
+        .lock()
+        .map_err(|_| "Watcher lock poisoned".to_string())?;
     if let Some(stop_tx) = state.stop_tx.take() {
         let _ = stop_tx.send(());
     }
@@ -637,13 +1201,12 @@ fn create_client(
     }
 
     if client_type == "EXHIBITOR" || client_type == "PRODUCT" || client_type == "HUDDLE" {
-        let template_source = if client_type == "HUDDLE"
-            && huddle_template.as_deref() == Some("VIDEO_CALL")
-        {
-            PathBuf::from(CLIENT_SCENE_SWITCHING_TEMPLATE_SOURCE)
-        } else {
-            PathBuf::from(CLIENT_TEMPLATE_PROJECT_SOURCE)
-        };
+        let template_source =
+            if client_type == "HUDDLE" && huddle_template.as_deref() == Some("VIDEO_CALL") {
+                PathBuf::from(CLIENT_SCENE_SWITCHING_TEMPLATE_SOURCE)
+            } else {
+                PathBuf::from(CLIENT_TEMPLATE_PROJECT_SOURCE)
+            };
         if !template_source.exists() {
             return Err(format!(
                 "Premiere template not found: {}",
@@ -1114,6 +1677,7 @@ pub fn run() {
         .plugin(tauri_plugin_clipboard_manager::init())
         .invoke_handler(tauri::generate_handler![
             scan_project_root,
+            promote_latest_export,
             set_watch_root,
             create_client,
             open_folder,
@@ -1136,6 +1700,16 @@ pub fn run() {
 mod tests {
     use super::*;
     use std::fs;
+
+    fn test_dir(label: &str) -> PathBuf {
+        let path = std::env::temp_dir().join(format!(
+            "project_sorter_{label}_{}_{}",
+            std::process::id(),
+            chrono::Utc::now().timestamp_nanos_opt().unwrap_or_default()
+        ));
+        fs::create_dir_all(&path).unwrap();
+        path
+    }
 
     #[test]
     fn destination_mapping() {
@@ -1186,5 +1760,306 @@ mod tests {
             "THE_BIG_SHOW.prproj"
         );
         assert_eq!(client_project_filename("DIGITAIN"), "DIGITAIN.prproj");
+    }
+
+    #[test]
+    fn scans_versions_and_ignores_non_video_files() {
+        let directory = test_dir("versions");
+        fs::write(directory.join("Spotlight_V2.mp4"), b"v2").unwrap();
+        fs::write(directory.join("Spotlight_V1.MOV"), b"v1").unwrap();
+        fs::write(directory.join("thumbnail.jpg"), b"still").unwrap();
+        let versions = scan_video_versions(&directory).unwrap();
+        assert_eq!(
+            versions.iter().map(|item| item.version).collect::<Vec<_>>(),
+            vec![1, 2]
+        );
+        assert_eq!(versions.last().unwrap().filename, "Spotlight_V2.mp4");
+        fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn lone_unversioned_export_is_v1_and_conflicts_are_reported() {
+        let directory = test_dir("unversioned");
+        fs::write(directory.join("Spotlight.mp4"), b"v1").unwrap();
+        assert_eq!(scan_video_versions(&directory).unwrap()[0].version, 1);
+        fs::write(directory.join("Spotlight_V2.mp4"), b"v2").unwrap();
+        assert!(scan_video_versions(&directory)
+            .unwrap_err()
+            .contains("Unversioned"));
+        fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn malformed_versions_are_reported() {
+        let directory = test_dir("malformed");
+        fs::write(directory.join("Spotlight_Vlatest.mp4"), b"bad").unwrap();
+        assert!(scan_video_versions(&directory)
+            .unwrap_err()
+            .contains("Malformed version"));
+        fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn export_status_tracks_approval_and_final_version() {
+        let client = test_dir("status");
+        let exports = client.join("03_EXPORTS");
+        let approval = exports.join("APPROVAL");
+        let final_dir = client.join("04_FINAL");
+        fs::create_dir_all(&approval).unwrap();
+        fs::create_dir_all(&final_dir).unwrap();
+        fs::write(exports.join("Spotlight_V1.mp4"), b"v1").unwrap();
+        fs::write(exports.join("Spotlight_V2.mp4"), b"v2").unwrap();
+        fs::write(
+            approval.join("Spotlight_V2_APPROVAL_1080p_WM_TC.mp4"),
+            b"review",
+        )
+        .unwrap();
+        fs::write(final_dir.join("Spotlight_V1.mp4"), b"old final").unwrap();
+        let status = scan_export_status(&client);
+        assert_eq!(status.latest_version, Some(2));
+        assert!(status.approval_ready);
+        assert_eq!(status.final_version, Some(1));
+        assert!(!status.final_current);
+        fs::remove_dir_all(client).unwrap();
+    }
+
+    #[test]
+    fn pending_sources_are_detected_and_promoted_without_using_review_or_archived_videos() {
+        let client = test_dir("pending-source");
+        let exports = client.join("03_EXPORTS");
+        let pending = exports.join("APPROVAL/PENDING");
+        fs::create_dir_all(pending.join("_SUPERSEDED")).unwrap();
+        fs::write(exports.join("Spotlight_V1.mp4"), b"first").unwrap();
+        fs::write(pending.join("Spotlight_V3.mp4"), b"latest source").unwrap();
+        fs::write(pending.join("_SUPERSEDED/Spotlight_V99.mp4"), b"archive").unwrap();
+        fs::write(
+            exports.join("APPROVAL/Spotlight_V3_APPROVAL_1080p_WM_TC.mp4"),
+            b"watermarked",
+        )
+        .unwrap();
+        fs::write(
+            exports.join("Spotlight_V4_APPROVAL_1080p_WM_TC.mp4"),
+            b"review",
+        )
+        .unwrap();
+
+        let status = scan_export_status(&client);
+        assert_eq!(status.latest_version, Some(3));
+        assert!(status.approval_ready);
+        assert!(status.issue.is_none());
+        promote_latest_export_for_client(&client, None).unwrap();
+        assert_eq!(
+            fs::read(
+                client
+                    .join("04_FINAL")
+                    .join(final_export_filename(&client, "Spotlight_V3.mp4").unwrap())
+            )
+            .unwrap(),
+            b"latest source"
+        );
+        assert_eq!(
+            fs::read(pending.join("Spotlight_V3.mp4")).unwrap(),
+            b"latest source"
+        );
+        assert!(scan_export_status(&client).final_current);
+        fs::remove_dir_all(client).unwrap();
+    }
+
+    #[test]
+    fn duplicate_versions_across_export_and_pending_folders_are_ambiguous() {
+        let client = test_dir("pending-duplicate");
+        let exports = client.join("03_EXPORTS");
+        fs::create_dir_all(exports.join("APPROVAL/PENDING")).unwrap();
+        fs::write(exports.join("Spotlight_V2.mp4"), b"one").unwrap();
+        fs::write(exports.join("APPROVAL/PENDING/Spotlight_V2.mp4"), b"two").unwrap();
+        assert!(scan_export_status(&client)
+            .issue
+            .unwrap()
+            .contains("Duplicate"));
+        assert!(promote_latest_export_for_client(&client, None).is_err());
+        assert!(!client.join("04_FINAL").exists());
+        fs::remove_dir_all(client).unwrap();
+    }
+
+    #[test]
+    fn promotion_rejects_a_newer_export_than_the_one_confirmed() {
+        let client = test_dir("changed-export");
+        let exports = client.join("03_EXPORTS");
+        fs::create_dir_all(&exports).unwrap();
+        fs::write(exports.join("Spotlight_V2.mp4"), b"confirmed").unwrap();
+        fs::write(exports.join("Spotlight_V3.mp4"), b"newer").unwrap();
+        let error =
+            promote_latest_export_for_client(&client, Some("Spotlight_V2.mp4")).unwrap_err();
+        assert!(error.contains("latest export changed"));
+        assert!(!client.join("04_FINAL").exists());
+        fs::remove_dir_all(client).unwrap();
+    }
+
+    #[test]
+    fn legacy_final_is_visible_without_a_remaining_source_export() {
+        let client = test_dir("legacy-final");
+        fs::create_dir_all(client.join("04_FINAL")).unwrap();
+        fs::write(client.join("04_FINAL/Spotlight_FINAL.mp4"), b"final").unwrap();
+        let status = scan_export_status(&client);
+        assert_eq!(status.final_version, None);
+        assert_eq!(
+            status.final_filename.as_deref(),
+            Some("Spotlight_FINAL.mp4")
+        );
+        assert!(status.latest_filename.is_none());
+        fs::create_dir_all(client.join("03_EXPORTS/APPROVAL/PENDING")).unwrap();
+        fs::write(
+            client.join("03_EXPORTS/APPROVAL/PENDING/Spotlight.mp4"),
+            b"final",
+        )
+        .unwrap();
+        assert!(scan_export_status(&client).final_current);
+        fs::remove_dir_all(client).unwrap();
+    }
+
+    #[test]
+    fn legacy_renamed_final_is_verified_against_source_versions() {
+        let client = test_dir("legacy-versioned-source");
+        let pending = client.join("03_EXPORTS/APPROVAL/PENDING");
+        let final_dir = client.join("04_FINAL");
+        fs::create_dir_all(&pending).unwrap();
+        fs::create_dir_all(&final_dir).unwrap();
+        let source = pending.join("EVENBETER_EXHIBITOR SPOTLIGHT_V3.mp4");
+        let final_file = final_dir.join("EVENBETER_EXHIBITOR SPOTLIGHT_FINAL.mp4");
+        fs::write(&source, b"version three").unwrap();
+        fs::write(&final_file, b"version three").unwrap();
+        let status = scan_export_status(&client);
+        assert!(status.final_current);
+        assert_eq!(status.final_version, Some(3));
+
+        fs::write(
+            pending.join("EVENBETER_EXHIBITOR SPOTLIGHT_V4.mp4"),
+            b"new fourth version",
+        )
+        .unwrap();
+        let status = scan_export_status(&client);
+        assert!(!status.final_current);
+        assert_eq!(status.final_version, Some(3));
+        assert_eq!(status.latest_version, Some(4));
+
+        fs::write(&final_file, b"a different final video").unwrap();
+        let status = scan_export_status(&client);
+        assert!(!status.final_current);
+        assert_eq!(status.final_version, None);
+        fs::remove_dir_all(client).unwrap();
+    }
+
+    #[test]
+    fn canonical_final_keeps_version_tracking_and_archives_previous_delivery() {
+        let root = test_dir("canonical-final");
+        let client = root.join("CLIENT_TYPE");
+        let exports = client.join("03_EXPORTS");
+        let final_dir = client.join("04_FINAL");
+        fs::create_dir_all(&exports).unwrap();
+        fs::write(exports.join("Different_Source_Name_V2.MOV"), b"version two").unwrap();
+        promote_latest_export_for_client(&client, None).unwrap();
+        let final_file = final_dir.join("CLIENT_TYPE_FINAL.MOV");
+        assert_eq!(fs::read(&final_file).unwrap(), b"version two");
+        assert!(exports.join("Different_Source_Name_V2.MOV").exists());
+        let status = scan_export_status(&client);
+        assert_eq!(status.final_version, Some(2));
+        assert_eq!(
+            status.final_filename.as_deref(),
+            Some("CLIENT_TYPE_FINAL.MOV")
+        );
+        assert!(status.final_current);
+
+        fs::write(
+            exports.join("Different_Source_Name_V3.MOV"),
+            b"version three",
+        )
+        .unwrap();
+        let status = scan_export_status(&client);
+        assert_eq!(status.final_version, Some(2));
+        assert!(!status.final_current);
+        promote_latest_export_for_client(&client, Some("Different_Source_Name_V3.MOV")).unwrap();
+        assert_eq!(fs::read(&final_file).unwrap(), b"version three");
+        let archive = fs::read_dir(final_dir.join("_ARCHIVE"))
+            .unwrap()
+            .next()
+            .unwrap()
+            .unwrap()
+            .path();
+        assert_eq!(
+            fs::read(archive.join("CLIENT_TYPE_FINAL.MOV")).unwrap(),
+            b"version two"
+        );
+        let archived_record: FinalPromotionRecord =
+            serde_json::from_slice(&fs::read(archive.join(FINAL_PROMOTION_RECORD)).unwrap())
+                .unwrap();
+        assert_eq!(archived_record.version, 2);
+
+        fs::remove_dir_all(&exports).unwrap();
+        assert_eq!(scan_export_status(&client).final_version, Some(3));
+        fs::write(&final_file, b"externally replaced final").unwrap();
+        assert_eq!(scan_export_status(&client).final_version, None);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn failed_version_record_publication_restores_previous_final() {
+        let root = test_dir("record-rollback");
+        let client = root.join("CLIENT_TYPE");
+        let exports = client.join("03_EXPORTS");
+        let final_dir = client.join("04_FINAL");
+        fs::create_dir_all(&exports).unwrap();
+        fs::create_dir_all(final_dir.join(FINAL_PROMOTION_RECORD)).unwrap();
+        fs::write(exports.join("Source_V2.mp4"), b"new video").unwrap();
+        fs::write(final_dir.join("CLIENT_TYPE_FINAL.mp4"), b"previous video").unwrap();
+        assert!(promote_latest_export_for_client(&client, None)
+            .unwrap_err()
+            .contains("version record"));
+        assert_eq!(
+            fs::read(final_dir.join("CLIENT_TYPE_FINAL.mp4")).unwrap(),
+            b"previous video"
+        );
+        assert_eq!(
+            fs::read(exports.join("Source_V2.mp4")).unwrap(),
+            b"new video"
+        );
+        assert_eq!(fs::read_dir(final_dir.join(".staging")).unwrap().count(), 0);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn promotion_archives_old_video_and_preserves_source_and_support_files() {
+        let client = test_dir("promotion");
+        let exports = client.join("03_EXPORTS");
+        let final_dir = client.join("04_FINAL");
+        fs::create_dir_all(&exports).unwrap();
+        fs::create_dir_all(&final_dir).unwrap();
+        fs::write(exports.join("Spotlight_V2.mp4"), b"new final video").unwrap();
+        fs::write(final_dir.join("old-final.mp4"), b"old final video").unwrap();
+        fs::write(final_dir.join("INFO.txt"), b"delivery notes").unwrap();
+
+        let message = promote_latest_export_for_client(&client, None).unwrap();
+        assert!(message.contains("Spotlight_V2.mp4"));
+        assert_eq!(
+            fs::read(exports.join("Spotlight_V2.mp4")).unwrap(),
+            b"new final video"
+        );
+        assert_eq!(
+            fs::read(final_dir.join(final_export_filename(&client, "Spotlight_V2.mp4").unwrap()))
+                .unwrap(),
+            b"new final video"
+        );
+        assert_eq!(
+            fs::read(final_dir.join("INFO.txt")).unwrap(),
+            b"delivery notes"
+        );
+        let archived: Vec<PathBuf> = WalkDir::new(final_dir.join("_ARCHIVE"))
+            .into_iter()
+            .filter_map(Result::ok)
+            .map(|entry| entry.into_path())
+            .filter(|path| path.is_file())
+            .collect();
+        assert_eq!(archived.len(), 1);
+        assert_eq!(archived[0].file_name().unwrap(), "old-final.mp4");
+        fs::remove_dir_all(client).unwrap();
     }
 }
