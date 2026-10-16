@@ -1319,6 +1319,12 @@ button.accent {
   padding: 0;
 }
 
+.refresh-checked {
+  color: #8f9baa;
+  font-size: 11px;
+  white-space: nowrap;
+}
+
 .refresh-button svg {
   transition: transform 0.2s ease;
 }

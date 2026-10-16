@@ -168,6 +168,7 @@ export default function App() {
     }
   }, [pendingPromotion]);
   const [loading, setLoading] = useState(false);
+  const [lastClientsCheckedAt, setLastClientsCheckedAt] = useState<Date | null>(null);
   const [search, setSearch] = useState("");
   const [showNonClients, setShowNonClients] = useState(false);
   const [mode] = useState<string>("AUTO");
@@ -192,6 +193,7 @@ export default function App() {
   const sortableClientsRef = useRef<ClientInfo[]>([]);
   const busyRef = useRef(false);
   const pendingRefreshRef = useRef(false);
+  const clientsScanInFlightRef = useRef(false);
   const [debugPoint, setDebugPoint] = useState<{ x: number; y: number } | null>(null);
   const [debugInfo, setDebugInfo] = useState<{
     physical: { x: number; y: number };
@@ -638,7 +640,8 @@ export default function App() {
 
   const refreshClients = async (rootOverride?: string, showLoading = true) => {
     const root = rootOverride ?? projectRoot;
-    if (!root) return;
+    if (!root || clientsScanInFlightRef.current) return;
+    clientsScanInFlightRef.current = true;
     const scrollTop = tableScrollRef.current?.scrollTop ?? 0;
     if (showLoading) {
       setLoading(true);
@@ -657,11 +660,23 @@ export default function App() {
     } catch (err) {
       setError(String(err));
     } finally {
+      setLastClientsCheckedAt(new Date());
+      clientsScanInFlightRef.current = false;
       if (showLoading) {
         setLoading(false);
       }
     }
   };
+
+  useEffect(() => {
+    if (!projectRoot || busy) return;
+    const id = window.setInterval(() => {
+      if (!clientsScanInFlightRef.current && !busyRef.current) {
+        void refreshClients(projectRoot, false);
+      }
+    }, 30_000);
+    return () => window.clearInterval(id);
+  }, [projectRoot, busy]);
 
   const pickProjectRoot = async () => {
     const selection = await openDialog({
@@ -1080,6 +1095,11 @@ export default function App() {
               >
                 <RefreshCw size={17} strokeWidth={2} aria-hidden="true" />
               </button>
+              <span className="refresh-checked" title={lastClientsCheckedAt?.toLocaleString() ?? "No scan completed yet"}>
+                {lastClientsCheckedAt
+                  ? `Checked ${lastClientsCheckedAt.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}`
+                  : "Not checked"}
+              </span>
               <div className="advanced-menu">
                 <button
                   type="button"
