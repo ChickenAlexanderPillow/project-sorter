@@ -7,7 +7,7 @@ import { cursorPosition, getCurrentWindow, LogicalSize } from "@tauri-apps/api/w
 import { type DragDropEvent } from "@tauri-apps/api/webview";
 import { writeText } from "@tauri-apps/plugin-clipboard-manager";
 import { check, type Update } from "@tauri-apps/plugin-updater";
-import { ArrowDown, ArrowUp, ArrowUpDown, Check, ChevronDown, ChevronRight, LoaderCircle, Maximize2, Minus, MoreHorizontal, Plus, RefreshCw, Search, Wrench, X } from "lucide-react";
+import { ArrowDown, ArrowUp, ArrowUpDown, Bell, Check, ChevronDown, ChevronRight, ChevronsUpDown, CloudUpload, Copy, FolderKanban, FolderOpen, Link2, LoaderCircle, Maximize2, Minus, MoreHorizontal, Plus, RefreshCw, Search, Settings2, Trash2, Wrench, X } from "lucide-react";
 import "./App.css";
 
 type ClientStatus = "OK" | "Missing folders" | "Not a client";
@@ -43,10 +43,18 @@ type ExportVersion = {
   filename: string;
   relative_path: string;
   added_at: string;
+  frameio: FrameIoRecord | null;
 };
+
+type FrameIoRecord = { state: string; share_url: string | null; last_error: string | null; updated_at: string };
+type FrameIoProgress = { approval_path: string; state: string; uploaded: number; total: number; message: string | null; share_url: string | null };
+type FrameIoOption = { id: string; name: string; workspace_name: string | null };
+type FrameIoStorage = { usedBytes: number; limitBytes: number };
+type NotificationEntry = { id: string; message: string; tone: "info" | "success" | "error"; createdAt: number; unread: boolean };
 
 type ExportStatus = {
   versions: ExportVersion[];
+  approval_versions: ExportVersion[];
   latest_version: number | null;
   latest_filename: string | null;
   approval_ready: boolean;
@@ -103,6 +111,26 @@ const CONFIG_STORE = new LazyStore("config.json", {
   autoSave: true,
   defaults: {},
 });
+const NOTIFICATION_STORE_KEY = "pepper.notificationHistory.v1";
+
+const readNotificationHistory = (): NotificationEntry[] => {
+  try {
+    const parsed: unknown = JSON.parse(localStorage.getItem(NOTIFICATION_STORE_KEY) ?? "[]");
+    if (!Array.isArray(parsed)) return [];
+    return parsed.filter((item): item is NotificationEntry =>
+      Boolean(item && typeof item === "object" && typeof item.id === "string" && typeof item.message === "string" &&
+        (item.tone === "info" || item.tone === "success" || item.tone === "error") && typeof item.createdAt === "number" && Number.isFinite(item.createdAt) && typeof item.unread === "boolean")
+    ).slice(0, 100);
+  } catch { return []; }
+};
+const formatStorage = (bytes: number) => {
+  if (!Number.isFinite(bytes) || bytes < 0) return "Unavailable";
+  const units = ["B", "KB", "MB", "GB", "TB"];
+  let value = bytes;
+  let unit = 0;
+  while (value >= 1024 && unit < units.length - 1) { value /= 1024; unit += 1; }
+  return `${value.toLocaleString(undefined, { maximumFractionDigits: unit > 1 ? 1 : 0 })} ${units[unit]}`;
+};
 
 
 const MODE_ACCEPTED: Record<string, string[]> = {
@@ -175,6 +203,11 @@ const formatProjectName = (name: string) => {
   return match ? `${match[1]} · ${match[2].replace(/_/g, " ")}` : name.replace(/_/g, " ");
 };
 
+const projectDisplayName = (name: string) => {
+  const match = name.match(/^\d+[_\s-]+(.+)$/);
+  return (match?.[1] ?? name).replace(/_/g, " ");
+};
+
 const isFinalised = (client: ClientInfo) =>
   !client.export_status.issue && Boolean(
     client.export_status.final_current ||
@@ -191,6 +224,23 @@ export default function App() {
   const [clients, setClients] = useState<ClientInfo[]>([]);
   const [expandedClients, setExpandedClients] = useState<Set<string>>(() => new Set());
   const [selectedVersionByClient, setSelectedVersionByClient] = useState<Record<string, number>>({});
+  const [frameIoConfig, setFrameIoConfig] = useState({
+    clientId: import.meta.env.VITE_FRAMEIO_CLIENT_ID ?? "",
+    scopes: import.meta.env.VITE_FRAMEIO_SCOPES ?? "",
+    accountId: import.meta.env.VITE_FRAMEIO_ACCOUNT_ID ?? "",
+    projectId: import.meta.env.VITE_FRAMEIO_PROJECT_ID ?? "",
+  });
+  const [showFrameIoConfig, setShowFrameIoConfig] = useState(false);
+  const [frameIoStorage, setFrameIoStorage] = useState<FrameIoStorage | null>(null);
+  const [frameIoStorageLoading, setFrameIoStorageLoading] = useState(false);
+  const [frameIoStorageError, setFrameIoStorageError] = useState<string | null>(null);
+  const [frameIoAccounts, setFrameIoAccounts] = useState<FrameIoOption[]>([]);
+  const [frameIoProjects, setFrameIoProjects] = useState<FrameIoOption[]>([]);
+  const [frameIoLoadingChoices, setFrameIoLoadingChoices] = useState(false);
+  const [frameIoSetupError, setFrameIoSetupError] = useState<string | null>(null);
+  const [frameIoAuthBusy, setFrameIoAuthBusy] = useState(false);
+  const [frameIoProgress, setFrameIoProgress] = useState<Record<string, FrameIoProgress>>({});
+  const [frameIoBusyPath, setFrameIoBusyPath] = useState<string | null>(null);
   const [clientSort, setClientSort] = useState<ClientSort>({ column: "status", direction: "asc" });
   const [publishingClientPath, setPublishingClientPath] = useState<string | null>(null);
   const [pendingPromotion, setPendingPromotion] = useState<ClientInfo | null>(null);
@@ -245,6 +295,10 @@ export default function App() {
   const [toast, setToast] = useState<{ message: string; tone: "info" | "success" | "error" } | null>(
     null
   );
+  const [notificationHistory, setNotificationHistory] = useState<NotificationEntry[]>(readNotificationHistory);
+  const [showNotificationMenu, setShowNotificationMenu] = useState(false);
+  const unreadNotificationCount = notificationHistory.filter((entry) => entry.unread).length;
+  const notificationCenterRef = useRef<HTMLDivElement | null>(null);
   const [queueMeta, setQueueMeta] = useState<{ queued: number; skipped: number } | null>(
     null
   );
@@ -277,7 +331,7 @@ export default function App() {
       const update = await check();
       if (!update) {
         if (showResult) {
-          setToast({ message: "Pepper is up to date.", tone: "info" });
+          showToast("Pepper is up to date.", "info");
         }
         return;
       }
@@ -293,12 +347,12 @@ export default function App() {
         console.warn("Update check failed", err);
       }
       if (showResult) {
-        setToast({
-          message: noReleasePublished
+        showToast(
+          noReleasePublished
             ? "No Pepper release has been published yet."
             : "Could not check for updates.",
-          tone: noReleasePublished ? "info" : "error",
-        });
+          noReleasePublished ? "info" : "error",
+        );
       }
     } finally {
       setCheckingForUpdates(false);
@@ -346,6 +400,13 @@ export default function App() {
       const savedApproval = await CONFIG_STORE.get<boolean>("showApprovalMode");
       const savedAlwaysOnTop = await CONFIG_STORE.get<boolean>("alwaysOnTop");
       const savedRecentProjectPaths = await CONFIG_STORE.get<string[]>("recentProjectPaths");
+      const savedFrameIo = await CONFIG_STORE.get<typeof frameIoConfig>("frameIoConfig");
+      if (savedFrameIo) setFrameIoConfig({
+        clientId: savedFrameIo.clientId ?? import.meta.env.VITE_FRAMEIO_CLIENT_ID ?? "",
+        scopes: savedFrameIo.scopes ?? import.meta.env.VITE_FRAMEIO_SCOPES ?? "",
+        accountId: savedFrameIo.accountId ?? import.meta.env.VITE_FRAMEIO_ACCOUNT_ID ?? "",
+        projectId: savedFrameIo.projectId ?? import.meta.env.VITE_FRAMEIO_PROJECT_ID ?? "",
+      });
       const migratedRoots = (await CONFIG_STORE.get<string[]>("legacyFinalMigrationRoots")) ?? [];
 
       if (typeof savedRoot === "string") {
@@ -491,12 +552,150 @@ export default function App() {
     };
   }, []);
 
-  const showToast = (
+  useEffect(() => {
+    const pending = listen<FrameIoProgress>("frameio-upload-progress", (event) => {
+      setFrameIoProgress((current) => ({ ...current, [event.payload.approval_path]: event.payload }));
+    });
+    return () => { pending.then((unlisten) => unlisten()).catch(() => undefined); };
+  }, []);
+
+  const saveFrameIoConfig = async (next: typeof frameIoConfig) => {
+    setFrameIoConfig(next);
+    await CONFIG_STORE.set("frameIoConfig", next);
+    await CONFIG_STORE.save();
+  };
+
+  const loadFrameIoStorage = async (accountId = frameIoConfig.accountId) => {
+    if (!accountId || !frameIoConfig.clientId) {
+      setFrameIoStorage(null);
+      setFrameIoStorageError(null);
+      return;
+    }
+    setFrameIoStorageLoading(true);
+    setFrameIoStorageError(null);
+    try {
+      const storage = await invoke<FrameIoStorage>("frameio_get_storage", { clientId: frameIoConfig.clientId, accountId });
+      setFrameIoStorage(storage);
+    } catch (err) {
+      setFrameIoStorage(null);
+      setFrameIoStorageError(String(err));
+    } finally { setFrameIoStorageLoading(false); }
+  };
+
+  const loadFrameIoChoices = async () => {
+    setFrameIoLoadingChoices(true);
+    setFrameIoSetupError(null);
+    try {
+      const accounts = await invoke<FrameIoOption[]>("frameio_list_accounts", { clientId: frameIoConfig.clientId });
+      setFrameIoAccounts(accounts);
+      if (frameIoConfig.accountId) {
+        const [projects] = await Promise.all([
+          invoke<FrameIoOption[]>("frameio_list_projects", { clientId: frameIoConfig.clientId, accountId: frameIoConfig.accountId }),
+          loadFrameIoStorage(frameIoConfig.accountId),
+        ]);
+        setFrameIoProjects(projects);
+      } else {
+        setFrameIoProjects([]);
+        setFrameIoStorage(null);
+      }
+    } catch (err) {
+      setFrameIoSetupError(String(err));
+      throw err;
+    } finally {
+      setFrameIoLoadingChoices(false);
+    }
+  };
+
+  const selectFrameIoAccount = async (accountId: string) => {
+    setFrameIoProjects([]);
+    await saveFrameIoConfig({ ...frameIoConfig, accountId, projectId: "" });
+    if (!accountId) return;
+    setFrameIoLoadingChoices(true);
+    setFrameIoSetupError(null);
+    try {
+      const projects = await invoke<FrameIoOption[]>("frameio_list_projects", { clientId: frameIoConfig.clientId, accountId });
+      setFrameIoProjects(projects);
+      await loadFrameIoStorage(accountId);
+    } catch (err) {
+      setFrameIoSetupError(String(err));
+    } finally {
+      setFrameIoLoadingChoices(false);
+    }
+  };
+
+  const openFrameIoSettings = () => {
+    setShowFrameIoConfig(true);
+    if (frameIoConfig.clientId) void loadFrameIoChoices().catch(() => undefined);
+  };
+
+  const connectFrameIo = async () => {
+    setFrameIoAuthBusy(true);
+    try {
+      const authUrl = await invoke<string>("frameio_start_auth", { clientId: frameIoConfig.clientId, scopes: frameIoConfig.scopes });
+      await invoke("frameio_open_external_url", { url: authUrl });
+      showToast("Complete Adobe sign-in in your browser. Pepper will wait for the callback.", "info", null);
+      await invoke("frameio_finish_auth");
+      await loadFrameIoChoices();
+      showToast("Adobe connected for Frame.io uploads.", "success");
+    } catch (err) {
+      await invoke("frameio_cancel_auth").catch(() => undefined);
+      if (!String(err).toLowerCase().includes("cancelled")) showToast(String(err), "error", 7000);
+    } finally { setFrameIoAuthBusy(false); }
+  };
+
+  const cancelFrameIoAuth = async () => {
+    await invoke("frameio_cancel_auth").catch(() => undefined);
+    showToast("Adobe sign-in cancelled.", "info");
+  };
+
+  const uploadApprovalToFrameIo = async (path: string, clientKey: string, productionProjectName: string, productionProjectPath: string) => {
+    setFrameIoBusyPath(path);
+    setFrameIoProgress((current) => ({ ...current, [path]: { approval_path: path, state: "preparing", uploaded: 0, total: 0, message: null, share_url: null } }));
+    try {
+      const result = await invoke<FrameIoRecord & { share_url: string | null }>("frameio_upload", {
+        approvalPath: path, clientId: frameIoConfig.clientId, accountId: frameIoConfig.accountId,
+        projectId: frameIoConfig.projectId,
+        productionProjectPath, productionProjectName, clientKey,
+      });
+      setFrameIoProgress((current) => ({ ...current, [path]: { approval_path: path, state: result.state, uploaded: 1, total: 1, message: null, share_url: result.share_url } }));
+      showToast("Frame.io share link saved beside the approval copy on the NAS. Downloads are enabled on this plan.", "success");
+    } catch (err) {
+      const message = String(err);
+      const uploadCompletedPrefix = "FRAMEIO_VIDEO_UPLOADED_SHARE_FAILED:";
+      if (message.includes(uploadCompletedPrefix)) {
+        const detail = message.slice(message.indexOf(uploadCompletedPrefix) + uploadCompletedPrefix.length).trim();
+        setFrameIoProgress((current) => ({ ...current, [path]: { approval_path: path, state: "share_needs_reconciliation", uploaded: 1, total: 1, message: `Video uploaded; share link needs retry. ${detail}`, share_url: null } }));
+        showToast(`Video upload completed, but the share link was not created. Retry share link on this client row; Pepper will not upload the video again. ${detail}`, "error", null);
+      } else {
+        showToast(message, "error", 8000);
+      }
+    }
+    finally {
+      setFrameIoBusyPath(null);
+      // The link is already saved and visible; NAS reconciliation must not
+      // keep the upload spinner running or scan unrelated client folders.
+      if (projectRootRef.current === productionProjectPath) {
+        void refreshClients(productionProjectPath, false, false, false, [clientKey]).catch(console.error);
+      }
+    }
+  };
+
+  const copyFrameIoShareLink = async (url: string) => {
+    try {
+      await writeText(url);
+      showToast("Frame.io share link copied to clipboard.", "success");
+    } catch (err) {
+      showToast(`Could not copy Frame.io share link: ${String(err)}`, "error", 7000);
+    }
+  };
+
+  function showToast(
     message: string,
     tone: "info" | "success" | "error" = "info",
     duration: number | null = 3000
-  ) => {
+  ) {
     setToast({ message, tone });
+    setNotificationHistory((current) => [{ id: crypto.randomUUID(), message, tone, createdAt: Date.now(), unread: true }, ...current].slice(0, 100));
     if (toastTimeoutRef.current) {
       window.clearTimeout(toastTimeoutRef.current);
       toastTimeoutRef.current = null;
@@ -507,7 +706,7 @@ export default function App() {
         toastTimeoutRef.current = null;
       }, duration);
     }
-  };
+  }
 
   const processingToast =
     busy && progress && queueMeta
@@ -520,6 +719,25 @@ export default function App() {
   useEffect(() => {
     projectRootRef.current = projectRoot;
   }, [projectRoot]);
+
+  useEffect(() => {
+    try { localStorage.setItem(NOTIFICATION_STORE_KEY, JSON.stringify(notificationHistory)); }
+    catch (err) { console.warn("Could not save Pepper notification history", err); }
+  }, [notificationHistory]);
+
+  useEffect(() => {
+    if (!showNotificationMenu) return;
+    const closeOnOutsideClick = (event: PointerEvent) => {
+      if (!notificationCenterRef.current?.contains(event.target as Node)) setShowNotificationMenu(false);
+    };
+    const closeOnEscape = (event: KeyboardEvent) => { if (event.key === "Escape") setShowNotificationMenu(false); };
+    window.addEventListener("pointerdown", closeOnOutsideClick);
+    window.addEventListener("keydown", closeOnEscape);
+    return () => {
+      window.removeEventListener("pointerdown", closeOnOutsideClick);
+      window.removeEventListener("keydown", closeOnEscape);
+    };
+  }, [showNotificationMenu]);
 
   useEffect(() => {
     busyRef.current = busy;
@@ -583,6 +801,7 @@ export default function App() {
   const recentProjects = visibleProjectRoots.filter((project) => recentProjectPaths.includes(project.path));
   const otherProjects = visibleProjectRoots.filter((project) => !recentProjectPaths.includes(project.path));
   const activeProject = availableProjectRoots.find((project) => project.path === projectRoot);
+  const frameIoConfigured = Boolean(frameIoConfig.clientId && frameIoConfig.scopes && frameIoConfig.accountId && frameIoConfig.projectId);
 
 
   const visibleClients = useMemo(() => {
@@ -1002,7 +1221,7 @@ export default function App() {
         clientPath: client.path,
         expectedFilename: exportStatus.latest_filename,
       });
-      setToast({ message, tone: "success" });
+      showToast(message, "success");
       await refreshClients(undefined, false, true);
     } catch (err) {
       setError(`Publish failed: ${String(err)}`);
@@ -1218,6 +1437,43 @@ export default function App() {
         }}
       >
         <div className="topbar-actions window-controls">
+          <div className="notification-center" ref={notificationCenterRef}>
+            <button
+              type="button"
+              className="notification-bell"
+              aria-label={unreadNotificationCount ? `Notifications, ${unreadNotificationCount} unread` : "Notifications"}
+              aria-expanded={showNotificationMenu}
+              title="Notifications"
+              onClick={() => {
+                const opening = !showNotificationMenu;
+                setShowNotificationMenu(opening);
+                if (opening) setNotificationHistory((current) => current.map((entry) => ({ ...entry, unread: false })));
+              }}
+            >
+              <Bell size={17} aria-hidden="true" />
+              {unreadNotificationCount > 0 && <span className="notification-count">{unreadNotificationCount > 99 ? "99+" : unreadNotificationCount}</span>}
+            </button>
+            {showNotificationMenu && (
+              <section className="notification-popover" aria-label="Notification history">
+                <header className="notification-popover-heading">
+                  <strong>Notifications</strong>
+                  <button type="button" disabled={notificationHistory.length === 0} onClick={() => setNotificationHistory([])} aria-label="Clear notification history" title="Clear history"><Trash2 size={14} /></button>
+                </header>
+                {notificationHistory.length === 0 ? (
+                  <p className="notification-empty">No notifications yet.</p>
+                ) : (
+                  <ul>
+                    {notificationHistory.map((entry) => (
+                      <li key={entry.id} className={`notification-entry ${entry.tone}`}>
+                        <span className="notification-entry-mark" aria-hidden="true" />
+                        <div><p>{entry.message}</p><time dateTime={new Date(entry.createdAt).toISOString()}>{new Date(entry.createdAt).toLocaleString()}</time></div>
+                      </li>
+                    ))}
+                  </ul>
+                )}
+              </section>
+            )}
+          </div>
           <button
             type="button"
             className="window-control"
@@ -1258,7 +1514,6 @@ export default function App() {
       <div className="app-content">
         <section className="panel">
           <div className="panel-project-root">
-            <span className="label">Project</span>
             <div className="project-switcher">
               <button
                 type="button"
@@ -1270,10 +1525,14 @@ export default function App() {
                   setProjectSearch("");
                 }}
               >
-                <span className={activeProject ? "project-switcher-value" : "project-switcher-value placeholder"}>
-                  {activeProject ? formatProjectName(activeProject.name) : "Select a numbered project"}
+                <span className="project-switcher-icon" aria-hidden="true">
+                  <FolderKanban size={18} strokeWidth={1.8} />
                 </span>
-                <ChevronDown size={16} aria-hidden="true" />
+                <span className={activeProject ? "project-switcher-copy" : "project-switcher-copy placeholder"}>
+                  <small>Current project</small>
+                  <strong>{activeProject ? formatProjectName(activeProject.name) : "Choose a production project"}</strong>
+                </span>
+                <ChevronsUpDown className="project-switcher-chevron" size={15} aria-hidden="true" />
               </button>
               {showProjectMenu && (
                 <>
@@ -1286,6 +1545,10 @@ export default function App() {
                     }}
                   />
                   <div className="project-menu" role="listbox" aria-label="Production projects">
+                    <div className="project-menu-heading">
+                      <strong>Switch project</strong>
+                      <span>{projectRoots.length} available</span>
+                    </div>
                     <div className="project-menu-search">
                       <Search size={15} aria-hidden="true" />
                       <input
@@ -1314,7 +1577,8 @@ export default function App() {
                                 void changeProjectRoot(project.path);
                               }}
                             >
-                              <span>{formatProjectName(project.name)}</span>
+                              <span className="project-option-number">{project.number}</span>
+                              <span className="project-option-name">{projectDisplayName(project.name)}</span>
                               {project.path === projectRoot && <Check size={15} aria-hidden="true" />}
                             </button>
                           ))}
@@ -1336,7 +1600,8 @@ export default function App() {
                                 void changeProjectRoot(project.path);
                               }}
                             >
-                              <span>{formatProjectName(project.name)}</span>
+                              <span className="project-option-number">{project.number}</span>
+                              <span className="project-option-name">{projectDisplayName(project.name)}</span>
                               {project.path === projectRoot && <Check size={15} aria-hidden="true" />}
                             </button>
                           ))}
@@ -1397,38 +1662,44 @@ export default function App() {
           )}
           <div className="panel-tools">
             <div className="tool-row single">
-              <input
-                className="search panel"
-                placeholder="Search clients…"
-                value={search}
-                onChange={(event) => setSearch(event.target.value)}
-              />
-              <button
-                type="button"
-                className="ghost icon-button refresh-button"
-                onClick={() => void refreshClients()}
-                disabled={!projectRoot || loading}
-                aria-label="Refresh clients"
-                title="Refresh clients"
-              >
-                <RefreshCw size={17} strokeWidth={2} aria-hidden="true" />
-              </button>
-              <span className="refresh-checked" title={lastClientsCheckedAt?.toLocaleString() ?? "No scan completed yet"}>
-                {lastClientsCheckedAt
-                  ? `Updated ${lastClientsCheckedAt.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}`
-                  : "Not updated"}
-              </span>
-              <button
-                type="button"
-                className="ghost new-client-button"
-                disabled={!projectRoot}
-                aria-expanded={showNewClientForm}
-                onClick={() => setShowNewClientForm((current) => !current)}
-              >
-                <Plus size={16} aria-hidden="true" />
-                New client
-              </button>
-              <div className="advanced-menu">
+              <div className="client-search">
+                <Search size={15} aria-hidden="true" />
+                <input
+                  type="search"
+                  placeholder="Find a client"
+                  aria-label="Find a client"
+                  value={search}
+                  onChange={(event) => setSearch(event.target.value)}
+                />
+                {search && (
+                  <button type="button" className="client-search-clear" onClick={() => setSearch("")} aria-label="Clear client search" title="Clear search">
+                    <X size={14} aria-hidden="true" />
+                  </button>
+                )}
+              </div>
+              <div className="client-toolbar-actions">
+                <span className="client-result-count">{visibleClients.length} {visibleClients.length === 1 ? "client" : "clients"}</span>
+                <button
+                  type="button"
+                  className="ghost icon-button refresh-button"
+                  onClick={() => void refreshClients()}
+                  disabled={!projectRoot || loading}
+                  aria-label="Refresh clients"
+                  title={lastClientsCheckedAt ? `Last updated ${lastClientsCheckedAt.toLocaleString()}` : "Refresh clients"}
+                >
+                  <RefreshCw size={16} strokeWidth={1.9} aria-hidden="true" />
+                </button>
+                <button
+                  type="button"
+                  className="ghost new-client-button"
+                  disabled={!projectRoot}
+                  aria-expanded={showNewClientForm}
+                  onClick={() => setShowNewClientForm((current) => !current)}
+                >
+                  <Plus size={16} aria-hidden="true" />
+                  New client
+                </button>
+                <div className="advanced-menu">
                 <button
                   type="button"
                   className="ghost icon-button"
@@ -1443,6 +1714,7 @@ export default function App() {
                 </button>
               </div>
             </div>
+          </div>
           </div>
           {showAdvancedMenu && (
             <div className="advanced-overlay" onClick={() => setShowAdvancedMenu(false)}>
@@ -1512,6 +1784,20 @@ export default function App() {
                   />
                   Show non-client folders
                 </label>
+                <button
+                  type="button"
+                  className="ghost advanced-menu-item"
+                  onClick={() => {
+                    setShowAdvancedMenu(false);
+                    openFrameIoSettings();
+                  }}
+                >
+                  <Settings2 size={15} aria-hidden="true" />
+                  <span>
+                    <strong>Frame.io</strong>
+                    <small>{frameIoConfigured ? "Destination configured" : "Setup required"}</small>
+                  </span>
+                </button>
                 <button
                   type="button"
                   className="update-check-button ghost"
@@ -1652,6 +1938,31 @@ export default function App() {
                 const droppable = screen === "sort" && client.status !== "Not a client";
                 const exports = client.export_status;
                 const version = exports.latest_version ?? exports.final_version;
+                const sortedApprovalVersions = [...exports.approval_versions].sort((left, right) => right.version - left.version || right.filename.localeCompare(left.filename));
+                const latestApprovalVersion = sortedApprovalVersions[0];
+                const latestApprovalPath = latestApprovalVersion
+                  ? `${client.path.replace(/[\\/]+$/, "")}\\03_EXPORTS\\${latestApprovalVersion.relative_path.replace(/[\\/]+/g, "\\")}`
+                  : null;
+                const latestFrameIoProgress = latestApprovalPath ? frameIoProgress[latestApprovalPath] : undefined;
+                const latestFrameIoRecord = latestApprovalVersion?.frameio;
+                const latestFrameIoState = latestFrameIoProgress?.state ?? latestFrameIoRecord?.state;
+                const latestFrameIoBusy = latestApprovalPath !== null && frameIoBusyPath === latestApprovalPath;
+                const latestFrameIoShareUrl = latestFrameIoProgress?.state === "ready" && latestFrameIoProgress.share_url
+                  ? latestFrameIoProgress.share_url
+                  : latestFrameIoBusy ? null : latestFrameIoProgress?.share_url ?? latestFrameIoRecord?.share_url;
+                const uploadPercent = latestFrameIoProgress && latestFrameIoProgress.total > 0
+                  ? Math.max(0, Math.min(99, Math.floor(latestFrameIoProgress.uploaded / latestFrameIoProgress.total * 100)))
+                  : null;
+                const frameIoUploadLabel = latestFrameIoState === "uploading"
+                  ? uploadPercent !== null ? `Uploading ${uploadPercent}%` : "Uploading…"
+                  : latestFrameIoState === "processing" ? "Processing on Frame.io…"
+                    : latestFrameIoState === "creating_version_stack" ? "Adding version…"
+                      : latestFrameIoState === "updating_share" ? "Updating share link…"
+                        : latestFrameIoState === "creating_share" ? "Creating share link…"
+                          : latestFrameIoState === "finalizing_review" ? "Preparing review link…"
+                            : latestFrameIoState === "preparing" ? "Preparing upload…" : "Sending for review…";
+                const latestApprovalShared = latestApprovalVersion?.version === exports.latest_version
+                  && (latestFrameIoState === "ready" || Boolean(latestFrameIoShareUrl));
                 const expanded = expandedClients.has(client.name);
                 const published = isFinalised(client);
                 const exportLabel = client.exportStatusLoading
@@ -1666,7 +1977,8 @@ export default function App() {
                       ? exports.final_filename
                         ? exports.final_version !== null && exports.latest_version !== null && exports.final_version < exports.latest_version
                           ? "FINAL outdated" : "FINAL unverified"
-                        : exports.approval_ready ? "Approval ready" : "Export ready"
+                        : latestApprovalShared ? "Shared"
+                          : exports.approval_ready ? "Approval ready" : "Export ready"
                       : "No exports";
                 const exportNeedsAttention = Boolean(
                   exports.issue || exportLabel === "FINAL outdated" || exportLabel === "FINAL unverified"
@@ -1682,21 +1994,22 @@ export default function App() {
                   exports.final_filename && `FINAL: ${exports.final_filename}`,
                   exports.versions.length > 0 && `Versions: ${exports.versions.map((item) => `V${item.version}`).join(", ")}`,
                 ].filter(Boolean).join("\n");
-                const lastExportVersion = exports.versions[exports.versions.length - 1];
-                const defaultSelectedVersion = exports.latest_version ?? lastExportVersion?.version;
+                const lastApprovalVersion = sortedApprovalVersions[0];
+                const defaultSelectedVersion = lastApprovalVersion?.version;
                 const selectedVersionNumber = selectedVersionByClient[client.name] ?? defaultSelectedVersion;
-                const selectedExportVersion = exports.versions.find((item) => item.version === selectedVersionNumber)
-                  ?? lastExportVersion;
-                const selectedVideoPath = selectedExportVersion
-                  ? `${client.path.replace(/[\\/]+$/, "")}\\03_EXPORTS\\${selectedExportVersion.relative_path.replace(/[\\/]+/g, "\\")}`
+                const selectedApprovalVersion = sortedApprovalVersions.find((item) => item.version === selectedVersionNumber)
+                  ?? lastApprovalVersion;
+                const selectedApprovalPath = selectedApprovalVersion
+                  ? `${client.path.replace(/[\\/]+$/, "")}\\03_EXPORTS\\${selectedApprovalVersion.relative_path.replace(/[\\/]+/g, "\\")}`
                   : null;
                 return (
                   <Fragment key={client.name}>
                   <div
                     className={`table-row client-row ${droppable ? "droppable-row" : ""} ${
                       dragTarget === client.name ? "drag-over" : ""
-                    } ${published ? "published-row" : ""}`}
+                    } ${published ? "published-row" : ""} ${expanded ? "expanded-row" : ""}`}
                     data-client={droppable ? client.name : undefined}
+                    onClick={() => toggleClientExpanded(client.name)}
                     onDragOver={
                       droppable
                         ? (event) => {
@@ -1728,18 +2041,17 @@ export default function App() {
                     }
                     onDrop={droppable ? (event) => handleDropEvent(event, client) : undefined}
                   >
+                    <button
+                      type="button"
+                      className="client-row-disclosure"
+                      aria-expanded={expanded}
+                      aria-label={`${expanded ? "Collapse" : "Expand"} ${label.name} export versions`}
+                    />
                     <div>
                       <div className="client-title">
-                        <button
-                          type="button"
-                          className="expand-client-button"
-                          aria-expanded={expanded}
-                          aria-label={`${expanded ? "Collapse" : "Expand"} ${label.name} versions`}
-                          title={`${expanded ? "Hide" : "Show"} export versions`}
-                          onClick={() => toggleClientExpanded(client.name)}
-                        >
+                        <span className="client-expand-icon" aria-hidden="true">
                           {expanded ? <ChevronDown size={16} /> : <ChevronRight size={16} />}
-                        </button>
+                        </span>
                         <span className="client-name">{label.name}</span>
                         {label.type && (
                           <span className={`client-tag ${label.type.toLowerCase()}`}>
@@ -1786,6 +2098,10 @@ export default function App() {
                             <span className="status-text final-state" title={exportDetails}>
                               <Check size={14} aria-hidden="true" /> Final
                             </span>
+                          ) : exportLabel === "Shared" ? (
+                            <span className="status-text shared-state" title={exportDetails}>
+                              <Link2 size={14} aria-hidden="true" /> {exportSummary}
+                            </span>
                           ) : exportLabel === "No exports" ? (
                             <span className="status-text empty-state" title={exportDetails}>No exports</span>
                           ) : (
@@ -1794,28 +2110,14 @@ export default function App() {
                         </>
                       )}
                     </div>
-                    <div className="actions">
+                    <div className="actions" onClick={(event) => event.stopPropagation()}>
                       <button
                         className="ghost icon-button"
                         onClick={() => handleOpenFolder(client.path)}
                         aria-label="Open folder"
                         title="Open folder"
                       >
-                        <svg
-                          width="18"
-                          height="18"
-                          viewBox="0 0 24 24"
-                          fill="none"
-                          xmlns="http://www.w3.org/2000/svg"
-                          aria-hidden="true"
-                        >
-                          <path
-                            d="M3 7.5C3 6.12 4.12 5 5.5 5H10L12 7H18.5C19.88 7 21 8.12 21 9.5V16.5C21 17.88 19.88 19 18.5 19H5.5C4.12 19 3 17.88 3 16.5V7.5Z"
-                            stroke="currentColor"
-                            strokeWidth="1.6"
-                            strokeLinejoin="round"
-                          />
-                        </svg>
+                        <FolderOpen size={17} strokeWidth={1.8} aria-hidden="true" />
                       </button>
                       {client.status !== "Not a client" && !published && (
                         <button
@@ -1846,8 +2148,8 @@ export default function App() {
                   <div className="client-details">
                     <div className="client-details-heading">
                       <div>
-                        <strong>Export versions</strong>
-                        <span>{exports.versions.length} {exports.versions.length === 1 ? "version" : "versions"}</span>
+                        <strong>Approval versions</strong>
+                        <span>{sortedApprovalVersions.length} {sortedApprovalVersions.length === 1 ? "version" : "versions"}</span>
                       </div>
                       {exports.approval_in_progress && (
                         <span className="approval-detail-line">
@@ -1858,51 +2160,129 @@ export default function App() {
                     </div>
                     {client.exportStatusLoading ? (
                       <div className="versions-empty"><LoaderCircle className="approval-progress-spinner" size={14} aria-hidden="true" /> Loading export versions…</div>
-                    ) : exports.versions.length === 0 ? (
-                      <div className="versions-empty">No source versions found.</div>
-                    ) : selectedExportVersion && selectedVideoPath && (
+                    ) : sortedApprovalVersions.length === 0 ? (
+                      <div className="versions-empty">No finalized watermarked approval copies found.</div>
+                    ) : selectedApprovalVersion && selectedApprovalPath && (
                       <div className="version-browser">
                         <article className="export-preview">
                           <div className="export-preview-heading">
                             <div className="export-preview-title">
-                              <span className="version-label">V{selectedExportVersion.version}</span>
-                              <strong>{selectedExportVersion.filename}</strong>
+                              <span className="version-label">V{selectedApprovalVersion.version}</span>
+                              <strong>{selectedApprovalVersion.filename}</strong>
                             </div>
-                            <time dateTime={selectedExportVersion.added_at}>
-                              Added {new Date(selectedExportVersion.added_at).toLocaleString()}
+                            <time dateTime={selectedApprovalVersion.added_at}>
+                              Added {new Date(selectedApprovalVersion.added_at).toLocaleString()}
                             </time>
                           </div>
                           <video
-                            key={selectedVideoPath}
+                            key={selectedApprovalPath}
                             controls
                             preload="metadata"
-                            src={convertFileSrc(selectedVideoPath)}
+                            src={convertFileSrc(selectedApprovalPath)}
                           />
                         </article>
-                        <div className="version-list" role="tablist" aria-label={`${label.name} export versions`}>
-                          {[...exports.versions].reverse().map((exportVersion) => {
-                            const selected = exportVersion.version === selectedExportVersion.version;
+                        <div className="version-list" role="group" aria-label={`${label.name} approval versions`}>
+                          {sortedApprovalVersions.map((approvalVersion) => {
+                            const selected = approvalVersion.version === selectedApprovalVersion.version;
                             return (
-                              <button
-                                type="button"
-                                role="tab"
-                                aria-selected={selected}
-                                className={`version-option ${selected ? "selected" : ""}`}
-                                key={`${exportVersion.version}-${exportVersion.filename}`}
-                                onClick={() => setSelectedVersionByClient((current) => ({
-                                  ...current,
-                                  [client.name]: exportVersion.version,
-                                }))}
+                              <div
+                                className={`version-entry ${selected ? "selected" : ""}`}
+                                key={`${approvalVersion.version}-${approvalVersion.filename}`}
                               >
-                                <span className="version-option-number">V{exportVersion.version}</span>
-                                <span className="version-option-copy">
-                                  <strong>{exportVersion.filename}</strong>
-                                  <time dateTime={exportVersion.added_at}>
-                                    {new Date(exportVersion.added_at).toLocaleString()}
-                                  </time>
-                                </span>
-                                {exportVersion.version === exports.latest_version && <span className="latest-label">Latest</span>}
-                              </button>
+                                <button
+                                  type="button"
+                                  aria-pressed={selected}
+                                  className="version-option"
+                                  onClick={() => setSelectedVersionByClient((current) => ({
+                                    ...current,
+                                    [client.name]: approvalVersion.version,
+                                  }))}
+                                >
+                                  <span className="version-option-heading">
+                                    <span className="version-option-number">Version {approvalVersion.version}</span>
+                                    {approvalVersion.version === lastApprovalVersion?.version && <span className="version-latest">Latest</span>}
+                                    <time dateTime={approvalVersion.added_at} title={new Date(approvalVersion.added_at).toLocaleString()}>
+                                      {new Date(approvalVersion.added_at).toLocaleString(undefined, { day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" })}
+                                    </time>
+                                  </span>
+                                  <span className="version-option-filename" title={approvalVersion.filename}>{approvalVersion.filename}</span>
+                                </button>
+                                {approvalVersion.version === lastApprovalVersion?.version && latestApprovalPath && (
+                                  <div className="frameio-inline-row">
+                                    {!latestFrameIoShareUrl && (
+                                      <span className="frameio-inline-label">
+                                        {latestFrameIoBusy ? frameIoUploadLabel : "Frame.io review"}
+                                      </span>
+                                    )}
+                                    {latestFrameIoShareUrl ? (
+                                      <button
+                                        type="button"
+                                        className="frameio-icon-button linked"
+                                        title="Open Frame.io review"
+                                        aria-label="Open Frame.io review"
+                                        onClick={() => void invoke("frameio_open_external_url", { url: latestFrameIoShareUrl }).catch((err) => showToast(String(err), "error", 7000))}
+                                      >
+                                        <Link2 size={16} aria-hidden="true" />
+                                      </button>
+                                    ) : !frameIoConfigured ? (
+                                      <button
+                                        type="button"
+                                        className="frameio-icon-button"
+                                        title="Set up Frame.io review delivery"
+                                        aria-label="Set up Frame.io review delivery"
+                                        onClick={openFrameIoSettings}
+                                      >
+                                        <Settings2 size={16} aria-hidden="true" />
+                                      </button>
+                                    ) : (
+                                      <button
+                                        type="button"
+                                        className="frameio-icon-button"
+                                        title={latestFrameIoBusy ? frameIoUploadLabel : "Send for review"}
+                                        aria-label={latestFrameIoBusy ? frameIoUploadLabel : "Send for review"}
+                                        disabled={client.exportStatusLoading || !activeProject || frameIoBusyPath === latestApprovalPath}
+                                        onClick={() => activeProject && void uploadApprovalToFrameIo(latestApprovalPath, client.name, activeProject.name, activeProject.path)}
+                                      >
+                                        {frameIoBusyPath === latestApprovalPath
+                                          ? <LoaderCircle className="approval-progress-spinner" size={16} aria-hidden="true" />
+                                          : <CloudUpload size={16} aria-hidden="true" />}
+                                      </button>
+                                    )}
+                                    {latestFrameIoShareUrl ? (
+                                      <>
+                                        <button
+                                          type="button"
+                                          className="frameio-inline-url"
+                                          title={latestFrameIoShareUrl}
+                                          onClick={() => void invoke("frameio_open_external_url", { url: latestFrameIoShareUrl }).catch((err) => showToast(String(err), "error", 7000))}
+                                        >
+                                          {latestFrameIoShareUrl.replace(/^https?:\/\//, "")}
+                                        </button>
+                                        <button
+                                          type="button"
+                                          className="frameio-icon-button copy"
+                                          title="Copy Frame.io share link"
+                                          aria-label="Copy Frame.io share link"
+                                          onClick={() => void copyFrameIoShareLink(latestFrameIoShareUrl)}
+                                        >
+                                          <Copy size={14} aria-hidden="true" />
+                                        </button>
+                                      </>
+                                    ) : latestFrameIoProgress?.message || latestFrameIoRecord?.last_error ? (
+                                      <span className="frameio-inline-message">{latestFrameIoProgress?.message ?? latestFrameIoRecord?.last_error}</span>
+                                    ) : null}
+                                    {latestFrameIoBusy && latestFrameIoState === "uploading" && uploadPercent !== null && (
+                                      <progress
+                                        className="frameio-upload-progress"
+                                        value={uploadPercent}
+                                        max={100}
+                                        aria-label="Upload to Frame.io"
+                                        title={`${((latestFrameIoProgress?.uploaded ?? 0) / 1048576).toFixed(1)} MB of ${((latestFrameIoProgress?.total ?? 0) / 1048576).toFixed(1)} MB`}
+                                      />
+                                    )}
+                                  </div>
+                                )}
+                              </div>
                             );
                           })}
                         </div>
@@ -1954,6 +2334,66 @@ export default function App() {
         </div>
       </footer>
 
+      {showFrameIoConfig && (
+        <div className="modal-backdrop" onClick={() => setShowFrameIoConfig(false)}>
+          <div className="modal frameio-config-modal" onClick={(event) => event.stopPropagation()}>
+            <div className="frameio-config-header">
+              <div>
+                <h2>Frame.io</h2>
+                <p>Send Pepper’s watermarked approval copies to a shared review project.</p>
+              </div>
+              <span className={`frameio-state-badge ${frameIoConfigured ? "ready" : "idle"}`}>
+                {frameIoConfigured ? "Destination configured" : "Setup required"}
+              </span>
+            </div>
+            <section className="frameio-config-section">
+              <div className="frameio-config-section-heading">
+                <strong>Upload destination</strong>
+                <span>Choose where Pepper should place review files.</span>
+              </div>
+              <div className="frameio-config-grid">
+                <label>Account<select value={frameIoConfig.accountId} onChange={(event) => void selectFrameIoAccount(event.target.value)} disabled={frameIoLoadingChoices || frameIoAccounts.length === 0}><option value="">{frameIoAccounts.length ? "Select an account" : "Connect Adobe to load accounts"}</option>{frameIoAccounts.map((account) => <option key={account.id} value={account.id}>{account.name}</option>)}</select></label>
+                <label>Project<select value={frameIoConfig.projectId} onChange={(event) => void saveFrameIoConfig({ ...frameIoConfig, projectId: event.target.value })} disabled={!frameIoConfig.accountId || frameIoLoadingChoices || frameIoProjects.length === 0}><option value="">{frameIoProjects.length ? "Select a project" : "Choose an account first"}</option>{frameIoProjects.map((project) => <option key={project.id} value={project.id}>{project.workspace_name ? `${project.workspace_name} — ` : ""}{project.name}</option>)}</select></label>
+              </div>
+              <p className="frameio-help frameio-config-destination">Pepper creates or reuses <strong>{activeProject?.name ?? "the selected production project"}</strong> inside this Frame.io project and adds later client exports to the existing version stack.</p>
+            </section>
+            <section className="frameio-storage-section" aria-live="polite">
+              <div className="frameio-storage-heading">
+                <div><strong>Account storage</strong><span>Frame.io account quota</span></div>
+                <button type="button" className="frameio-storage-refresh" disabled={frameIoStorageLoading || !frameIoConfig.accountId} onClick={() => void loadFrameIoStorage()} title="Refresh storage"><RefreshCw size={13} className={frameIoStorageLoading ? "spinning" : ""} /> Refresh</button>
+              </div>
+              {frameIoStorageLoading && <p className="frameio-storage-note">Loading storage usage…</p>}
+              {!frameIoStorageLoading && frameIoStorage && (() => {
+                const remaining = Math.max(0, frameIoStorage.limitBytes - frameIoStorage.usedBytes);
+                const percentage = frameIoStorage.limitBytes > 0 ? Math.min(100, frameIoStorage.usedBytes / frameIoStorage.limitBytes * 100) : 0;
+                return <>
+                  <div className="frameio-storage-numbers"><strong>{formatStorage(remaining)} remaining</strong><span>{formatStorage(frameIoStorage.usedBytes)} of {formatStorage(frameIoStorage.limitBytes)} used</span></div>
+                  <div className="frameio-storage-track" role="progressbar" aria-label="Frame.io storage used" aria-valuenow={Math.round(percentage)} aria-valuemin={0} aria-valuemax={100}><span style={{ width: `${percentage}%` }} /></div>
+                </>;
+              })()}
+              {!frameIoStorageLoading && !frameIoStorage && <p className="frameio-storage-note">{frameIoStorageError ?? (frameIoConfig.accountId ? "Storage usage is unavailable." : "Select an account to view its storage quota.")}</p>}
+            </section>
+            <details className="frameio-advanced-settings">
+              <summary>Advanced Adobe OAuth settings</summary>
+              <div className="frameio-advanced-fields">
+                <label>Client ID<input value={frameIoConfig.clientId} onChange={(event) => void saveFrameIoConfig({ ...frameIoConfig, clientId: event.target.value })} placeholder="From Adobe Developer Console" /></label>
+                <label>OAuth scopes<input value={frameIoConfig.scopes} onChange={(event) => void saveFrameIoConfig({ ...frameIoConfig, scopes: event.target.value })} placeholder="Scopes enabled for this credential" /></label>
+                <p className="frameio-help">Pepper uses the Adobe Native App redirect URI assigned to this credential. Credentials stay in this computer’s secure credential store.</p>
+              </div>
+            </details>
+            <p className="frameio-help">Share links require downloads to be enabled on the current Frame.io plan.</p>
+            {frameIoLoadingChoices && <p className="frameio-help">Loading accounts and projects…</p>}
+            {frameIoSetupError && <p className="frameio-setup-error">{frameIoSetupError}</p>}
+            <div className="modal-actions">
+              <button type="button" className="ghost" disabled={frameIoAuthBusy} onClick={() => setShowFrameIoConfig(false)}>Close</button>
+              {frameIoAccounts.length > 0 && <button type="button" className="ghost" disabled={frameIoLoadingChoices} onClick={() => void loadFrameIoChoices().catch(() => undefined)}>Refresh accounts</button>}
+              {frameIoAuthBusy && <button type="button" className="ghost" onClick={() => void cancelFrameIoAuth()}>Cancel sign-in</button>}
+              <button type="button" className="primary" disabled={!frameIoConfig.clientId || !frameIoConfig.scopes || frameIoLoadingChoices || frameIoAuthBusy} onClick={() => void connectFrameIo()}>{frameIoAuthBusy ? "Waiting for Adobe…" : frameIoAccounts.length ? "Reconnect Adobe" : "Connect Adobe & load accounts"}</button>
+            </div>
+          </div>
+        </div>
+      )}
+
       {pendingPromotion && (
         <dialog
           ref={promotionDialogRef}
@@ -1969,8 +2409,27 @@ export default function App() {
           <p id="promotion-description">
             Publish <strong>V{pendingPromotion.export_status.latest_version}</strong> for{" "}
             <strong>{parseClientLabel(pendingPromotion.name).name}</strong> to 04_FINAL.
-            The source export will be kept.
+            The clean master below is the file that will be copied. The source export will be kept.
           </p>
+          {(() => {
+            const cleanVersion = pendingPromotion.export_status.versions.find(
+              (version) => version.version === pendingPromotion.export_status.latest_version,
+            );
+            if (!cleanVersion) return <p className="promotion-preview-empty">The clean master preview is unavailable. Refresh exports before publishing.</p>;
+            const cleanPath = `${pendingPromotion.path.replace(/[\\/]+$/, "")}\\03_EXPORTS\\${cleanVersion.relative_path.replace(/[\\/]+/g, "\\")}`;
+            return (
+              <article className="export-preview promotion-preview">
+                <div className="export-preview-heading">
+                  <div className="export-preview-title">
+                    <span className="version-label">Clean V{cleanVersion.version}</span>
+                    <strong>{cleanVersion.filename}</strong>
+                  </div>
+                  <span className="promotion-clean-label">Exact file sent to FINAL</span>
+                </div>
+                <video controls preload="metadata" src={convertFileSrc(cleanPath)} />
+              </article>
+            );
+          })()}
           <p className="update-notes promotion-filename">
             {pendingPromotion.name}_FINAL{pendingPromotion.export_status.latest_filename?.match(/\.[^.]+$/)?.[0]}
           </p>
@@ -1981,7 +2440,12 @@ export default function App() {
             <button type="button" className="ghost" autoFocus onClick={() => setPendingPromotion(null)}>
               Cancel
             </button>
-            <button type="button" className="primary" onClick={() => void handlePromoteLatest(pendingPromotion)}>
+            <button
+              type="button"
+              className="primary"
+              disabled={!pendingPromotion.export_status.versions.some((version) => version.version === pendingPromotion.export_status.latest_version)}
+              onClick={() => void handlePromoteLatest(pendingPromotion)}
+            >
               Publish
             </button>
           </div>
@@ -2014,10 +2478,7 @@ export default function App() {
                   try {
                     await pendingUpdate.downloadAndInstall();
                   } catch (err) {
-                    setToast({
-                      message: "Could not install update.",
-                      tone: "error",
-                    });
+                    showToast("Could not install update.", "error");
                     setInstallingUpdate(false);
                   }
                 }}

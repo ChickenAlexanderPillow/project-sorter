@@ -12,6 +12,8 @@ use std::time::{Duration, Instant};
 use tauri::{Emitter, Manager};
 use walkdir::WalkDir;
 
+mod frameio;
+
 #[derive(Debug, Serialize, Deserialize, Clone)]
 struct ClientInfo {
     name: String,
@@ -24,6 +26,7 @@ struct ClientInfo {
 #[derive(Debug, Serialize, Deserialize, Clone, Default)]
 struct ExportStatus {
     versions: Vec<ExportVersion>,
+    approval_versions: Vec<ExportVersion>,
     latest_version: Option<u32>,
     latest_filename: Option<String>,
     approval_ready: bool,
@@ -41,6 +44,23 @@ struct ExportVersion {
     filename: String,
     relative_path: String,
     added_at: String,
+    frameio: Option<FrameIoRecord>,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+struct FrameIoRecord {
+    schema_version: u32,
+    state: String,
+    source_size: u64,
+    source_modified_nanos: u128,
+    destination_account_id: String,
+    destination_project_id: String,
+    destination_folder_id: String,
+    file_id: Option<String>,
+    share_id: Option<String>,
+    share_url: Option<String>,
+    updated_at: String,
+    last_error: Option<String>,
 }
 
 #[derive(Debug, Serialize, Clone)]
@@ -405,8 +425,78 @@ fn scan_video_versions_in(root: &Path, directory: &Path) -> Result<Vec<ExportVer
                     .map_err(|error| error.to_string())?,
             )
             .to_rfc3339(),
+            frameio: None,
         });
     }
+    Ok(files)
+}
+
+fn frameio_sidecar_path(video_path: &Path) -> PathBuf {
+    let filename = video_path
+        .file_name()
+        .map(|name| name.to_string_lossy().to_string())
+        .unwrap_or_else(|| "approval-video".to_string());
+    video_path.with_file_name(format!("{filename}.frameio.json"))
+}
+
+fn read_frameio_record(video_path: &Path) -> Option<FrameIoRecord> {
+    let bytes = fs::read(frameio_sidecar_path(video_path)).ok()?;
+    let record = serde_json::from_slice::<FrameIoRecord>(&bytes).ok()?;
+    let metadata = fs::metadata(video_path).ok()?;
+    let modified_nanos = metadata
+        .modified()
+        .ok()?
+        .duration_since(std::time::UNIX_EPOCH)
+        .ok()?
+        .as_nanos();
+    (record.source_size == metadata.len() && record.source_modified_nanos == modified_nanos)
+        .then_some(record)
+}
+
+fn scan_approval_versions(exports_dir: &Path) -> Result<Vec<ExportVersion>, String> {
+    let approval_dir = exports_dir.join("APPROVAL");
+    let entries = match fs::read_dir(&approval_dir) {
+        Ok(entries) => entries,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(error) => return Err(format!("Unable to read {}: {error}", approval_dir.display())),
+    };
+    let mut files = Vec::new();
+    for entry in entries {
+        let entry = entry.map_err(|error| error.to_string())?;
+        let metadata = entry.metadata().map_err(|error| error.to_string())?;
+        let path = entry.path();
+        if !metadata.is_file() || !is_video_file(&path) {
+            continue;
+        }
+        let stem = path.file_stem().and_then(|value| value.to_str()).unwrap_or_default();
+        // Only the watcher’s finalized, watermarked approval render is a
+        // deliverable. This excludes source copies, staging/partial names,
+        // and other files that merely contain the word APPROVAL.
+        const APPROVAL_SUFFIX: &str = "_APPROVAL_1080P_WM_TC";
+        let upper_stem = stem.to_ascii_uppercase();
+        let Some(source_stem) = upper_stem.strip_suffix(APPROVAL_SUFFIX).map(|_| &stem[..stem.len() - APPROVAL_SUFFIX.len()]) else {
+            continue;
+        };
+        if metadata.len() == 0 {
+            continue;
+        }
+        let (_, version) = versioned_stem(source_stem)?;
+        let relative_path = path
+            .strip_prefix(exports_dir)
+            .map_err(|error| error.to_string())?
+            .to_string_lossy()
+            .to_string();
+        files.push(ExportVersion {
+            version: version.unwrap_or(1),
+            filename: entry.file_name().to_string_lossy().to_string(),
+            relative_path,
+            added_at: chrono::DateTime::<chrono::Utc>::from(
+                metadata.created().or_else(|_| metadata.modified()).map_err(|error| error.to_string())?,
+            ).to_rfc3339(),
+            frameio: read_frameio_record(&path),
+        });
+    }
+    files.sort_by(|left, right| left.version.cmp(&right.version).then_with(|| left.filename.to_lowercase().cmp(&right.filename.to_lowercase())));
     Ok(files)
 }
 
@@ -473,6 +563,7 @@ fn scan_export_status(client_path: &Path) -> ExportStatus {
         Err(issue) => (Vec::new(), Some(issue)),
     };
     let display_versions = include_superseded_versions(&exports, &exports_dir);
+    let approval_versions = scan_approval_versions(&exports_dir).unwrap_or_default();
     let latest = exports.last();
     let mut final_files: Vec<(String, std::time::SystemTime)> = fs::read_dir(&final_dir)
         .ok()
@@ -628,6 +719,7 @@ fn scan_export_status(client_path: &Path) -> ExportStatus {
     let latest_filename = latest.map(|export| export.filename.clone());
     ExportStatus {
         versions: display_versions,
+        approval_versions,
         latest_version,
         latest_filename,
         approval_ready,
@@ -2056,11 +2148,32 @@ async fn undo_batch(entries: Vec<UndoEntry>) -> Result<UndoResult, String> {
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
+        .plugin(tauri_plugin_single_instance::init(|app, argv, _cwd| {
+            let runtime = app.state::<frameio::Runtime>();
+            for argument in argv {
+                let _ = runtime.accept_auth_callback(&argument);
+            }
+        }))
+        .plugin(tauri_plugin_deep_link::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_store::Builder::default().build())
         .plugin(tauri_plugin_clipboard_manager::init())
+        .manage(frameio::Runtime::default())
+        .setup(|app| {
+            use tauri_plugin_deep_link::DeepLinkExt;
+            #[cfg(windows)]
+            app.deep_link().register_all()?;
+            let app_handle = app.handle().clone();
+            app.deep_link().on_open_url(move |event| {
+                let runtime = app_handle.state::<frameio::Runtime>();
+                for url in event.urls() {
+                    let _ = runtime.accept_auth_callback(url.as_str());
+                }
+            });
+            Ok(())
+        })
         .invoke_handler(tauri::generate_handler![
             list_project_roots,
             scan_project_root,
@@ -2073,7 +2186,15 @@ pub fn run() {
             sort_files,
             append_debug_log,
             clear_debug_log,
-            undo_batch
+            undo_batch,
+            frameio::frameio_start_auth,
+            frameio::frameio_finish_auth,
+            frameio::frameio_cancel_auth,
+            frameio::frameio_open_external_url,
+            frameio::frameio_list_accounts,
+            frameio::frameio_get_storage,
+            frameio::frameio_list_projects,
+            frameio::frameio_upload
         ])
         .manage(Mutex::new(WatchState {
             watcher: None,

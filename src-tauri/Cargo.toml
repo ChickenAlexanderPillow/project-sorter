@@ -24,6 +24,8 @@ tauri-plugin-dialog = "2"
 tauri-plugin-store = "2"
 tauri-plugin-clipboard-manager = "2"
 tauri-plugin-updater = "2"
+tauri-plugin-deep-link = "2"
+tauri-plugin-single-instance = { version = "2", features = ["deep-link"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 chrono = { version = "0.4", features = ["serde", "clock"] }
@@ -31,3 +33,13 @@ walkdir = "2"
 whoami = "1"
 libc = "0.2"
 notify = "6"
+reqwest = { version = "0.13", features = ["json", "stream", "form", "query"] }
+tokio = { version = "1", features = ["fs", "io-util", "time"] }
+keyring = { version = "3", features = ["windows-native", "apple-native", "sync-secret-service"] }
+base64 = "0.22"
+sha2 = "0.10"
+uuid = { version = "1", features = ["v4"] }
+futures-util = "0.3"
+bytes = "1"
+tempfile = "3"
+url = "2"

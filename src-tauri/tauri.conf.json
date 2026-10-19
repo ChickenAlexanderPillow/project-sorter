@@ -31,6 +31,11 @@
     }
   },
   "plugins": {
+    "deep-link": {
+      "desktop": {
+        "schemes": ["adobe+4694cbd42914a67015f420c3d5241c8540f26611"]
+      }
+    },
     "updater": {
       "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDI3QjUyMDJENEExQ0QyQTgKUldTbzBoeEtMU0MxSi9WRkF2eGM5eXZpYUh1dS9RL01rTkd0SmtteGVwU1Y3bDdReTRWbExIVXQK",
       "endpoints": [
