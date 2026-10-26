@@ -482,16 +482,21 @@ pub async fn frameio_list_projects(client_id: String, account_id: String) -> Res
     let token = access_token(&client_id).await?;
     let client = Client::new();
     let workspaces = list_api_data(&client, &token, format!("{API}/accounts/{account_id}/workspaces?page_size=100")).await?;
-    let mut projects = Vec::new();
-    for workspace in workspaces {
-        let Some(workspace_id) = workspace.get("id").and_then(Value::as_str) else { continue; };
-        let workspace_name = workspace.get("name").and_then(Value::as_str)
-            .or_else(|| workspace.get("display_name").and_then(Value::as_str))
-            .unwrap_or("Workspace").to_string();
-        let workspace_projects = list_api_data(&client, &token,
-            format!("{API}/accounts/{account_id}/workspaces/{workspace_id}/projects?page_size=100")).await?;
-        projects.extend(workspace_projects.iter().filter_map(|item| option_from(item, Some(workspace_name.clone()))));
-    }
+    let workspace_names = workspaces.iter().filter_map(|workspace| {
+        let id = workspace.get("id").and_then(Value::as_str)?;
+        let name = workspace.get("name").and_then(Value::as_str)
+            .or_else(|| workspace.get("display_name").and_then(Value::as_str))?;
+        Some((id.to_string(), name.to_string()))
+    }).collect::<HashMap<_, _>>();
+    // The account-level endpoint includes all projects the user can access,
+    // including projects shared directly without workspace-level access.
+    let account_projects = list_api_data(&client, &token,
+        format!("{API}/accounts/{account_id}/projects?page_size=100")).await?;
+    let mut projects = account_projects.iter().filter_map(|item| {
+        let workspace_name = item.get("workspace_id").and_then(Value::as_str)
+            .and_then(|id| workspace_names.get(id).cloned());
+        option_from(item, workspace_name)
+    }).collect::<Vec<_>>();
     projects.sort_by(|a, b| a.workspace_name.cmp(&b.workspace_name).then_with(|| a.name.cmp(&b.name)));
     Ok(projects)
 }

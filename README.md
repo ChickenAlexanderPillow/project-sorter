@@ -2,6 +2,12 @@
 
 Cross-platform Tauri desktop utility to sort dropped media into client folders on a NAS. Works offline and runs fully on-device.
 
+## Run in development
+
+```bash
+npm run tauri -- dev
+```
+
 ## Features
 - Pick a Project Root and scan one level deep for client folders
 - Add Client (creates template) and Fix Client (creates missing folders only)

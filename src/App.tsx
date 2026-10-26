@@ -235,6 +235,8 @@ export default function App() {
   const [projectSearch, setProjectSearch] = useState("");
   const [clients, setClients] = useState<ClientInfo[]>([]);
   const [expandedClients, setExpandedClients] = useState<Set<string>>(() => new Set());
+  const [clientScrollSpacerHeight, setClientScrollSpacerHeight] = useState(0);
+  const [expandedClientScrollTarget, setExpandedClientScrollTarget] = useState<string | null>(null);
   const [selectedVersionByClient, setSelectedVersionByClient] = useState<Record<string, number>>({});
   const [frameIoConfig, setFrameIoConfig] = useState({
     clientId: import.meta.env.VITE_FRAMEIO_CLIENT_ID ?? "",
@@ -291,6 +293,22 @@ export default function App() {
   const [huddleTemplate, setHuddleTemplate] = useState<HuddleTemplate>("PHYSICAL");
   const projectRootRef = useRef(projectRoot);
   const tableScrollRef = useRef<HTMLDivElement | null>(null);
+  useEffect(() => {
+    if (!expandedClientScrollTarget || !expandedClients.has(expandedClientScrollTarget)) return;
+    const container = tableScrollRef.current;
+    const row = Array.from(container?.querySelectorAll<HTMLElement>(".client-row") ?? [])
+      .find((candidate) => candidate.dataset.clientName === expandedClientScrollTarget);
+    if (!container || !row) return;
+    const rowOffset = row.getBoundingClientRect().top - container.getBoundingClientRect().top - container.clientTop;
+    const targetScrollTop = container.scrollTop + rowOffset;
+    const requiredSpacerHeight = Math.max(0, targetScrollTop - (container.scrollHeight - container.clientHeight));
+    if (Math.abs(requiredSpacerHeight - clientScrollSpacerHeight) > 1) {
+      setClientScrollSpacerHeight(requiredSpacerHeight);
+      return;
+    }
+    container.scrollTo({ top: targetScrollTop, behavior: "smooth" });
+    setExpandedClientScrollTarget(null);
+  }, [expandedClients, expandedClientScrollTarget, clientScrollSpacerHeight]);
   const [dragTarget, setDragTarget] = useState<string | null>(null);
   const hoverClientRef = useRef<string | null>(null);
   const sortableClientsRef = useRef<ClientInfo[]>([]);
@@ -1219,6 +1237,14 @@ export default function App() {
   }, [projectRoot, busy, lastClientsCheckedAt]);
 
   const toggleClientExpanded = (name: string) => {
+    const isExpanded = expandedClients.has(name);
+    if (isExpanded) {
+      setClientScrollSpacerHeight(0);
+      setExpandedClientScrollTarget(null);
+    } else {
+      setClientScrollSpacerHeight(0);
+      setExpandedClientScrollTarget(name);
+    }
     setExpandedClients((current) => {
       return current.has(name) ? new Set() : new Set([name]);
     });
@@ -1508,8 +1534,10 @@ export default function App() {
         data-tauri-drag-region
       >
         <div className="topbar-brand" data-tauri-drag-region aria-label="Pepper">
-          <img src={pepperIcon} alt="" aria-hidden="true" />
-          <span>Pepper</span>
+          <span className="topbar-brand-icon" aria-hidden="true">
+            <img src={pepperIcon} alt="" />
+          </span>
+          <span className="topbar-brand-wordmark">Pepper</span>
         </div>
         <div className="topbar-actions window-controls">
           <div className="notification-center" ref={notificationCenterRef}>
@@ -2169,6 +2197,7 @@ export default function App() {
                     className={`table-row client-row ${droppable ? "droppable-row" : ""} ${
                       dragTarget === client.name ? "drag-over" : ""
                     } ${published ? "published-row" : ""} ${expanded ? "expanded-row" : ""}`}
+                    data-client-name={client.name}
                     data-client={droppable ? client.name : undefined}
                     onClick={() => toggleClientExpanded(client.name)}
                     onDragOver={
@@ -2470,6 +2499,9 @@ export default function App() {
               </div>
             )}
             </div>
+            {clientScrollSpacerHeight > 0 && (
+              <div className="client-scroll-spacer" aria-hidden="true" style={{ height: clientScrollSpacerHeight }} />
+            )}
           </div>
         </section>
       </div>
