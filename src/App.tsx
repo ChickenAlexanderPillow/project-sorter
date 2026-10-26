@@ -113,6 +113,7 @@ const CONFIG_STORE = new LazyStore("config.json", {
   autoSave: true,
   defaults: {},
 });
+const PEPPER_FRAMEIO_ACCOUNT_ID = "e44a308c-5a20-4f8b-ba14-f56d0fb8c50c";
 const NOTIFICATION_STORE_KEY = "pepper.notificationHistory.v1";
 
 const readNotificationHistory = (): NotificationEntry[] => {
@@ -445,6 +446,18 @@ export default function App() {
         accountId: savedFrameIo.accountId ?? import.meta.env.VITE_FRAMEIO_ACCOUNT_ID ?? "",
         projectId: savedFrameIo.projectId ?? import.meta.env.VITE_FRAMEIO_PROJECT_ID ?? "",
       });
+      const savedFrameIoClientId = savedFrameIo?.clientId ?? import.meta.env.VITE_FRAMEIO_CLIENT_ID ?? "";
+      const savedFrameIoAccountId = savedFrameIo?.accountId ?? import.meta.env.VITE_FRAMEIO_ACCOUNT_ID ?? "";
+      if (savedFrameIoClientId) {
+        void invoke<FrameIoOption[]>("frameio_list_accounts", { clientId: savedFrameIoClientId })
+          .then((accounts) => {
+            setFrameIoAccounts(accounts);
+            if (savedFrameIoAccountId !== PEPPER_FRAMEIO_ACCOUNT_ID) return [];
+            return invoke<FrameIoOption[]>("frameio_list_projects", { clientId: savedFrameIoClientId, accountId: savedFrameIoAccountId });
+          })
+          .then((projects) => setFrameIoProjects(projects))
+          .catch((err) => console.warn("Frame.io destination verification is unavailable", err));
+      }
       const migratedRoots = (await CONFIG_STORE.get<string[]>("legacyFinalMigrationRoots")) ?? [];
 
       if (typeof savedRoot === "string") {
@@ -598,6 +611,9 @@ export default function App() {
   }, []);
 
   const saveFrameIoConfig = async (next: typeof frameIoConfig) => {
+    if (next.accountId !== frameIoConfig.accountId || next.projectId !== frameIoConfig.projectId) {
+      setFrameIoProgress({});
+    }
     setFrameIoConfig(next);
     await CONFIG_STORE.set("frameIoConfig", next);
     await CONFIG_STORE.save();
@@ -839,7 +855,9 @@ export default function App() {
   const recentProjects = visibleProjectRoots.filter((project) => recentProjectPaths.includes(project.path));
   const otherProjects = visibleProjectRoots.filter((project) => !recentProjectPaths.includes(project.path));
   const activeProject = availableProjectRoots.find((project) => project.path === projectRoot);
-  const frameIoConfigured = Boolean(frameIoConfig.clientId && frameIoConfig.scopes && frameIoConfig.accountId && frameIoConfig.projectId);
+  const frameIoConfigured = Boolean(frameIoConfig.clientId && frameIoConfig.scopes
+    && frameIoConfig.accountId === PEPPER_FRAMEIO_ACCOUNT_ID
+    && frameIoProjects.some((project) => project.id === frameIoConfig.projectId && project.workspace_name === "Callum's Workspace"));
 
 
   const visibleClients = useMemo(() => {
@@ -2553,9 +2571,9 @@ export default function App() {
               </div>
               <div className="frameio-config-grid">
                 <label>Account<select value={frameIoConfig.accountId} onChange={(event) => void selectFrameIoAccount(event.target.value)} disabled={frameIoLoadingChoices || frameIoAccounts.length === 0}><option value="">{frameIoAccounts.length ? "Select an account" : "Connect Adobe to load accounts"}</option>{frameIoAccounts.map((account) => <option key={account.id} value={account.id}>{account.name}</option>)}</select></label>
-                <label>Project<select value={frameIoConfig.projectId} onChange={(event) => void saveFrameIoConfig({ ...frameIoConfig, projectId: event.target.value })} disabled={!frameIoConfig.accountId || frameIoLoadingChoices || frameIoProjects.length === 0}><option value="">{frameIoProjects.length ? "Select a project" : "Choose an account first"}</option>{frameIoProjects.map((project) => <option key={project.id} value={project.id}>{project.workspace_name ? `${project.workspace_name} — ` : ""}{project.name}</option>)}</select></label>
+                <label>Project<select value={frameIoConfig.projectId} onChange={(event) => void saveFrameIoConfig({ ...frameIoConfig, projectId: event.target.value })} disabled={!frameIoConfig.accountId || frameIoLoadingChoices || frameIoProjects.length === 0}><option value="">{frameIoProjects.length ? "Select a project" : frameIoConfig.accountId ? "Shared Huddle workspace unavailable" : "Choose an account first"}</option>{frameIoProjects.map((project) => <option key={project.id} value={project.id}>{project.workspace_name} — {project.name}</option>)}</select></label>
               </div>
-              <p className="frameio-help frameio-config-destination">Pepper creates or reuses <strong>{activeProject?.name ?? "the selected production project"}</strong> inside this Frame.io project and adds later client exports to the existing version stack.</p>
+              <p className="frameio-help frameio-config-destination">Uploads are locked to <strong>Callum’s Account → Callum’s Workspace</strong>. Choose a project inside that shared workspace.</p>
             </section>
             <section className="frameio-storage-section" aria-live="polite">
               <div className="frameio-storage-heading">

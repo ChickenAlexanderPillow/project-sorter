@@ -24,6 +24,9 @@ use uuid::Uuid;
 
 const API: &str = "https://api.frame.io/v4";
 const IMS: &str = "https://ims-na1.adobelogin.com/ims";
+const PEPPER_FRAMEIO_ACCOUNT_ID: &str = "e44a308c-5a20-4f8b-ba14-f56d0fb8c50c";
+const PEPPER_FRAMEIO_ACCOUNT_NAME: &str = "Callum's Account";
+const PEPPER_FRAMEIO_WORKSPACE_NAME: &str = "Callum's Workspace";
 pub const REDIRECT_URI: &str = "adobe+4694cbd42914a67015f420c3d5241c8540f26611://adobeid/5bfe79c1be7d40af8ed450499e30c2c7";
 #[cfg(target_os = "windows")]
 const CREATE_NO_WINDOW: u32 = 0x08000000;
@@ -457,7 +460,11 @@ pub async fn frameio_list_accounts(client_id: String) -> Result<Vec<FrameIoOptio
     let token = access_token(&client_id).await?;
     let client = Client::new();
     let accounts = list_api_data(&client, &token, format!("{API}/accounts?page_size=100")).await?;
-    Ok(accounts.iter().filter_map(|item| option_from(item, None)).collect())
+    Ok(accounts.iter()
+        .filter(|item| item.get("id").and_then(Value::as_str) == Some(PEPPER_FRAMEIO_ACCOUNT_ID)
+            && item.get("name").and_then(Value::as_str)
+                .or_else(|| item.get("display_name").and_then(Value::as_str)) == Some(PEPPER_FRAMEIO_ACCOUNT_NAME))
+        .filter_map(|item| option_from(item, None)).collect())
 }
 
 #[tauri::command]
@@ -479,6 +486,9 @@ pub async fn frameio_get_storage(client_id: String, account_id: String) -> Resul
 
 #[tauri::command]
 pub async fn frameio_list_projects(client_id: String, account_id: String) -> Result<Vec<FrameIoOption>, String> {
+    if account_id != PEPPER_FRAMEIO_ACCOUNT_ID {
+        return Ok(Vec::new());
+    }
     let token = access_token(&client_id).await?;
     let client = Client::new();
     let workspaces = list_api_data(&client, &token, format!("{API}/accounts/{account_id}/workspaces?page_size=100")).await?;
@@ -495,6 +505,7 @@ pub async fn frameio_list_projects(client_id: String, account_id: String) -> Res
     let mut projects = account_projects.iter().filter_map(|item| {
         let workspace_name = item.get("workspace_id").and_then(Value::as_str)
             .and_then(|id| workspace_names.get(id).cloned());
+        if workspace_name.as_deref() != Some(PEPPER_FRAMEIO_WORKSPACE_NAME) { return None; }
         option_from(item, workspace_name)
     }).collect::<Vec<_>>();
     projects.sort_by(|a, b| a.workspace_name.cmp(&b.workspace_name).then_with(|| a.name.cmp(&b.name)));
@@ -604,6 +615,13 @@ pub async fn frameio_upload(
     production_project_path: String,
     client_key: String,
 ) -> Result<SharedRecord, String> {
+    if account_id != PEPPER_FRAMEIO_ACCOUNT_ID {
+        return Err("Frame.io upload blocked: Pepper is locked to Callum's Account and Callum's Workspace.".into());
+    }
+    let allowed_projects = frameio_list_projects(client_id.clone(), account_id.clone()).await?;
+    if !allowed_projects.iter().any(|project| project.id == project_id) {
+        return Err("Frame.io upload blocked: Pepper could not verify that this project belongs to Callum's Workspace.".into());
+    }
     let path = PathBuf::from(&approval_path).canonicalize().map_err(|error| format!("Approval copy is unavailable: {error}"))?;
     if path.parent().and_then(Path::file_name).is_none_or(|name| !name.to_string_lossy().eq_ignore_ascii_case("APPROVAL")) {
         return Err("Only watermarked videos directly inside 03_EXPORTS/APPROVAL can be uploaded.".into());
