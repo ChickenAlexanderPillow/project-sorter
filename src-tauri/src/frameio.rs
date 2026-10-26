@@ -26,7 +26,6 @@ const API: &str = "https://api.frame.io/v4";
 const IMS: &str = "https://ims-na1.adobelogin.com/ims";
 const PEPPER_FRAMEIO_ACCOUNT_ID: &str = "e44a308c-5a20-4f8b-ba14-f56d0fb8c50c";
 const PEPPER_FRAMEIO_ACCOUNT_NAME: &str = "Callum's Account";
-const PEPPER_FRAMEIO_WORKSPACE_NAME: &str = "Callum's Workspace";
 pub const REDIRECT_URI: &str = "adobe+4694cbd42914a67015f420c3d5241c8540f26611://adobeid/5bfe79c1be7d40af8ed450499e30c2c7";
 #[cfg(target_os = "windows")]
 const CREATE_NO_WINDOW: u32 = 0x08000000;
@@ -492,28 +491,24 @@ pub async fn frameio_list_projects(client_id: String, account_id: String) -> Res
     }
     let token = access_token(&client_id).await?;
     let client = Client::new();
+    // Workspace metadata is useful for labeling choices, but it is not
+    // required to populate the project selector. Some valid Frame.io users
+    // can list account projects while the workspace list is incomplete.
     let workspaces = list_api_data(&client, &token,
-        format!("{API}/accounts/{account_id}/workspaces?page_size=100")).await?;
-    let mut projects = Vec::new();
-    let mut workspace_found = false;
-    for workspace in &workspaces {
-        let Some(workspace_id) = workspace.get("id").and_then(Value::as_str) else { continue; };
-        let Some(workspace_name) = workspace.get("name").and_then(Value::as_str)
-            .or_else(|| workspace.get("display_name").and_then(Value::as_str)) else { continue; };
-        if workspace_name != PEPPER_FRAMEIO_WORKSPACE_NAME { continue; }
-        workspace_found = true;
-        let workspace_projects = list_api_data(&client, &token,
-            format!("{API}/accounts/{account_id}/workspaces/{workspace_id}/projects?page_size=100")).await?;
-        projects.extend(workspace_projects.iter().filter_map(|item| {
-            option_from(item, Some(workspace_name.to_string()))
-        }));
-    }
-    if !workspace_found {
-        return Err("The Frame.io account is available, but this Adobe sign-in cannot see Callum's Workspace. Reconnect Adobe in Pepper and sign in with the invited Adobe ID.".into());
-    }
-    if projects.is_empty() {
-        return Err("Callum's Workspace is visible, but Frame.io returned no projects. Check whether the user has access to the Huddle project, especially if it is restricted.".into());
-    }
+        format!("{API}/accounts/{account_id}/workspaces?page_size=100")).await.unwrap_or_default();
+    let workspace_names = workspaces.iter().filter_map(|workspace| {
+        let id = workspace.get("id").and_then(Value::as_str)?;
+        let name = workspace.get("name").and_then(Value::as_str)
+            .or_else(|| workspace.get("display_name").and_then(Value::as_str))?;
+        Some((id.to_string(), name.to_string()))
+    }).collect::<HashMap<_, _>>();
+    let account_projects = list_api_data(&client, &token,
+        format!("{API}/accounts/{account_id}/projects?page_size=100")).await?;
+    let mut projects = account_projects.iter().filter_map(|item| {
+        let workspace_name = item.get("workspace_id").and_then(Value::as_str)
+            .and_then(|id| workspace_names.get(id).cloned());
+        option_from(item, workspace_name)
+    }).collect::<Vec<_>>();
     projects.sort_by(|a, b| a.workspace_name.cmp(&b.workspace_name).then_with(|| a.name.cmp(&b.name)));
     Ok(projects)
 }
@@ -622,11 +617,11 @@ pub async fn frameio_upload(
     client_key: String,
 ) -> Result<SharedRecord, String> {
     if account_id != PEPPER_FRAMEIO_ACCOUNT_ID {
-        return Err("Frame.io upload blocked: Pepper is locked to Callum's Account and Callum's Workspace.".into());
+        return Err("Frame.io upload blocked: select Callum's Account.".into());
     }
     let allowed_projects = frameio_list_projects(client_id.clone(), account_id.clone()).await?;
     if !allowed_projects.iter().any(|project| project.id == project_id) {
-        return Err("Frame.io upload blocked: Pepper could not verify that this project belongs to Callum's Workspace.".into());
+        return Err("Frame.io upload blocked: Pepper could not verify that this project belongs to Callum's Account.".into());
     }
     let path = PathBuf::from(&approval_path).canonicalize().map_err(|error| format!("Approval copy is unavailable: {error}"))?;
     if path.parent().and_then(Path::file_name).is_none_or(|name| !name.to_string_lossy().eq_ignore_ascii_case("APPROVAL")) {

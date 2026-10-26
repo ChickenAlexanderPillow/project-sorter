@@ -2679,9 +2679,9 @@ export default function App() {
               </div>
               <div className="frameio-config-grid">
                 <label>Account<select value={frameIoConfig.accountId} onChange={(event) => void selectFrameIoAccount(event.target.value)} disabled={frameIoLoadingChoices || frameIoAccounts.length === 0}><option value="">{frameIoAccounts.length ? "Select an account" : "Connect Adobe to load accounts"}</option>{frameIoAccounts.map((account) => <option key={account.id} value={account.id}>{account.name}</option>)}</select></label>
-                <label>Project<select value={frameIoConfig.projectId} onChange={(event) => void saveFrameIoConfig({ ...frameIoConfig, projectId: event.target.value })} disabled={!frameIoConfig.accountId || frameIoLoadingChoices || frameIoProjects.length === 0}><option value="">{frameIoProjects.length ? "Select a project" : frameIoConfig.accountId ? "Shared Huddle workspace unavailable" : "Choose an account first"}</option>{frameIoProjects.map((project) => <option key={project.id} value={project.id}>{project.workspace_name} — {project.name}</option>)}</select></label>
+                <label>Project<select value={frameIoConfig.projectId} onChange={(event) => void saveFrameIoConfig({ ...frameIoConfig, projectId: event.target.value })} disabled={!frameIoConfig.accountId || frameIoLoadingChoices || frameIoProjects.length === 0}><option value="">{frameIoProjects.length ? "Select a project" : frameIoConfig.accountId ? "No projects returned for this account" : "Choose an account first"}</option>{frameIoProjects.map((project) => <option key={project.id} value={project.id}>{project.workspace_name ? `${project.workspace_name} — ` : ""}{project.name}</option>)}</select></label>
               </div>
-              <p className="frameio-help frameio-config-destination">Uploads are locked to <strong>Callum’s Account → Callum’s Workspace</strong>. Choose a project inside that shared workspace.</p>
+              <p className="frameio-help frameio-config-destination">Uploads use Callum’s Account. Choose the review project; workspace names are shown when Frame.io returns them.</p>
             </section>
             <section className="frameio-storage-section" aria-live="polite">
               <div className="frameio-storage-heading">
