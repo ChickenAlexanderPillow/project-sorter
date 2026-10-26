@@ -18,6 +18,7 @@ mod frameio;
 struct ClientInfo {
     name: String,
     path: String,
+    season: Option<String>,
     status: String,
     missing: Vec<String>,
     export_status: ExportStatus,
@@ -1328,25 +1329,27 @@ fn affected_clients(event: &Event, root: &Path) -> (bool, HashSet<String>) {
             clients.clear();
             break;
         }
-        let mut components = relative.components();
-        let Some(client_component) = components.next() else {
+        let components: Vec<String> = relative.components()
+            .map(|component| component.as_os_str().to_string_lossy().to_string())
+            .collect();
+        if components.is_empty() {
             continue;
-        };
-        let client_name = client_component.as_os_str().to_string_lossy().to_string();
+        }
+        let is_mariya_meets = root.file_name().and_then(|value| value.to_str())
+            .map(|value| value.eq_ignore_ascii_case("8_Mariya Meets")).unwrap_or(false);
+        let season_path = is_mariya_meets && components[0].to_ascii_uppercase().starts_with("SEASON ");
+        let client_index = if season_path { 1 } else { 0 };
+        if components.len() <= client_index { all_clients = true; clients.clear(); break; }
+        let client_name = components[client_index].clone();
         if client_name == "_logs" {
             continue;
         }
-        let Some(section_component) = components.next() else {
+        if components.len() <= client_index + 1 {
             clients.insert(client_name);
             continue;
-        };
-        let section = section_component.as_os_str().to_string_lossy();
-        let template_relative = relative
-            .components()
-            .skip(1)
-            .map(|component| component.as_os_str().to_string_lossy())
-            .collect::<Vec<_>>()
-            .join("/");
+        }
+        let section = &components[client_index + 1];
+        let template_relative = components.iter().skip(client_index + 1).cloned().collect::<Vec<_>>().join("/");
         let template_path_changed = TEMPLATE_DIRS
             .iter()
             .any(|template| template.eq_ignore_ascii_case(&template_relative));
@@ -1361,10 +1364,16 @@ fn affected_clients(event: &Event, root: &Path) -> (bool, HashSet<String>) {
 }
 
 fn scan_client_folders(name: &str, path: &Path) -> ClientInfo {
+    let season = path.parent()
+        .and_then(|parent| parent.file_name())
+        .and_then(|value| value.to_str())
+        .filter(|value| value.to_ascii_uppercase().starts_with("SEASON "))
+        .map(str::to_string);
     if name.starts_with("XX") {
         return ClientInfo {
             name: name.to_string(),
             path: path.to_string_lossy().to_string(),
+            season,
             status: "Not a client".to_string(),
             missing: Vec::new(),
             export_status: ExportStatus::default(),
@@ -1424,6 +1433,7 @@ fn scan_client_folders(name: &str, path: &Path) -> ClientInfo {
     ClientInfo {
         name: name.to_string(),
         path: path.to_string_lossy().to_string(),
+        season,
         status: status.to_string(),
         missing,
         export_status: ExportStatus::default(),
@@ -1443,6 +1453,9 @@ async fn scan_project_root(
         let partial = client_names.is_some();
         let requested_names: HashSet<String> =
             client_names.unwrap_or_default().into_iter().collect();
+        let is_mariya_meets = root.file_name().and_then(|value| value.to_str())
+            .map(|value| value.eq_ignore_ascii_case("8_Mariya Meets"))
+            .unwrap_or(false);
         let mut client_paths = Vec::new();
         let mut removed_names = Vec::new();
         if partial {
@@ -1450,15 +1463,31 @@ async fn scan_project_root(
                 if name == "_logs" || Path::new(name).components().count() != 1 {
                     continue;
                 }
-                let path = root.join(name);
-                if path.is_dir() {
-                    client_paths.push((name.clone(), path));
-                } else {
-                    removed_names.push(name.clone());
+                let direct_path = root.join(name);
+                if direct_path.is_dir() {
+                    client_paths.push((name.clone(), direct_path));
+                    continue;
                 }
+                let mut found = false;
+                if is_mariya_meets {
+                  if let Ok(entries) = fs::read_dir(&root) {
+                    for season_entry in entries.flatten() {
+                        let season_path = season_entry.path();
+                        let is_season = season_path.file_name().and_then(|value| value.to_str())
+                            .map(|value| value.to_ascii_uppercase().starts_with("SEASON ")).unwrap_or(false);
+                        let path = season_path.join(name);
+                        if is_season && path.is_dir() {
+                            client_paths.push((name.clone(), path));
+                            found = true;
+                        }
+                    }
+                  }
+                }
+                if !found { removed_names.push(name.clone()); }
             }
         } else {
             let entries = fs::read_dir(&root).map_err(|e| e.to_string())?;
+            let mut season_paths = Vec::new();
             for entry in entries.flatten() {
                 let path = entry.path();
                 if !entry.file_type().map(|kind| kind.is_dir()).unwrap_or(false) {
@@ -1471,7 +1500,29 @@ async fn scan_project_root(
                 if name == "_logs" {
                     continue;
                 }
+                let is_season = is_mariya_meets && name.to_ascii_uppercase().starts_with("SEASON ");
+                if is_season {
+                    season_paths.push((name, path));
+                    continue;
+                }
                 client_paths.push((name, path));
+            }
+            if is_mariya_meets {
+                season_paths.sort_by(|left, right| season_number(&right.0).cmp(&season_number(&left.0)).then_with(|| right.0.cmp(&left.0)));
+                for (_, season_path) in season_paths {
+                    let season_entries = fs::read_dir(&season_path).map_err(|error| error.to_string())?;
+                    for season_entry in season_entries.flatten() {
+                        let path = season_entry.path();
+                        if !season_entry.file_type().map(|kind| kind.is_dir()).unwrap_or(false) { continue; }
+                        let Some(name) = path.file_name().and_then(|value| value.to_str()) else { continue };
+                        let upper_name = name.to_ascii_uppercase();
+                        if name.starts_with("XX")
+                            || !(upper_name.ends_with("_MARIYAMEETS") || upper_name.ends_with("_HUDDLE")) {
+                            continue;
+                        }
+                        client_paths.push((name.to_string(), path));
+                    }
+                }
             }
         }
         client_paths.sort_by(|a, b| a.0.to_lowercase().cmp(&b.0.to_lowercase()));
@@ -1559,6 +1610,30 @@ async fn scan_project_root(
     })
     .await
     .map_err(|e| e.to_string())?
+}
+
+fn season_number(name: &str) -> u32 {
+    name.get(6..).and_then(|value| value.trim().parse().ok()).unwrap_or(0)
+}
+
+#[tauri::command]
+fn create_mariya_meets_season(project_root: String) -> Result<String, String> {
+    let root = PathBuf::from(project_root);
+    let is_mariya_meets = root.file_name().and_then(|value| value.to_str())
+        .map(|value| value.eq_ignore_ascii_case("8_Mariya Meets")).unwrap_or(false);
+    if !is_mariya_meets { return Err("Season creation is only available in 8_Mariya Meets".to_string()); }
+    let mut highest = 0;
+    for entry in fs::read_dir(&root).map_err(|error| error.to_string())? {
+        let entry = entry.map_err(|error| error.to_string())?;
+        let name = entry.file_name().to_string_lossy().to_string();
+        if entry.file_type().map(|kind| kind.is_dir()).unwrap_or(false)
+            && name.to_ascii_uppercase().starts_with("SEASON ") {
+            highest = highest.max(season_number(&name));
+        }
+    }
+    let name = format!("SEASON {}", highest + 1);
+    fs::create_dir(root.join(&name)).map_err(|error| error.to_string())?;
+    Ok(name)
 }
 
 #[tauri::command]
@@ -1759,7 +1834,25 @@ fn create_client(
     client_type: String,
     huddle_template: Option<String>,
 ) -> Result<(), String> {
-    let client_root = PathBuf::from(project_root).join(&client_name);
+    let project_root = PathBuf::from(project_root);
+    let is_mariya_meets = project_root.file_name().and_then(|value| value.to_str())
+        .map(|value| value.eq_ignore_ascii_case("8_Mariya Meets")).unwrap_or(false);
+    let client_parent = if is_mariya_meets {
+        let mut latest: Option<(u32, PathBuf)> = None;
+        for entry in fs::read_dir(&project_root).map_err(|error| error.to_string())? {
+            let entry = entry.map_err(|error| error.to_string())?;
+            let name = entry.file_name().to_string_lossy().to_string();
+            if entry.file_type().map(|kind| kind.is_dir()).unwrap_or(false)
+                && name.to_ascii_uppercase().starts_with("SEASON ") {
+                let number = season_number(&name);
+                if latest.as_ref().map(|current| number > current.0).unwrap_or(true) {
+                    latest = Some((number, entry.path()));
+                }
+            }
+        }
+        latest.map(|(_, path)| path).ok_or_else(|| "Create a season before adding a Mariya Meets project".to_string())?
+    } else { project_root };
+    let client_root = client_parent.join(&client_name);
     if client_root.exists() {
         return Err("Client folder already exists".to_string());
     }
@@ -2265,6 +2358,7 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             list_project_roots,
+            create_mariya_meets_season,
             scan_project_root,
             scan_approval_progress,
             promote_latest_export,

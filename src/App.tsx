@@ -17,6 +17,7 @@ type ClientSort = { column: "name" | "status"; direction: "asc" | "desc" };
 type ClientInfo = {
   name: string;
   path: string;
+  season?: string | null;
   status: ClientStatus;
   missing: string[];
   export_status: ExportStatus;
@@ -290,6 +291,7 @@ export default function App() {
   const [manualPublishedPaths, setManualPublishedPaths] = useState<Record<string, boolean>>({});
   const [newClientName, setNewClientName] = useState("");
   const [showNewClientForm, setShowNewClientForm] = useState(false);
+  const [createdMariyaSeason, setCreatedMariyaSeason] = useState<string | null>(null);
   const [newClientType, setNewClientType] = useState<ClientType>("EXHIBITOR");
   const [customClientType, setCustomClientType] = useState("");
   const [huddleTemplate, setHuddleTemplate] = useState<HuddleTemplate>("PHYSICAL");
@@ -872,6 +874,11 @@ export default function App() {
       (showNonClients || client.status !== "Not a client")
     );
     return filtered.sort((left, right) => {
+      if (left.season || right.season) {
+        const leftSeason = Number(left.season?.match(/\d+/)?.[0] ?? 0);
+        const rightSeason = Number(right.season?.match(/\d+/)?.[0] ?? 0);
+        if (leftSeason !== rightSeason) return rightSeason - leftSeason;
+      }
       const alphabetical = left.name.localeCompare(right.name, undefined, { sensitivity: "base" });
       const direction = clientSort.direction === "asc" ? 1 : -1;
       if (clientSort.column === "name") return alphabetical * direction;
@@ -881,6 +888,8 @@ export default function App() {
       return completionOrder * direction || alphabetical;
     });
   }, [clients, search, showNonClients, clientSort, manualPublishedPaths]);
+
+  const isMariyaMeetsRoot = projectRoot.split(/[\\/]/).pop()?.toLowerCase() === "8_mariya meets";
 
   const advancedStats = useMemo(() => {
     const clientsWithExports = clients.filter((client) =>
@@ -1378,7 +1387,22 @@ export default function App() {
       setCustomClientType("");
       setHuddleTemplate("PHYSICAL");
       setShowNewClientForm(false);
+      setCreatedMariyaSeason(null);
       await refreshClients(undefined, false);
+    } catch (err) {
+      setError(String(err));
+    }
+  };
+
+  const handleCreateMariyaMeetsSeason = async () => {
+    if (!projectRoot || !isMariyaMeetsRoot) return;
+    try {
+      const season = await invoke<string>("create_mariya_meets_season", { projectRoot });
+      setCreatedMariyaSeason(season);
+      setShowNewClientForm(true);
+      setNewClientType("MARIYAMEETS");
+      await refreshClients(projectRoot, true);
+      setError(null);
     } catch (err) {
       setError(String(err));
     }
@@ -1921,6 +1945,7 @@ export default function App() {
               </div>
               <div className="client-toolbar-actions">
                 <span className="client-result-count">{visibleClients.length} {visibleClients.length === 1 ? "client" : "clients"}</span>
+                {isMariyaMeetsRoot && <button type="button" className="ghost new-season-button" onClick={() => void handleCreateMariyaMeetsSeason()} title="Create the next Mariya Meets season">New season</button>}
                 <button
                   type="button"
                   className="ghost icon-button refresh-button"
@@ -2209,7 +2234,10 @@ export default function App() {
                 {projectRoot ? "No clients found." : "Select a numbered project to view clients."}
               </div>
             )}
-            {visibleClients.map((client) => {
+            {isMariyaMeetsRoot && visibleClients.length === 0 && createdMariyaSeason && (
+              <div className="season-divider" role="heading" aria-level={2}>{createdMariyaSeason}</div>
+            )}
+            {visibleClients.map((client, index) => {
                 const label = parseClientLabel(client.name);
                 const droppable = screen === "sort" && client.status !== "Not a client";
                 const exports = client.export_status;
@@ -2292,7 +2320,10 @@ export default function App() {
                   ? `${client.path.replace(/[\\/]+$/, "")}\\03_EXPORTS\\${selectedApprovalVersion.relative_path.replace(/[\\/]+/g, "\\")}`
                   : null;
                 return (
-                  <Fragment key={client.name}>
+                  <Fragment key={client.path}>
+                  {isMariyaMeetsRoot && client.season && client.season !== visibleClients[index - 1]?.season && (
+                    <div className="season-divider" role="heading" aria-level={2}>{client.season}</div>
+                  )}
                   <div
                     className={`table-row client-row ${droppable ? "droppable-row" : ""} ${
                       dragTarget === client.name ? "drag-over" : ""
@@ -2349,11 +2380,6 @@ export default function App() {
                           </span>
                         )}
                       </div>
-                      {client.status === "Missing folders" && (
-                        <div className="missing">
-                          Missing: {client.missing.join(", ")}
-                        </div>
-                      )}
                     </div>
                     <div className="client-statuses">
                       {client.status !== "OK" && (

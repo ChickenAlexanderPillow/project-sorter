@@ -405,6 +405,18 @@ button.accent {
   z-index: 0;
 }
 
+.season-divider {
+  grid-column: 1 / -1;
+  padding: 11px 16px 8px;
+  margin-top: 8px;
+  border-bottom: 1px solid rgba(31, 35, 40, 0.16);
+  color: #555;
+  font-size: 12px;
+  font-weight: 750;
+  letter-spacing: .08em;
+  text-transform: uppercase;
+}
+
 .scan-progress-row {
   grid-template-columns: 1fr;
   min-height: 42px;
