@@ -638,13 +638,27 @@ pub async fn frameio_upload(
     if let Ok(bytes) = fs::read(&record_path) {
         if let Ok(existing) = serde_json::from_slice::<SharedRecord>(&bytes) {
             if existing.source_size == source_size && existing.source_modified_nanos == source_modified_nanos {
-                if existing.state == "ready" && existing.share_url.is_some() { return Ok(existing); }
+                // A ready sidecar belongs to the destination used by that
+                // upload. Do not treat it as complete when the user has
+                // explicitly selected a different Frame.io account/project
+                // on this computer; allow this explicit action to upload to
+                // the newly selected destination.
+                if existing.state == "ready"
+                    && existing.share_url.is_some()
+                    && existing.destination_account_id == account_id
+                    && existing.destination_project_id == project_id
+                { return Ok(existing); }
                 if matches!(existing.state.as_str(), "creating_share" | "share_needs_reconciliation")
                     && existing.file_id.is_some()
                     && existing.destination_account_id == account_id
                     && existing.destination_project_id == project_id
                 {
                     retry_share = Some(existing);
+                } else if existing.state == "ready" && existing.share_url.is_some() {
+                    // A prior successful delivery to another destination is
+                    // not an in-flight job and must not block a new explicit
+                    // delivery. The sidecar is replaced with the new record
+                    // after the new upload is established.
                 } else {
                     return Err(format!("This approval copy already has a Frame.io job in state '{}'. Pepper will not create another remote video automatically; reconcile the existing Frame.io item first.", existing.state));
                 }

@@ -47,7 +47,7 @@ type ExportVersion = {
   frameio: FrameIoRecord | null;
 };
 
-type FrameIoRecord = { state: string; share_url: string | null; last_error: string | null; updated_at: string };
+type FrameIoRecord = { state: string; share_url: string | null; last_error: string | null; updated_at: string; destination_account_id: string; destination_project_id: string };
 type FrameIoProgress = { approval_path: string; state: string; uploaded: number; total: number; message: string | null; share_url: string | null };
 type FrameIoOption = { id: string; name: string; workspace_name: string | null };
 type FrameIoStorage = { usedBytes: number; limitBytes: number };
@@ -2129,11 +2129,13 @@ export default function App() {
                   : null;
                 const latestFrameIoProgress = latestApprovalPath ? frameIoProgress[latestApprovalPath] : undefined;
                 const latestFrameIoRecord = latestApprovalVersion?.frameio;
-                const latestFrameIoState = latestFrameIoProgress?.state ?? latestFrameIoRecord?.state;
+                const latestFrameIoRecordMatchesDestination = latestFrameIoRecord?.destination_account_id === frameIoConfig.accountId
+                  && latestFrameIoRecord?.destination_project_id === frameIoConfig.projectId;
+                const latestFrameIoState = latestFrameIoProgress?.state ?? (latestFrameIoRecordMatchesDestination ? latestFrameIoRecord?.state : undefined);
                 const latestFrameIoBusy = latestApprovalPath !== null && frameIoBusyPath === latestApprovalPath;
                 const latestFrameIoShareUrl = latestFrameIoProgress?.state === "ready" && latestFrameIoProgress.share_url
                   ? latestFrameIoProgress.share_url
-                  : latestFrameIoBusy ? null : latestFrameIoProgress?.share_url ?? latestFrameIoRecord?.share_url;
+                  : latestFrameIoBusy ? null : latestFrameIoProgress?.share_url ?? (latestFrameIoRecordMatchesDestination ? latestFrameIoRecord?.share_url : null);
                 const uploadPercent = latestFrameIoProgress && latestFrameIoProgress.total > 0
                   ? Math.max(0, Math.min(99, Math.floor(latestFrameIoProgress.uploaded / latestFrameIoProgress.total * 100)))
                   : null;
@@ -2463,7 +2465,7 @@ export default function App() {
                                           <Copy size={14} aria-hidden="true" />
                                         </button>
                                       </>
-                                    ) : latestFrameIoProgress?.message || latestFrameIoRecord?.last_error ? (
+                                    ) : latestFrameIoProgress?.message || (latestFrameIoRecordMatchesDestination && latestFrameIoRecord?.last_error) ? (
                                       <span className="frameio-inline-message">{latestFrameIoProgress?.message ?? latestFrameIoRecord?.last_error}</span>
                                     ) : null}
                                     {latestFrameIoBusy && latestFrameIoState === "uploading" && uploadPercent !== null && (
