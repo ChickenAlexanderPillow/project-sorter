@@ -187,6 +187,7 @@ pub fn frameio_start_auth(
         .append_pair("client_id", client_id.trim())
         .append_pair("redirect_uri", REDIRECT_URI)
         .append_pair("scope", scopes.trim())
+        .append_pair("prompt", "login")
         .append_pair("response_type", "code")
         .append_pair("state", &state)
         .append_pair("code_challenge", &challenge)
@@ -487,27 +488,32 @@ pub async fn frameio_get_storage(client_id: String, account_id: String) -> Resul
 #[tauri::command]
 pub async fn frameio_list_projects(client_id: String, account_id: String) -> Result<Vec<FrameIoOption>, String> {
     if account_id != PEPPER_FRAMEIO_ACCOUNT_ID {
-        return Ok(Vec::new());
+        return Err("The selected Frame.io account is not Callum's shared account. Select the shared account to continue.".into());
     }
     let token = access_token(&client_id).await?;
     let client = Client::new();
-    let workspaces = list_api_data(&client, &token, format!("{API}/accounts/{account_id}/workspaces?page_size=100")).await?;
-    let workspace_names = workspaces.iter().filter_map(|workspace| {
-        let id = workspace.get("id").and_then(Value::as_str)?;
-        let name = workspace.get("name").and_then(Value::as_str)
-            .or_else(|| workspace.get("display_name").and_then(Value::as_str))?;
-        Some((id.to_string(), name.to_string()))
-    }).collect::<HashMap<_, _>>();
-    // The account-level endpoint includes all projects the user can access,
-    // including projects shared directly without workspace-level access.
-    let account_projects = list_api_data(&client, &token,
-        format!("{API}/accounts/{account_id}/projects?page_size=100")).await?;
-    let mut projects = account_projects.iter().filter_map(|item| {
-        let workspace_name = item.get("workspace_id").and_then(Value::as_str)
-            .and_then(|id| workspace_names.get(id).cloned());
-        if workspace_name.as_deref() != Some(PEPPER_FRAMEIO_WORKSPACE_NAME) { return None; }
-        option_from(item, workspace_name)
-    }).collect::<Vec<_>>();
+    let workspaces = list_api_data(&client, &token,
+        format!("{API}/accounts/{account_id}/workspaces?page_size=100")).await?;
+    let mut projects = Vec::new();
+    let mut workspace_found = false;
+    for workspace in &workspaces {
+        let Some(workspace_id) = workspace.get("id").and_then(Value::as_str) else { continue; };
+        let Some(workspace_name) = workspace.get("name").and_then(Value::as_str)
+            .or_else(|| workspace.get("display_name").and_then(Value::as_str)) else { continue; };
+        if workspace_name != PEPPER_FRAMEIO_WORKSPACE_NAME { continue; }
+        workspace_found = true;
+        let workspace_projects = list_api_data(&client, &token,
+            format!("{API}/accounts/{account_id}/workspaces/{workspace_id}/projects?page_size=100")).await?;
+        projects.extend(workspace_projects.iter().filter_map(|item| {
+            option_from(item, Some(workspace_name.to_string()))
+        }));
+    }
+    if !workspace_found {
+        return Err("The Frame.io account is available, but this Adobe sign-in cannot see Callum's Workspace. Reconnect Adobe in Pepper and sign in with the invited Adobe ID.".into());
+    }
+    if projects.is_empty() {
+        return Err("Callum's Workspace is visible, but Frame.io returned no projects. Check whether the user has access to the Huddle project, especially if it is restricted.".into());
+    }
     projects.sort_by(|a, b| a.workspace_name.cmp(&b.workspace_name).then_with(|| a.name.cmp(&b.name)));
     Ok(projects)
 }
@@ -666,7 +672,8 @@ pub async fn frameio_upload(
                     && existing.destination_account_id == account_id
                     && existing.destination_project_id == project_id
                 { return Ok(existing); }
-                if matches!(existing.state.as_str(), "creating_share" | "share_needs_reconciliation")
+                if (matches!(existing.state.as_str(), "creating_share" | "share_needs_reconciliation")
+                    || (existing.state == "ready" && existing.share_url.is_none()))
                     && existing.file_id.is_some()
                     && existing.destination_account_id == account_id
                     && existing.destination_project_id == project_id

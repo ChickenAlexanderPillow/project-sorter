@@ -79,6 +79,12 @@ struct ClientExportStatusUpdate {
 }
 
 #[derive(Debug, Serialize, Clone)]
+struct ApprovalProgressStatus {
+    client_name: String,
+    phase: Option<String>,
+}
+
+#[derive(Debug, Serialize, Clone)]
 struct ClientScanProgress {
     project_root: String,
     scan_id: u64,
@@ -121,6 +127,57 @@ struct FinalPromotionRecord {
 
 const FINAL_PROMOTION_RECORD: &str = ".pepper-final.json";
 const PRODUCTION_PROJECTS_ROOT: &str = r"Z:\The Huddle\Production";
+const APPROVAL_PROGRESS_STALE_AFTER: Duration = Duration::from_secs(300);
+
+fn approval_progress_marker_is_active(marker_path: &Path) -> bool {
+    fs::metadata(marker_path)
+        .and_then(|metadata| metadata.modified())
+        .is_ok_and(|modified| {
+            std::time::SystemTime::now()
+                .duration_since(modified)
+                .map(|age| age <= APPROVAL_PROGRESS_STALE_AFTER)
+                .unwrap_or(true)
+        })
+}
+
+fn approval_progress_phase(marker_path: &Path) -> Option<String> {
+    if !approval_progress_marker_is_active(marker_path) {
+        return None;
+    }
+    #[derive(Deserialize)]
+    struct ProgressMarker {
+        phase: Option<String>,
+    }
+    fs::read(marker_path)
+        .ok()
+        .and_then(|bytes| serde_json::from_slice::<ProgressMarker>(&bytes).ok())
+        .and_then(|progress| progress.phase)
+}
+
+fn approval_progress_for_client(client_name: &str, client_path: &Path) -> Option<ApprovalProgressStatus> {
+    let progress_dir = client_path.join("03_EXPORTS/APPROVAL/JSON/.staging");
+    let entries = fs::read_dir(progress_dir).ok()?;
+    let mut active: Vec<(std::time::SystemTime, PathBuf)> = entries
+        .flatten()
+        .filter_map(|entry| {
+            let path = entry.path();
+            if !entry.file_type().ok()?.is_file()
+                || !path.file_name()?.to_string_lossy().ends_with(".progress.json")
+                || !approval_progress_marker_is_active(&path)
+            {
+                return None;
+            }
+            let modified = entry.metadata().ok()?.modified().ok()?;
+            Some((modified, path))
+        })
+        .collect();
+    active.sort_by(|left, right| right.0.cmp(&left.0));
+    let (_, marker_path) = active.into_iter().next()?;
+    Some(ApprovalProgressStatus {
+        client_name: client_name.to_string(),
+        phase: approval_progress_phase(&marker_path),
+    })
+}
 
 fn video_fingerprint(path: &Path) -> io::Result<VideoFingerprint> {
     let metadata = fs::metadata(path)?;
@@ -617,33 +674,13 @@ fn scan_export_status(client_path: &Path) -> ExportStatus {
             .unwrap_or_default();
         let review_name = format!("{source_stem}_APPROVAL_1080p_WM_TC.mp4.progress.json");
         let marker = exports_dir.join("APPROVAL/JSON/.staging").join(review_name);
-        fs::metadata(marker)
-            .and_then(|metadata| metadata.modified())
-            .is_ok_and(|modified| {
-                std::time::SystemTime::now()
-                    .duration_since(modified)
-                    .map(|age| age <= Duration::from_secs(90))
-                    .unwrap_or(true)
-            })
+        approval_progress_marker_is_active(&marker)
     });
     let approval_progress_phase = latest.and_then(|export| {
         let source_stem = Path::new(&export.filename).file_stem()?.to_str()?;
         let review_name = format!("{source_stem}_APPROVAL_1080p_WM_TC.mp4.progress.json");
         let marker = exports_dir.join("APPROVAL/JSON/.staging").join(review_name);
-        let modified = fs::metadata(&marker).ok()?.modified().ok()?;
-        let age = std::time::SystemTime::now()
-            .duration_since(modified)
-            .unwrap_or_default();
-        if age > Duration::from_secs(90) {
-            return None;
-        }
-        #[derive(Deserialize)]
-        struct ProgressMarker {
-            phase: Option<String>,
-        }
-        serde_json::from_slice::<ProgressMarker>(&fs::read(marker).ok()?)
-            .ok()
-            .and_then(|progress| progress.phase)
+        approval_progress_phase(&marker)
     });
     let recorded_current = latest.is_some_and(|export| {
         promotion_record.as_ref().is_some_and(|record| {
@@ -1525,6 +1562,35 @@ async fn scan_project_root(
 }
 
 #[tauri::command]
+async fn scan_approval_progress(
+    project_root: String,
+    client_names: Vec<String>,
+) -> Result<Vec<ApprovalProgressStatus>, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let root = PathBuf::from(project_root);
+        if !root.is_dir() {
+            return Err("Project root is not a directory".to_string());
+        }
+        let mut progress = Vec::new();
+        for name in client_names {
+            if name == "_logs" || name == "." || name == ".." || Path::new(&name).components().count() != 1 {
+                continue;
+            }
+            let client_path = root.join(&name);
+            if !client_path.is_dir() {
+                continue;
+            }
+            if let Some(status) = approval_progress_for_client(&name, &client_path) {
+                progress.push(status);
+            }
+        }
+        Ok(progress)
+    })
+    .await
+    .map_err(|error| error.to_string())?
+}
+
+#[tauri::command]
 async fn list_project_roots() -> Result<Vec<ProjectRootOption>, String> {
     tauri::async_runtime::spawn_blocking(|| {
         let root = Path::new(PRODUCTION_PROJECTS_ROOT);
@@ -2200,6 +2266,7 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             list_project_roots,
             scan_project_root,
+            scan_approval_progress,
             promote_latest_export,
             migrate_project_finals,
             set_watch_root,

@@ -38,6 +38,7 @@ type ClientScanProgress = {
 };
 
 type ClientsChanged = { project_root: string; client_names: string[]; all_clients: boolean };
+type ApprovalProgressStatus = { client_name: string; phase: string | null };
 
 type ExportVersion = {
   version: number;
@@ -312,11 +313,16 @@ export default function App() {
   }, [expandedClients, expandedClientScrollTarget, clientScrollSpacerHeight]);
   const [dragTarget, setDragTarget] = useState<string | null>(null);
   const hoverClientRef = useRef<string | null>(null);
+  const clientsRef = useRef<ClientInfo[]>([]);
+  clientsRef.current = clients;
   const sortableClientsRef = useRef<ClientInfo[]>([]);
   const busyRef = useRef(false);
   const pendingRefreshRef = useRef(false);
   const clientsScansInFlightRef = useRef(0);
   const clientsScanSequenceRef = useRef(0);
+  const approvalProgressPollInFlightRef = useRef(false);
+  const approvalProgressActiveRef = useRef(new Set<string>());
+  const approvalProgressRefreshPendingRef = useRef(new Set<string>());
   const scanProgressVisibleRef = useRef(false);
   const watcherRefreshTimerRef = useRef<number | null>(null);
   const watcherRefreshPendingRef = useRef(false);
@@ -857,7 +863,7 @@ export default function App() {
   const activeProject = availableProjectRoots.find((project) => project.path === projectRoot);
   const frameIoConfigured = Boolean(frameIoConfig.clientId && frameIoConfig.scopes
     && frameIoConfig.accountId === PEPPER_FRAMEIO_ACCOUNT_ID
-    && frameIoProjects.some((project) => project.id === frameIoConfig.projectId && project.workspace_name === "Callum's Workspace"));
+    && frameIoConfig.projectId);
 
 
   const visibleClients = useMemo(() => {
@@ -1196,6 +1202,74 @@ export default function App() {
       }
     }
   };
+
+  useEffect(() => {
+    if (!projectRoot) {
+      approvalProgressActiveRef.current.clear();
+      approvalProgressRefreshPendingRef.current.clear();
+      return;
+    }
+    let cancelled = false;
+    const pollApprovalProgress = async () => {
+      if (cancelled || approvalProgressPollInFlightRef.current
+        || document.visibilityState !== "visible" || !document.hasFocus()) return;
+      const clientNames = clientsRef.current
+        .filter((client) => client.status !== "Not a client")
+        .map((client) => client.name);
+      if (!clientNames.length) return;
+      approvalProgressPollInFlightRef.current = true;
+      try {
+        const activeProgress = await invoke<ApprovalProgressStatus[]>("scan_approval_progress", {
+          projectRoot,
+          clientNames,
+        });
+        if (cancelled || projectRootRef.current !== projectRoot) return;
+        const byClient = new Map(activeProgress.map((progress) => [progress.client_name, progress]));
+        const previouslyActive = new Set(approvalProgressActiveRef.current);
+        for (const client of clientsRef.current) {
+          if (client.export_status.approval_in_progress) previouslyActive.add(client.name);
+        }
+        const nextActive = new Set(byClient.keys());
+        for (const name of previouslyActive) {
+          if (!nextActive.has(name)) approvalProgressRefreshPendingRef.current.add(name);
+        }
+        approvalProgressActiveRef.current = nextActive;
+        setClients((current) => current.map((client) => {
+          const progress = byClient.get(client.name);
+          const inProgress = Boolean(progress);
+          const phase = progress?.phase ?? (inProgress ? "Preparing approval copy" : null);
+          if (client.export_status.approval_in_progress === inProgress
+            && client.export_status.approval_progress_phase === phase) return client;
+          return {
+            ...client,
+            export_status: {
+              ...client.export_status,
+              approval_in_progress: inProgress,
+              approval_progress_phase: phase,
+            },
+          };
+        }));
+        if (approvalProgressRefreshPendingRef.current.size
+          && !busyRef.current && clientsScansInFlightRef.current === 0) {
+          const completedClients = Array.from(approvalProgressRefreshPendingRef.current);
+          approvalProgressRefreshPendingRef.current.clear();
+          void refreshClients(projectRoot, false, false, false, completedClients).catch(console.error);
+        }
+      } catch {
+        // Keep the last known render state when a transient NAS read fails.
+      } finally {
+        approvalProgressPollInFlightRef.current = false;
+      }
+    };
+    void pollApprovalProgress();
+    const interval = window.setInterval(pollApprovalProgress, 5_000);
+    return () => {
+      cancelled = true;
+      window.clearInterval(interval);
+      approvalProgressActiveRef.current.clear();
+      approvalProgressRefreshPendingRef.current.clear();
+    };
+  }, [projectRoot]);
 
   const changeProjectRoot = async (nextRoot: string) => {
     if (nextRoot === projectRootRef.current) return;
@@ -2154,6 +2228,11 @@ export default function App() {
                 const latestFrameIoShareUrl = latestFrameIoProgress?.state === "ready" && latestFrameIoProgress.share_url
                   ? latestFrameIoProgress.share_url
                   : latestFrameIoBusy ? null : latestFrameIoProgress?.share_url ?? (latestFrameIoRecordMatchesDestination ? latestFrameIoRecord?.share_url : null);
+                const latestFrameIoShareRetryAvailable = latestFrameIoState === "share_needs_reconciliation"
+                  || latestFrameIoState === "creating_share"
+                  || (latestFrameIoState === "ready" && latestFrameIoRecordMatchesDestination && !latestFrameIoRecord?.share_url);
+                const latestFrameIoHasUnfinishedJob = Boolean(latestFrameIoState && latestFrameIoState !== "ready"
+                  && !latestFrameIoBusy && !latestFrameIoShareRetryAvailable);
                 const uploadPercent = latestFrameIoProgress && latestFrameIoProgress.total > 0
                   ? Math.max(0, Math.min(99, Math.floor(latestFrameIoProgress.uploaded / latestFrameIoProgress.total * 100)))
                   : null;
@@ -2174,10 +2253,10 @@ export default function App() {
                   ? "FINAL"
                   : client.exportStatusLoading
                   ? "Loading exports…"
-                  : exports.issue
-                  ? "Check exports"
                   : exports.approval_in_progress
                     ? "Approval export in progress"
+                  : exports.issue
+                  ? "Check exports"
                   : published
                     ? "FINAL"
                     : exports.latest_filename
@@ -2197,9 +2276,10 @@ export default function App() {
                   ? "Manually marked as published in Advanced mode"
                   : client.exportStatusLoading
                   ? "Checking this client's exports…"
-                  : exports.issue ?? [
+                  : [
+                  exports.issue,
                   exports.latest_filename && `Latest: ${exports.latest_filename}`,
-                  exports.approval_in_progress && "Approval copy is being rendered and validated",
+                  exports.approval_in_progress && `Approval copy is being rendered and validated${exports.approval_progress_phase ? ` (${exports.approval_progress_phase})` : ""}`,
                   exports.final_filename && `FINAL: ${exports.final_filename}`,
                   exports.versions.length > 0 && `Versions: ${exports.versions.map((item) => `V${item.version}`).join(", ")}`,
                 ].filter(Boolean).join("\n");
@@ -2292,7 +2372,7 @@ export default function App() {
                               <LoaderCircle className="approval-progress-spinner" size={13} aria-hidden="true" />
                               {exportLabel}
                             </span>
-                          ) : exports.approval_in_progress && !exports.issue ? (
+                          ) : exports.approval_in_progress ? (
                             <span className="approval-progress-wrap" title={exportDetails}>
                               <span className="badge export-ready export-progress">
                                 <LoaderCircle className="approval-progress-spinner" size={13} aria-hidden="true" />
@@ -2439,6 +2519,8 @@ export default function App() {
                                       >
                                         <Link2 size={16} aria-hidden="true" />
                                       </button>
+                                    ) : latestFrameIoHasUnfinishedJob ? (
+                                      <span className="frameio-inline-label">{latestFrameIoRecord?.last_error ?? "Frame.io upload needs reconciliation"}</span>
                                     ) : !frameIoConfigured ? (
                                       <button
                                         type="button"
@@ -2453,14 +2535,14 @@ export default function App() {
                                       <button
                                         type="button"
                                         className="frameio-icon-button"
-                                        title={latestFrameIoBusy ? frameIoUploadLabel : "Send for review"}
-                                        aria-label={latestFrameIoBusy ? frameIoUploadLabel : "Send for review"}
+                                        title={latestFrameIoBusy ? frameIoUploadLabel : latestFrameIoShareRetryAvailable ? "Retry share link; video already uploaded" : "Send for review"}
+                                        aria-label={latestFrameIoBusy ? frameIoUploadLabel : latestFrameIoShareRetryAvailable ? "Retry share link; video already uploaded" : "Send for review"}
                                         disabled={client.exportStatusLoading || !activeProject || frameIoBusyPath === latestApprovalPath}
                                         onClick={() => activeProject && void uploadApprovalToFrameIo(latestApprovalPath, client.name, activeProject.name, activeProject.path)}
                                       >
                                         {frameIoBusyPath === latestApprovalPath
                                           ? <LoaderCircle className="approval-progress-spinner" size={16} aria-hidden="true" />
-                                          : <CloudUpload size={16} aria-hidden="true" />}
+                                          : latestFrameIoShareRetryAvailable ? <Link2 size={16} aria-hidden="true" /> : <CloudUpload size={16} aria-hidden="true" />}
                                       </button>
                                     )}
                                     {latestFrameIoShareUrl ? (
