@@ -1506,11 +1506,6 @@ export default function App() {
       <header
         className="topbar"
         data-tauri-drag-region
-        onMouseDown={(event) => {
-          if (event.button === 0 && !(event.target as HTMLElement).closest("button")) {
-            void getCurrentWindow().startDragging();
-          }
-        }}
       >
         <div className="topbar-brand" data-tauri-drag-region aria-label="Pepper">
           <img src={pepperIcon} alt="" aria-hidden="true" />
@@ -1536,7 +1531,10 @@ export default function App() {
             {showNotificationMenu && (
               <section className="notification-popover" aria-label="Notification history">
                 <header className="notification-popover-heading">
-                  <strong>Notifications</strong>
+                  <div className="notification-popover-title">
+                    <strong>Notifications</strong>
+                    <span>{notificationHistory.length ? `${notificationHistory.length} recent` : "Up to date"}</span>
+                  </div>
                   <button type="button" disabled={notificationHistory.length === 0} onClick={() => setNotificationHistory([])} aria-label="Clear notification history" title="Clear history"><Trash2 size={14} /></button>
                 </header>
                 {notificationHistory.length === 0 ? (
@@ -2067,7 +2065,7 @@ export default function App() {
                   onClick={() => toggleClientSort("name")}
                   aria-label={clientSort.column === "name" && clientSort.direction === "asc" ? "Client name: A to Z. Click to sort Z to A" : "Sort client names A to Z"}
                 >
-                  Client Name {sortIcon("name")}
+                  Client {sortIcon("name")}
                 </button>
               </div>
               <div>
