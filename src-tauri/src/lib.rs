@@ -34,6 +34,8 @@ struct ExportStatus {
     approval_progress_phase: Option<String>,
     final_version: Option<u32>,
     final_filename: Option<String>,
+    #[serde(default)]
+    final_published_at: Option<String>,
     final_current: bool,
     issue: Option<String>,
 }
@@ -111,6 +113,8 @@ struct FinalPromotionRecord {
     final_filename: String,
     source: VideoFingerprint,
     published: VideoFingerprint,
+    #[serde(default)]
+    published_at: Option<String>,
     #[serde(default)]
     migrated: bool,
 }
@@ -204,7 +208,7 @@ const VIDEO_EXTENSIONS: [&str; 9] = [
 const CLIENT_TEMPLATE_PROJECT_SOURCE: &str = r#"Z:\The Huddle\Templates\Copied_Huddle Master Template 2026_4K_2\Huddle Master Template 2026_4K_2.prproj"#;
 const CLIENT_SCENE_SWITCHING_TEMPLATE_SOURCE: &str = r#"Z:\The Huddle\Templates\Copied_Huddle Master Template Scenes Switching 2026 4K_1\Huddle Master Template Scenes Switching 2026 4K_1.prproj"#;
 const CLIENT_TYPES: [&str; 5] = ["EXHIBITOR", "HUDDLE", "PRODUCT", "MARIYAMEETS", "SOCIAL"];
-const TEMPLATE_DIRS: [&str; 11] = [
+const TEMPLATE_DIRS: [&str; 13] = [
     "01_MEDIA",
     "01_MEDIA/010_VIDEO_PROXY",
     "01_MEDIA/020_VIDEO_RAW",
@@ -212,11 +216,14 @@ const TEMPLATE_DIRS: [&str; 11] = [
     "01_MEDIA/040_AUDIO_RAW",
     "01_MEDIA/050_STILLS",
     "01_MEDIA/060_MUSIC",
+    "01_MEDIA/070_GRAPHICS",
+    "01_MEDIA/080_MISCELLANEOUS",
     "02_EDIT",
     "03_EXPORTS",
     "03_EXPORTS/APPROVAL",
     "04_FINAL",
 ];
+const OPTIONAL_LEGACY_DIRS: [&str; 2] = ["070_GRAPHICS", "080_MISCELLANEOUS"];
 
 fn destination_for_mode(mode: &str) -> Option<&'static str> {
     match mode {
@@ -693,6 +700,16 @@ fn scan_export_status(client_path: &Path) -> ExportStatus {
         .or(verified_legacy.map(|(file, _)| file))
         .or_else(|| final_files.first());
     let final_filename = final_file.map(|(name, _)| name.clone());
+    let final_published_at = final_file.and_then(|(name, _)| {
+        promotion_record
+            .as_ref()
+            .filter(|record| record.final_filename.as_str() == name.as_str())
+            .and_then(|record| record.published_at.clone())
+    }).or_else(|| final_file.and_then(|(name, _)| {
+        let metadata = fs::metadata(final_dir.join(name)).ok()?;
+        let created = metadata.created().or_else(|_| metadata.modified()).ok()?;
+        Some(chrono::DateTime::<chrono::Utc>::from(created).to_rfc3339())
+    }));
     let final_version = final_file.and_then(|(name, _)| {
         if let Some(record) = promotion_record
             .as_ref()
@@ -727,6 +744,7 @@ fn scan_export_status(client_path: &Path) -> ExportStatus {
         approval_progress_phase,
         final_version,
         final_filename,
+        final_published_at,
         final_current,
         issue,
     }
@@ -872,6 +890,7 @@ fn promote_latest_export_for_client(
                     .map_err(|error| error.to_string())?,
             },
             published: video_fingerprint(&stage).map_err(|error| error.to_string())?,
+            published_at: Some(chrono::Utc::now().to_rfc3339()),
             migrated: false,
         };
         let bytes = serde_json::to_vec_pretty(&record).map_err(|error| error.to_string())?;
@@ -1008,6 +1027,10 @@ pub fn migrate_existing_finals(project_root: &Path) -> Result<usize, String> {
             final_filename,
             source,
             published,
+            published_at: fs::metadata(&final_path)
+                .and_then(|metadata| metadata.created().or_else(|_| metadata.modified()))
+                .ok()
+                .map(|time| chrono::DateTime::<chrono::Utc>::from(time).to_rfc3339()),
             migrated: true,
         };
         let bytes = serde_json::to_vec_pretty(&record).map_err(|error| error.to_string())?;
@@ -1346,7 +1369,7 @@ fn scan_client_folders(name: &str, path: &Path) -> ClientInfo {
                 }
                 set
             });
-            if !subdirs.contains(child) {
+            if !subdirs.contains(child) && !OPTIONAL_LEGACY_DIRS.contains(&child) {
                 missing.push(dir.to_string());
             }
         } else if !child_dirs.contains(*dir) {

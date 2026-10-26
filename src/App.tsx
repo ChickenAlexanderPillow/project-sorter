@@ -7,7 +7,8 @@ import { cursorPosition, getCurrentWindow, LogicalSize } from "@tauri-apps/api/w
 import { type DragDropEvent } from "@tauri-apps/api/webview";
 import { writeText } from "@tauri-apps/plugin-clipboard-manager";
 import { check, type Update } from "@tauri-apps/plugin-updater";
-import { ArrowDown, ArrowUp, ArrowUpDown, Bell, Check, ChevronDown, ChevronRight, ChevronsUpDown, CloudUpload, Copy, FolderKanban, FolderOpen, Link2, LoaderCircle, Maximize2, Minus, MoreHorizontal, Plus, RefreshCw, Search, Settings2, Trash2, Wrench, X } from "lucide-react";
+import { ArrowDown, ArrowUp, ArrowUpDown, Bell, Check, ChevronDown, ChevronRight, ChevronsUpDown, CloudUpload, Copy, FolderKanban, FolderOpen, Link2, LoaderCircle, Maximize2, Minus, Plus, RefreshCw, Search, Settings2, Trash2, Wrench, X } from "lucide-react";
+import pepperIcon from "../src-tauri/icons/128x128.png";
 import "./App.css";
 
 type ClientStatus = "OK" | "Missing folders" | "Not a client";
@@ -62,6 +63,7 @@ type ExportStatus = {
   approval_progress_phase: string | null;
   final_version: number | null;
   final_filename: string | null;
+  final_published_at: string | null;
   final_current: boolean;
   issue: string | null;
 };
@@ -214,6 +216,16 @@ const isFinalised = (client: ClientInfo) =>
     (client.export_status.final_filename && !client.export_status.latest_filename)
   );
 
+const formatAverageDuration = (milliseconds: number | null) => {
+  if (milliseconds === null) return "—";
+  const totalMinutes = Math.round(milliseconds / 60_000);
+  const days = Math.floor(totalMinutes / (60 * 24));
+  const hours = Math.floor((totalMinutes % (60 * 24)) / 60);
+  if (days > 0) return `${days}d ${hours}h`;
+  if (totalMinutes >= 60) return `${(totalMinutes / 60).toFixed(1)}h`;
+  return `${totalMinutes}m`;
+};
+
 export default function App() {
   const [screen] = useState<"home" | "sort">("sort");
   const [projectRoot, setProjectRoot] = useState<string>("");
@@ -251,6 +263,7 @@ export default function App() {
     }
   }, [pendingPromotion]);
   const [loading, setLoading] = useState(false);
+  const [statsRefreshing, setStatsRefreshing] = useState(false);
   const [scanProgress, setScanProgress] = useState<{ phase: "clients" | "exports"; completed: number; total: number } | null>(null);
   const [lastClientsCheckedAt, setLastClientsCheckedAt] = useState<Date | null>(null);
   const [search, setSearch] = useState("");
@@ -266,6 +279,11 @@ export default function App() {
   const [lastBatch, setLastBatch] = useState<UndoEntry[]>([]);
   const [showUndoConfirm, setShowUndoConfirm] = useState(false);
   const [showAdvancedMenu, setShowAdvancedMenu] = useState(false);
+  const [advancedMode, setAdvancedMode] = useState(false);
+  const [advancedModeRequested, setAdvancedModeRequested] = useState(false);
+  const [advancedPassword, setAdvancedPassword] = useState("");
+  const [advancedPasswordError, setAdvancedPasswordError] = useState("");
+  const [manualPublishedPaths, setManualPublishedPaths] = useState<Record<string, boolean>>({});
   const [newClientName, setNewClientName] = useState("");
   const [showNewClientForm, setShowNewClientForm] = useState(false);
   const [newClientType, setNewClientType] = useState<ClientType>("EXHIBITOR");
@@ -401,6 +419,8 @@ export default function App() {
       const savedAlwaysOnTop = await CONFIG_STORE.get<boolean>("alwaysOnTop");
       const savedRecentProjectPaths = await CONFIG_STORE.get<string[]>("recentProjectPaths");
       const savedFrameIo = await CONFIG_STORE.get<typeof frameIoConfig>("frameIoConfig");
+      const savedManualPublished = await CONFIG_STORE.get<Record<string, boolean>>("manualPublishedClients");
+      if (savedManualPublished && typeof savedManualPublished === "object") setManualPublishedPaths(savedManualPublished);
       if (savedFrameIo) setFrameIoConfig({
         clientId: savedFrameIo.clientId ?? import.meta.env.VITE_FRAMEIO_CLIENT_ID ?? "",
         scopes: savedFrameIo.scopes ?? import.meta.env.VITE_FRAMEIO_SCOPES ?? "",
@@ -813,10 +833,56 @@ export default function App() {
       const alphabetical = left.name.localeCompare(right.name, undefined, { sensitivity: "base" });
       const direction = clientSort.direction === "asc" ? 1 : -1;
       if (clientSort.column === "name") return alphabetical * direction;
-      const completionOrder = Number(isFinalised(left)) - Number(isFinalised(right));
+      const leftPublished = isFinalised(left) || Boolean(manualPublishedPaths[left.path]);
+      const rightPublished = isFinalised(right) || Boolean(manualPublishedPaths[right.path]);
+      const completionOrder = Number(leftPublished) - Number(rightPublished);
       return completionOrder * direction || alphabetical;
     });
-  }, [clients, search, showNonClients, clientSort]);
+  }, [clients, search, showNonClients, clientSort, manualPublishedPaths]);
+
+  const advancedStats = useMemo(() => {
+    const clientsWithExports = clients.filter((client) =>
+      client.status !== "Not a client" && !client.export_status.issue && client.export_status.versions.length > 0
+    );
+    const totalVersions = clientsWithExports.reduce((sum, client) => sum + client.export_status.versions.length, 0);
+    const approvalReadyCount = clientsWithExports.filter((client) => client.export_status.approval_ready).length;
+    const finalCurrentCount = clientsWithExports.filter((client) => isFinalised(client)).length;
+    const awaitingApprovalCount = clientsWithExports.filter((client) =>
+      !client.export_status.approval_ready && !client.export_status.approval_in_progress
+    ).length;
+    const awaitingFinalCount = clientsWithExports.filter((client) => !isFinalised(client)).length;
+    const manualOverrideCount = clients.filter((client) =>
+      client.status !== "Not a client" && Boolean(manualPublishedPaths[client.path])
+    ).length;
+    const approvalToPublishMs = clientsWithExports.flatMap((client) => {
+      if (!isFinalised(client) || !client.export_status.final_published_at || client.export_status.approval_versions.length === 0) return [];
+      const latestApproval = client.export_status.approval_versions.reduce((latest, version) =>
+        version.version > latest.version ? version : latest,
+      );
+      const approvalTime = Date.parse(latestApproval.added_at);
+      const publishedTime = Date.parse(client.export_status.final_published_at);
+      return Number.isFinite(approvalTime) && Number.isFinite(publishedTime) && publishedTime >= approvalTime
+        ? [publishedTime - approvalTime]
+        : [];
+    });
+    return {
+      updating: loading || statsRefreshing || clients.some((client) => client.exportStatusLoading),
+      clientCount: clients.filter((client) => client.status !== "Not a client").length,
+      exportIssueCount: clients.filter((client) => client.status !== "Not a client" && Boolean(client.export_status.issue)).length,
+      exportClientCount: clientsWithExports.length,
+      totalVersions,
+      averageVersions: clientsWithExports.length ? totalVersions / clientsWithExports.length : null,
+      approvalReadyCount,
+      finalCurrentCount,
+      awaitingApprovalCount,
+      awaitingFinalCount,
+      manualOverrideCount,
+      averageApprovalToPublishMs: approvalToPublishMs.length
+        ? approvalToPublishMs.reduce((sum, duration) => sum + duration, 0) / approvalToPublishMs.length
+        : null,
+      approvalPublishSampleCount: approvalToPublishMs.length,
+    };
+  }, [clients, manualPublishedPaths, loading, statsRefreshing]);
 
   const toggleClientSort = (column: ClientSort["column"]) => {
     setClientSort((current) => ({
@@ -1043,6 +1109,7 @@ export default function App() {
     if (!root || (clientsScansInFlightRef.current > 0 && !force)) return;
     const scanSequence = ++clientsScanSequenceRef.current;
     clientsScansInFlightRef.current += 1;
+    setStatsRefreshing(true);
     const scrollTop = tableScrollRef.current?.scrollTop ?? 0;
     if (showLoading) {
       setLoading(true);
@@ -1068,6 +1135,7 @@ export default function App() {
       }
     } finally {
       clientsScansInFlightRef.current = Math.max(0, clientsScansInFlightRef.current - 1);
+      setStatsRefreshing(clientsScansInFlightRef.current > 0);
       if (scanSequence === clientsScanSequenceRef.current && root === projectRootRef.current) {
         setLastClientsCheckedAt(new Date());
         if (showLoading) setScanProgress(null);
@@ -1228,6 +1296,14 @@ export default function App() {
     } finally {
       setPublishingClientPath(null);
     }
+  };
+
+  const toggleManualPublished = async (client: ClientInfo) => {
+    const next = { ...manualPublishedPaths };
+    if (next[client.path]) delete next[client.path];
+    else next[client.path] = true;
+    setManualPublishedPaths(next);
+    await saveConfigValue("manualPublishedClients", next);
   };
 
   const buildUndoBatch = (entries: SortEntry[]): UndoEntry[] => {
@@ -1436,6 +1512,10 @@ export default function App() {
           }
         }}
       >
+        <div className="topbar-brand" data-tauri-drag-region aria-label="Pepper">
+          <img src={pepperIcon} alt="" aria-hidden="true" />
+          <span>Pepper</span>
+        </div>
         <div className="topbar-actions window-controls">
           <div className="notification-center" ref={notificationCenterRef}>
             <button
@@ -1616,6 +1696,50 @@ export default function App() {
               )}
             </div>
           </div>
+          {advancedMode && (
+            <div className="advanced-stats" aria-label="Project process statistics">
+              <div className="advanced-stat">
+                <span>Clients with valid exports</span>
+                <strong>{advancedStats.updating ? "Updating" : `${advancedStats.exportClientCount} / ${advancedStats.clientCount}`}</strong>
+                <small>{advancedStats.exportIssueCount ? `${advancedStats.exportIssueCount} export scan issues excluded` : "Source export history found"}</small>
+              </div>
+              <div className="advanced-stat">
+                <span>Average source versions</span>
+                <strong>{advancedStats.updating ? "Updating" : advancedStats.averageVersions === null ? "N/A" : advancedStats.averageVersions.toFixed(1)}</strong>
+                <small>{advancedStats.totalVersions} versions across {advancedStats.exportClientCount} clients</small>
+              </div>
+              <div className="advanced-stat">
+                <span>Latest export approval ready</span>
+                <strong>{advancedStats.updating ? "Updating" : `${advancedStats.approvalReadyCount} / ${advancedStats.exportClientCount}`}</strong>
+                <small>{advancedStats.exportClientCount ? `${Math.round(advancedStats.approvalReadyCount / advancedStats.exportClientCount * 100)}% of exported clients` : "No clients with exports"}</small>
+              </div>
+              <div className="advanced-stat">
+                <span>Current FINAL published</span>
+                <strong>{advancedStats.updating ? "Updating" : `${advancedStats.finalCurrentCount} / ${advancedStats.exportClientCount}`}</strong>
+                <small>Manual overrides are excluded</small>
+              </div>
+              <div className="advanced-stat">
+                <span>Awaiting approval</span>
+                <strong>{advancedStats.updating ? "Updating" : advancedStats.awaitingApprovalCount}</strong>
+                <small>Latest export has no approval copy in progress</small>
+              </div>
+              <div className="advanced-stat">
+                <span>Awaiting FINAL</span>
+                <strong>{advancedStats.updating ? "Updating" : advancedStats.awaitingFinalCount}</strong>
+                <small>Latest export has no current FINAL</small>
+              </div>
+              <div className="advanced-stat">
+                <span>Average approval to FINAL</span>
+                <strong>{advancedStats.updating ? "Updating" : formatAverageDuration(advancedStats.averageApprovalToPublishMs)}</strong>
+                <small>Approval file to FINAL time; legacy uses available file timestamps ({advancedStats.approvalPublishSampleCount} clients)</small>
+              </div>
+              <div className="advanced-stat">
+                <span>Manual published overrides</span>
+                <strong>{advancedStats.updating ? "Updating" : advancedStats.manualOverrideCount}</strong>
+                <small>Overrides set in Advanced mode</small>
+              </div>
+            </div>
+          )}
           {DEBUG_ENABLED && debugInfo && (
             <div className="debug-info">
               <div className="debug-row">
@@ -1694,10 +1818,11 @@ export default function App() {
                   className="ghost new-client-button"
                   disabled={!projectRoot}
                   aria-expanded={showNewClientForm}
+                  aria-label="New client"
+                  title="New client"
                   onClick={() => setShowNewClientForm((current) => !current)}
                 >
                   <Plus size={16} aria-hidden="true" />
-                  New client
                 </button>
                 <div className="advanced-menu">
                 <button
@@ -1710,7 +1835,7 @@ export default function App() {
                     setShowAdvancedMenu((current) => !current);
                   }}
                 >
-                  <MoreHorizontal size={18} aria-hidden="true" />
+                  <span className="more-options-ellipsis" aria-hidden="true">...</span>
                 </button>
               </div>
             </div>
@@ -1722,6 +1847,39 @@ export default function App() {
                 className="advanced-popover fixed"
                 onClick={(event) => event.stopPropagation()}
               >
+                <label className="toggle compact">
+                  <input
+                    type="checkbox"
+                    checked={advancedMode || advancedModeRequested}
+                    onChange={(event) => {
+                      if (!event.target.checked) {
+                        setAdvancedMode(false);
+                        setAdvancedModeRequested(false);
+                        setAdvancedPassword("");
+                        setAdvancedPasswordError("");
+                      } else {
+                        setAdvancedModeRequested(true);
+                        setAdvancedPasswordError("");
+                      }
+                    }}
+                  />
+                  Advanced mode
+                </label>
+                {advancedModeRequested && !advancedMode && (
+                  <form className="advanced-password-form" onSubmit={(event) => {
+                    event.preventDefault();
+                    if (advancedPassword === "fidelio") {
+                      setAdvancedMode(true);
+                      setAdvancedModeRequested(false);
+                      setAdvancedPassword("");
+                      setAdvancedPasswordError("");
+                    } else setAdvancedPasswordError("Incorrect password");
+                  }}>
+                    <input type="password" autoComplete="current-password" value={advancedPassword} onChange={(event) => setAdvancedPassword(event.target.value)} placeholder="Advanced mode password" aria-label="Advanced mode password" />
+                    <button type="submit" className="ghost" disabled={!advancedPassword}>Confirm</button>
+                    {advancedPasswordError && <small role="alert">{advancedPasswordError}</small>}
+                  </form>
+                )}
                 <label className="toggle compact">
                   <input
                     type="checkbox"
@@ -1964,14 +2122,17 @@ export default function App() {
                 const latestApprovalShared = latestApprovalVersion?.version === exports.latest_version
                   && (latestFrameIoState === "ready" || Boolean(latestFrameIoShareUrl));
                 const expanded = expandedClients.has(client.name);
-                const published = isFinalised(client);
-                const exportLabel = client.exportStatusLoading
+                const manuallyPublished = Boolean(manualPublishedPaths[client.path]);
+                const published = manuallyPublished || isFinalised(client);
+                const exportLabel = manuallyPublished
+                  ? "FINAL"
+                  : client.exportStatusLoading
                   ? "Loading exports…"
                   : exports.issue
                   ? "Check exports"
                   : exports.approval_in_progress
                     ? "Approval export in progress"
-                  : isFinalised(client)
+                  : published
                     ? "FINAL"
                     : exports.latest_filename
                       ? exports.final_filename
@@ -1986,7 +2147,9 @@ export default function App() {
                 const exportSummary = version !== null && exportLabel !== "FINAL"
                   ? `V${version} · ${exportLabel}`
                   : exportLabel;
-                const exportDetails = client.exportStatusLoading
+                const exportDetails = manuallyPublished
+                  ? "Manually marked as published in Advanced mode"
+                  : client.exportStatusLoading
                   ? "Checking this client's exports…"
                   : exports.issue ?? [
                   exports.latest_filename && `Latest: ${exports.latest_filename}`,
@@ -2111,6 +2274,11 @@ export default function App() {
                       )}
                     </div>
                     <div className="actions" onClick={(event) => event.stopPropagation()}>
+                      {advancedMode && client.status !== "Not a client" && (manuallyPublished || !isFinalised(client)) && (
+                        <button type="button" className="ghost promote-button" onClick={() => void toggleManualPublished(client)} title={manuallyPublished ? "Remove manual published override" : "Mark this client as published manually"}>
+                          {manuallyPublished ? "Clear override" : "Mark published"}
+                        </button>
+                      )}
                       <button
                         className="ghost icon-button"
                         onClick={() => handleOpenFolder(client.path)}

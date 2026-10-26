@@ -10,6 +10,7 @@ Cross-platform Tauri desktop utility to sort dropped media into client folders o
 - Collision-safe naming (`__2`, `__3`, etc.)
 - Move/Copy toggle, Dry Run toggle, optional Approval Exports mode
 - CSV logging per project under `_logs/` + Undo last batch (session)
+- Advanced mode is available from the `...` menu. Enter password `fidelio` to enable per-client manual published overrides. Overrides are saved in Pepper's local configuration and can be cleared from the same row.
 
 ## Template
 Created under each client folder:
@@ -19,6 +20,9 @@ Created under each client folder:
 - `01_MEDIA/040_AUDIO_RAW/`
 - `01_MEDIA/050_STILLS/`
 - `01_MEDIA/060_MUSIC/`
+- `01_MEDIA/070_GRAPHICS/`
+- `01_MEDIA/080_MISCELLANEOUS/`
+- Existing clients are not flagged as incomplete if they predate `070_GRAPHICS` or `080_MISCELLANEOUS`; new clients still get both folders.
 - `02_EDIT/`
   - `EXHIBITOR`, `PRODUCT`, and physical `HUDDLE` clients copy `Z:\The Huddle\Templates\Copied_Huddle Master Template 2026_4K_2\Huddle Master Template 2026_4K_2.prproj`
   - video-call `HUDDLE` clients copy `Z:\The Huddle\Templates\Copied_Huddle Master Template Scenes Switching 2026 4K_1\Huddle Master Template Scenes Switching 2026 4K_1.prproj`
