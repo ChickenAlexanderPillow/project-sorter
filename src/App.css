@@ -2403,6 +2403,8 @@ button.ghost,
 .table-row.client-row,
 .app.sort-mode .table-row.client-row {
   box-sizing: border-box;
+  -webkit-user-select: none;
+  user-select: none;
   min-height: 50px;
   padding: 10px 12px;
   border-top: 0;
