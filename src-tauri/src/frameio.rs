@@ -464,8 +464,12 @@ pub async fn frameio_list_accounts(client_id: String) -> Result<Vec<FrameIoOptio
 pub async fn frameio_get_storage(client_id: String, account_id: String) -> Result<FrameIoStorage, String> {
     let token = access_token(&client_id).await?;
     let client = Client::new();
-    let value = api_json(&client, &token, reqwest::Method::GET, &format!("{API}/accounts/{account_id}"), None).await?;
-    let account = value.get("data").unwrap_or(&value);
+    // Frame.io V4 exposes account storage fields on GET /accounts; the
+    // legacy-style GET /accounts/{account_id} route does not exist in V4.
+    let accounts = list_api_data(&client, &token, format!("{API}/accounts?page_size=100")).await?;
+    let account = accounts.iter().find(|account| {
+        account.get("id").and_then(Value::as_str) == Some(account_id.as_str())
+    }).ok_or_else(|| "Frame.io did not return this account for the signed-in user.".to_string())?;
     let used_bytes = account.get("storage_usage").and_then(Value::as_u64)
         .ok_or_else(|| "Frame.io did not return storage usage for this account.".to_string())?;
     let limit_bytes = account.get("storage_limit").and_then(Value::as_u64)
