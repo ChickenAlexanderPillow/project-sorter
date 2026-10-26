@@ -579,7 +579,7 @@ fn latest_client_record(approval_dir: &Path, client_key: &str, account_id: &str,
 
 fn normalized_client_key(value: &str) -> Result<String, String> {
     let key = value.trim().to_ascii_uppercase().replace(' ', "_");
-    if key.is_empty() || !key.chars().all(|character| character.is_ascii_alphanumeric() || character == '_' || character == '-') {
+    if key.is_empty() || !key.chars().all(|character| character.is_ascii_alphanumeric() || matches!(character, '_' | '-' | '.')) {
         return Err("Pepper client name contains characters that cannot be used for a Frame.io filename.".into());
     }
     Ok(key)
