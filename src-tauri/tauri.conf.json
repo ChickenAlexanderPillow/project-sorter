@@ -14,9 +14,9 @@
       {
         "title": "Pepper",
         "width": 1024,
-        "height": 700,
+        "height": 850,
         "minWidth": 900,
-        "minHeight": 600,
+        "minHeight": 850,
         "decorations": false,
         "transparent": true,
         "shadow": true

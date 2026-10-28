@@ -14,9 +14,10 @@ npm run tauri -- dev
 - Client modes: `EXHIBITOR`, `PRODUCT`, `HUDDLE`, `MARIYAMEETS`, `SOCIAL`, or a custom mode
 - Sort Mode: drag files/folders onto a client row, flattening all files into the mode destination
 - Collision-safe naming (`__2`, `__3`, etc.)
-- Move/Copy toggle, Dry Run toggle, optional Approval Exports mode
+- Automatic move routing based on file type and client mode
 - CSV logging per project under `_logs/` + Undo last batch (session)
 - Advanced mode is available from the `...` menu. Enter password `fidelio` to enable per-client manual published overrides. Overrides are saved in Pepper's local configuration and can be cleared from the same row.
+- New Project creates the next numbered folder in the Production directory. The selectable show list is stored locally at `%APPDATA%\com.project.sorter\project-shows.json`; edit its `shows` array and restart Pepper to add choices.
 
 ## Template
 Created under each client folder:

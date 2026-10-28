@@ -7,7 +7,7 @@ import { cursorPosition, getCurrentWindow, LogicalSize } from "@tauri-apps/api/w
 import { type DragDropEvent } from "@tauri-apps/api/webview";
 import { writeText } from "@tauri-apps/plugin-clipboard-manager";
 import { check, type Update } from "@tauri-apps/plugin-updater";
-import { ArrowDown, ArrowUp, ArrowUpDown, Bell, Check, ChevronDown, ChevronRight, ChevronsUpDown, CloudUpload, Copy, FolderKanban, FolderOpen, Link2, LoaderCircle, Maximize2, Minus, Plus, RefreshCw, Search, Settings2, Trash2, Wrench, X } from "lucide-react";
+import { ArrowDown, ArrowUp, ArrowUpDown, Bell, Check, ChevronDown, ChevronRight, ChevronsUpDown, CloudUpload, Copy, FolderKanban, FolderOpen, Link2, LoaderCircle, Minus, Plus, RefreshCw, Search, Settings2, Square, Trash2, Wrench, X } from "lucide-react";
 import pepperIcon from "../src-tauri/icons/128x128.png";
 import "./App.css";
 
@@ -19,9 +19,17 @@ type ClientInfo = {
   path: string;
   season?: string | null;
   status: ClientStatus;
+  cachePublished?: boolean;
+  cachePublishedDividerBefore?: boolean;
+  cacheOrder?: number;
   missing: string[];
   export_status: ExportStatus;
   exportStatusLoading?: boolean;
+};
+type CachedClientRow = Pick<ClientInfo, "name" | "path" | "season"> & {
+  status?: ClientStatus;
+  published?: boolean;
+  publishedDividerBefore?: boolean;
 };
 
 type ClientScanProgress = {
@@ -67,10 +75,30 @@ type ExportStatus = {
   final_filename: string | null;
   final_published_at: string | null;
   final_current: boolean;
+  publish_failed: boolean;
   issue: string | null;
 };
 
+const EMPTY_EXPORT_STATUS: ExportStatus = {
+  versions: [],
+  approval_versions: [],
+  latest_version: null,
+  latest_filename: null,
+  approval_ready: false,
+  approval_in_progress: false,
+  approval_progress_phase: null,
+  final_version: null,
+  final_filename: null,
+  final_published_at: null,
+  final_current: false,
+  publish_failed: false,
+  issue: null,
+};
+
 type ProjectRootOption = { name: string; path: string; number: number };
+type ProjectShowCatalog = { path: string; shows: { name: string }[] };
+const alphabetizeProjectShows = (shows: ProjectShowCatalog["shows"]) =>
+  [...shows].sort((left, right) => left.name.localeCompare(right.name, undefined, { sensitivity: "base" }));
 
 type SortEntry = {
   timestamp: string;
@@ -115,6 +143,8 @@ const CONFIG_STORE = new LazyStore("config.json", {
   autoSave: true,
   defaults: {},
 });
+const clientCacheKey = (root: string) => `client-list-cache:${root}`;
+const clientLocalCacheKey = (root: string) => `pepper.clientListCache.v1:${root}`;
 const PEPPER_FRAMEIO_ACCOUNT_ID = "e44a308c-5a20-4f8b-ba14-f56d0fb8c50c";
 const NOTIFICATION_STORE_KEY = "pepper.notificationHistory.v1";
 
@@ -185,13 +215,13 @@ type ClientType = (typeof CLIENT_TYPES)[number] | "CUSTOM";
 type HuddleTemplate = "PHYSICAL" | "VIDEO_CALL";
 
 const normalizeClientInput = (value: string) =>
-  value.trim().replace(/\s+/g, "_").toUpperCase();
+  value.trim().replace(/\s+/g, "_");
 
 const parseClientLabel = (raw: string) => {
   const normalized = normalizeClientInput(raw);
   const parts = normalized.split("_").filter(Boolean);
   if (parts.length >= 2) {
-    const typeCandidate = parts[parts.length - 1];
+    const typeCandidate = parts[parts.length - 1].toUpperCase();
     if ((CLIENT_TYPES as readonly string[]).includes(typeCandidate)) {
       return {
         name: parts.slice(0, -1).join(" "),
@@ -229,18 +259,32 @@ const formatAverageDuration = (milliseconds: number | null) => {
   return `${totalMinutes}m`;
 };
 
+const formatUiDateTime = (value: Date | string | number) =>
+  new Date(value).toLocaleString(undefined, {
+    year: "numeric",
+    month: "short",
+    day: "numeric",
+    hour: "2-digit",
+    minute: "2-digit",
+  });
+
 export default function App() {
   const [screen] = useState<"home" | "sort">("sort");
   const [projectRoot, setProjectRoot] = useState<string>("");
   const [projectRoots, setProjectRoots] = useState<ProjectRootOption[]>([]);
-  const [recentProjectPaths, setRecentProjectPaths] = useState<string[]>([]);
   const [showProjectMenu, setShowProjectMenu] = useState(false);
   const [projectSearch, setProjectSearch] = useState("");
+  const [showProjectCreate, setShowProjectCreate] = useState(false);
+  const [projectShowCatalog, setProjectShowCatalog] = useState<ProjectShowCatalog | null>(null);
+  const [selectedProjectShow, setSelectedProjectShow] = useState("");
+  const [customProjectShow, setCustomProjectShow] = useState("");
+  const [customProjectShowSelected, setCustomProjectShowSelected] = useState(false);
+  const [projectYear, setProjectYear] = useState(new Date().getFullYear());
+  const [projectCreateBusy, setProjectCreateBusy] = useState(false);
+  const [projectCreateError, setProjectCreateError] = useState("");
   const [clients, setClients] = useState<ClientInfo[]>([]);
   const [expandedClients, setExpandedClients] = useState<Set<string>>(() => new Set());
-  const [clientScrollSpacerHeight, setClientScrollSpacerHeight] = useState(0);
-  const [expandedClientScrollTarget, setExpandedClientScrollTarget] = useState<string | null>(null);
-  const [selectedVersionByClient, setSelectedVersionByClient] = useState<Record<string, number>>({});
+  const [selectedVersionByClient, setSelectedVersionByClient] = useState<Record<string, string>>({});
   const [frameIoConfig, setFrameIoConfig] = useState({
     clientId: import.meta.env.VITE_FRAMEIO_CLIENT_ID ?? "",
     scopes: import.meta.env.VITE_FRAMEIO_SCOPES ?? "",
@@ -258,8 +302,10 @@ export default function App() {
   const [frameIoAuthBusy, setFrameIoAuthBusy] = useState(false);
   const [frameIoProgress, setFrameIoProgress] = useState<Record<string, FrameIoProgress>>({});
   const [frameIoBusyPath, setFrameIoBusyPath] = useState<string | null>(null);
-  const [clientSort, setClientSort] = useState<ClientSort>({ column: "status", direction: "asc" });
+  const [clientSort, setClientSort] = useState<ClientSort>({ column: "name", direction: "asc" });
   const [publishingClientPath, setPublishingClientPath] = useState<string | null>(null);
+  const [publishingStage, setPublishingStage] = useState<"publishing" | "refreshing" | null>(null);
+  const [publishFailedClientPaths, setPublishFailedClientPaths] = useState<Set<string>>(new Set());
   const [pendingPromotion, setPendingPromotion] = useState<ClientInfo | null>(null);
   const promotionDialogRef = useRef<HTMLDialogElement | null>(null);
   useEffect(() => {
@@ -268,15 +314,16 @@ export default function App() {
     }
   }, [pendingPromotion]);
   const [loading, setLoading] = useState(false);
+  const [clientCacheLoadedRoot, setClientCacheLoadedRoot] = useState<string | null>(null);
+  const [clientListRevealedRoot, setClientListRevealedRoot] = useState<string | null>(null);
+  const [cachedClientNames, setCachedClientNames] = useState<Set<string>>(new Set());
+  const [clientRefreshFailedRoot, setClientRefreshFailedRoot] = useState<string | null>(null);
   const [statsRefreshing, setStatsRefreshing] = useState(false);
   const [scanProgress, setScanProgress] = useState<{ phase: "clients" | "exports"; completed: number; total: number } | null>(null);
   const [lastClientsCheckedAt, setLastClientsCheckedAt] = useState<Date | null>(null);
   const [search, setSearch] = useState("");
   const [showNonClients, setShowNonClients] = useState(false);
   const [mode] = useState<string>("AUTO");
-  const [showApprovalMode, setShowApprovalMode] = useState(false);
-  const [operation, setOperation] = useState<"move" | "copy">("move");
-  const [dryRun, setDryRun] = useState(false);
   const [progress, setProgress] = useState<SortProgress | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -298,25 +345,24 @@ export default function App() {
   const projectRootRef = useRef(projectRoot);
   const tableScrollRef = useRef<HTMLDivElement | null>(null);
   useEffect(() => {
-    if (!expandedClientScrollTarget || !expandedClients.has(expandedClientScrollTarget)) return;
+    const expandedName = expandedClients.values().next().value as string | undefined;
+    if (!expandedName) return;
     const container = tableScrollRef.current;
     const row = Array.from(container?.querySelectorAll<HTMLElement>(".client-row") ?? [])
-      .find((candidate) => candidate.dataset.clientName === expandedClientScrollTarget);
+      .find((candidate) => candidate.dataset.clientName === expandedName);
     if (!container || !row) return;
-    const rowOffset = row.getBoundingClientRect().top - container.getBoundingClientRect().top - container.clientTop;
-    const targetScrollTop = container.scrollTop + rowOffset;
-    const requiredSpacerHeight = Math.max(0, targetScrollTop - (container.scrollHeight - container.clientHeight));
-    if (Math.abs(requiredSpacerHeight - clientScrollSpacerHeight) > 1) {
-      setClientScrollSpacerHeight(requiredSpacerHeight);
-      return;
-    }
-    container.scrollTo({ top: targetScrollTop, behavior: "smooth" });
-    setExpandedClientScrollTarget(null);
-  }, [expandedClients, expandedClientScrollTarget, clientScrollSpacerHeight]);
+    const frame = window.requestAnimationFrame(() => {
+      const rowOffset = row.getBoundingClientRect().top - container.getBoundingClientRect().top - container.clientTop;
+      container.scrollTo({ top: container.scrollTop + rowOffset, behavior: "smooth" });
+    });
+    return () => window.cancelAnimationFrame(frame);
+  }, [expandedClients]);
   const [dragTarget, setDragTarget] = useState<string | null>(null);
   const hoverClientRef = useRef<string | null>(null);
   const clientsRef = useRef<ClientInfo[]>([]);
   clientsRef.current = clients;
+  const cachedClientNamesRef = useRef(new Set<string>());
+  const clientCacheSaveTimerRef = useRef<number | null>(null);
   const sortableClientsRef = useRef<ClientInfo[]>([]);
   const busyRef = useRef(false);
   const pendingRefreshRef = useRef(false);
@@ -437,14 +483,18 @@ export default function App() {
           console.error("Unable to load project folders", err);
           setError(`Unable to load project folders: ${String(err)}`);
         });
+      void invoke<ProjectShowCatalog>("get_project_show_catalog")
+        .then((catalog) => {
+          const sortedCatalog = { ...catalog, shows: alphabetizeProjectShows(catalog.shows) };
+          setProjectShowCatalog(sortedCatalog);
+          setSelectedProjectShow((current) => current || sortedCatalog.shows[0]?.name || "");
+        })
+        .catch((err) => setProjectCreateError(`Could not load the local show list: ${String(err)}`));
       await CONFIG_STORE.init();
       const savedRoot = await CONFIG_STORE.get<string>("projectRoot");
       const savedShowNonClients = await CONFIG_STORE.get<boolean>("showNonClients");
       const savedMode = await CONFIG_STORE.get<string>("lastMode");
-      const savedOperation = await CONFIG_STORE.get<string>("lastOperation");
-      const savedApproval = await CONFIG_STORE.get<boolean>("showApprovalMode");
       const savedAlwaysOnTop = await CONFIG_STORE.get<boolean>("alwaysOnTop");
-      const savedRecentProjectPaths = await CONFIG_STORE.get<string[]>("recentProjectPaths");
       const savedFrameIo = await CONFIG_STORE.get<typeof frameIoConfig>("frameIoConfig");
       const savedManualPublished = await CONFIG_STORE.get<Record<string, boolean>>("manualPublishedClients");
       if (savedManualPublished && typeof savedManualPublished === "object") setManualPublishedPaths(savedManualPublished);
@@ -471,21 +521,16 @@ export default function App() {
       if (typeof savedRoot === "string") {
         setProjectRoot(savedRoot);
         projectRootRef.current = savedRoot;
-      }
-      if (Array.isArray(savedRecentProjectPaths)) {
-        setRecentProjectPaths(savedRecentProjectPaths.filter((path): path is string => typeof path === "string"));
+        setLoading(true);
+        setScanProgress({ phase: "clients", completed: 0, total: 0 });
+        scanProgressVisibleRef.current = true;
+        await loadClientCache(savedRoot);
       }
       if (typeof savedShowNonClients === "boolean") {
         setShowNonClients(savedShowNonClients);
       }
       if (typeof savedMode === "string" && savedMode !== "AUTO") {
         await CONFIG_STORE.set("lastMode", "AUTO");
-      }
-      if (savedOperation === "copy" || savedOperation === "move") {
-        setOperation(savedOperation);
-      }
-      if (typeof savedApproval === "boolean") {
-        setShowApprovalMode(savedApproval);
       }
       if (typeof savedAlwaysOnTop === "boolean") {
         setAlwaysOnTop(savedAlwaysOnTop);
@@ -520,21 +565,44 @@ export default function App() {
         if (scanProgressVisibleRef.current) {
           setScanProgress({ phase: "clients", completed: scan.completed, total: scan.total });
         }
+        const confirmedNonClients = new Set(scan.clients
+          .filter((client) => client.status === "Not a client")
+          .map((client) => client.name));
+        if (confirmedNonClients.size) {
+          const remainingCachedNames = new Set(cachedClientNamesRef.current);
+          confirmedNonClients.forEach((name) => remainingCachedNames.delete(name));
+          cachedClientNamesRef.current = remainingCachedNames;
+          setCachedClientNames(remainingCachedNames);
+        }
+        const preserveCacheDuringReset = scan.reset && cachedClientNamesRef.current.size > 0;
         setClients((current) => {
           const existing = new Map(current.map((client) => [client.name, client]));
-          const incoming = scan.clients.map((client) => ({
-            ...(existing.get(client.name) ?? {}),
-            ...client,
-            export_status: existing.get(client.name)?.export_status ?? client.export_status,
-            exportStatusLoading: scan.reset || !existing.has(client.name)
-              ? client.status !== "Not a client"
-              : existing.get(client.name)?.exportStatusLoading ?? false,
-          }));
-          if (scan.reset) return incoming;
+          const incoming = scan.clients.map((client) => {
+            const prior = existing.get(client.name);
+            const isCached = cachedClientNamesRef.current.has(client.name);
+            return {
+              ...(prior ?? {}),
+              ...client,
+              cachePublished: prior?.cachePublished ?? (prior ? isFinalised(prior) : isFinalised(client)),
+              export_status: isCached ? client.export_status : prior?.export_status ?? client.export_status,
+              exportStatusLoading: isCached || scan.reset || !prior
+                ? client.status !== "Not a client"
+                : prior.exportStatusLoading ?? false,
+            };
+          });
+          if (scan.reset && !preserveCacheDuringReset) return incoming;
           const received = new Set(incoming.map((client) => client.name));
           return [...current.filter((client) => !received.has(client.name)), ...incoming];
         });
       } else if (scan.phase === "exports") {
+        setClientListRevealedRoot(scan.project_root);
+        const refreshedNames = new Set(scan.export_updates.map((item) => item.name));
+        if (refreshedNames.size) {
+          const remainingCachedNames = new Set(cachedClientNamesRef.current);
+          refreshedNames.forEach((name) => remainingCachedNames.delete(name));
+          cachedClientNamesRef.current = remainingCachedNames;
+          setCachedClientNames(remainingCachedNames);
+        }
         if (scanProgressVisibleRef.current) {
           setScanProgress({ phase: "exports", completed: scan.completed, total: scan.total });
         }
@@ -546,14 +614,23 @@ export default function App() {
           return { ...client, export_status: update.export_status, exportStatusLoading: false };
         }));
       } else {
+        setClientListRevealedRoot(scan.project_root);
+        cachedClientNamesRef.current = new Set();
+        setCachedClientNames(new Set());
         const currentNames = new Set(scan.client_names);
         if (scan.partial) {
           if (scan.removed_names.length) {
             const removedNames = new Set(scan.removed_names);
-            setClients((current) => current.filter((client) => !removedNames.has(client.name)));
+            setClients((current) => current
+              .filter((client) => !removedNames.has(client.name))
+              .map(({ cachePublished: _cachePublished, cachePublishedDividerBefore: _divider, cacheOrder: _order, ...client }) => client));
+          } else {
+            setClients((current) => current.map(({ cachePublished: _cachePublished, cachePublishedDividerBefore: _divider, cacheOrder: _order, ...client }) => client));
           }
         } else {
-          setClients((current) => current.filter((client) => currentNames.has(client.name)));
+          setClients((current) => current
+            .filter((client) => currentNames.has(client.name))
+            .map(({ cachePublished: _cachePublished, cachePublishedDividerBefore: _divider, cacheOrder: _order, ...client }) => client));
         }
         setScanProgress(null);
         scanProgressVisibleRef.current = false;
@@ -860,20 +937,18 @@ export default function App() {
       : availableProjectRoots;
   }, [availableProjectRoots, projectSearch]);
 
-  const recentProjects = visibleProjectRoots.filter((project) => recentProjectPaths.includes(project.path));
-  const otherProjects = visibleProjectRoots.filter((project) => !recentProjectPaths.includes(project.path));
   const activeProject = availableProjectRoots.find((project) => project.path === projectRoot);
   const frameIoConfigured = Boolean(frameIoConfig.clientId && frameIoConfig.scopes
     && frameIoConfig.accountId === PEPPER_FRAMEIO_ACCOUNT_ID
     && frameIoConfig.projectId);
 
 
-  const visibleClients = useMemo(() => {
-    const filtered = clients.filter((client) =>
-      client.name.toLowerCase().includes(search.toLowerCase()) &&
-      (showNonClients || client.status !== "Not a client")
-    );
+  const sortedClients = useMemo(() => {
+    const filtered = clients.filter((client) => showNonClients || client.status !== "Not a client");
     return filtered.sort((left, right) => {
+      const leftCachedOrder = left.cacheOrder ?? Number.MAX_SAFE_INTEGER;
+      const rightCachedOrder = right.cacheOrder ?? Number.MAX_SAFE_INTEGER;
+      if (leftCachedOrder !== rightCachedOrder) return leftCachedOrder - rightCachedOrder;
       if (left.season || right.season) {
         const leftSeason = Number(left.season?.match(/\d+/)?.[0] ?? 0);
         const rightSeason = Number(right.season?.match(/\d+/)?.[0] ?? 0);
@@ -881,13 +956,21 @@ export default function App() {
       }
       const alphabetical = left.name.localeCompare(right.name, undefined, { sensitivity: "base" });
       const direction = clientSort.direction === "asc" ? 1 : -1;
-      if (clientSort.column === "name") return alphabetical * direction;
-      const leftPublished = isFinalised(left) || Boolean(manualPublishedPaths[left.path]);
-      const rightPublished = isFinalised(right) || Boolean(manualPublishedPaths[right.path]);
+      const leftPublished = left.cachePublished ?? (isFinalised(left) || Boolean(manualPublishedPaths[left.path]));
+      const rightPublished = right.cachePublished ?? (isFinalised(right) || Boolean(manualPublishedPaths[right.path]));
       const completionOrder = Number(leftPublished) - Number(rightPublished);
-      return completionOrder * direction || alphabetical;
+      if (clientSort.column === "status") return completionOrder * direction || alphabetical;
+      return completionOrder || alphabetical * direction;
     });
-  }, [clients, search, showNonClients, clientSort, manualPublishedPaths]);
+  }, [clients, showNonClients, clientSort, manualPublishedPaths]);
+
+  const visibleClients = useMemo(() => {
+    const query = search.toLowerCase();
+    return sortedClients.filter((client) => client.name.toLowerCase().includes(query));
+  }, [sortedClients, search]);
+
+  const clientListReady = clientCacheLoadedRoot === projectRoot
+    && (!loading || clientListRevealedRoot === projectRoot || clients.length > 0 || scanProgress?.phase !== "clients");
 
   const isMariyaMeetsRoot = projectRoot.split(/[\\/]/).pop()?.toLowerCase() === "8_mariya meets";
 
@@ -1141,6 +1224,122 @@ export default function App() {
     await CONFIG_STORE.save();
   };
 
+  const loadClientCache = async (root: string) => {
+    let stored: unknown = null;
+    try {
+      const raw = localStorage.getItem(clientLocalCacheKey(root));
+      if (raw) stored = JSON.parse(raw);
+    } catch (err) {
+      console.warn("Could not read the local client list cache", err);
+    }
+    if (!Array.isArray(stored)) {
+      try {
+        stored = await CONFIG_STORE.get<unknown>(clientCacheKey(root));
+      } catch (err) {
+        console.warn("Could not read cached client list", err);
+      }
+    }
+    let cachedRows: CachedClientRow[] = [];
+    try {
+      if (Array.isArray(stored)) {
+        cachedRows = stored.filter((value): value is CachedClientRow =>
+          Boolean(value)
+          && typeof value === "object"
+          && typeof (value as CachedClientRow).name === "string"
+          && typeof (value as CachedClientRow).path === "string"
+          && ((value as CachedClientRow).status === undefined
+            || ["OK", "Missing folders", "Not a client"].includes((value as CachedClientRow).status as string))
+          && ((value as CachedClientRow).published === undefined
+            || typeof (value as CachedClientRow).published === "boolean")
+          && ((value as CachedClientRow).publishedDividerBefore === undefined
+            || typeof (value as CachedClientRow).publishedDividerBefore === "boolean")
+        );
+      }
+    } catch (err) {
+      console.warn("Could not read cached client list", err);
+    }
+    if (projectRootRef.current !== root) return;
+    const isMariyaRoot = root.split(/[\\/]/).pop()?.toLowerCase() === "8_mariya meets";
+    const orderedCachedRows = [...cachedRows].sort((left, right) => {
+      if (left.season || right.season) {
+        const leftSeason = Number(left.season?.match(/\d+/)?.[0] ?? 0);
+        const rightSeason = Number(right.season?.match(/\d+/)?.[0] ?? 0);
+        if (leftSeason !== rightSeason) return rightSeason - leftSeason;
+      }
+      const alphabetical = left.name.localeCompare(right.name, undefined, { sensitivity: "base" });
+      const direction = clientSort.direction === "asc" ? 1 : -1;
+      const completionOrder = Number(Boolean(left.published)) - Number(Boolean(right.published));
+      if (clientSort.column === "status") return completionOrder * direction || alphabetical;
+      return completionOrder || alphabetical * direction;
+    });
+    const rowsToShow: ClientInfo[] = orderedCachedRows.map((cached, cacheOrder) => {
+      const { published, publishedDividerBefore, ...client } = cached;
+      const previous = orderedCachedRows[cacheOrder - 1];
+      const publishedDivider = Boolean(published) && (!previous
+        || (isMariyaRoot && previous.season !== client.season)
+        || !previous.published);
+      const cachedDividerMatchesOrder = publishedDividerBefore === publishedDivider;
+      return {
+        ...client,
+        status: client.status ?? (client.name.startsWith("XX") ? "Not a client" : "OK"),
+        cachePublished: published ?? false,
+        cachePublishedDividerBefore: cachedDividerMatchesOrder ? publishedDividerBefore : publishedDivider,
+        cacheOrder,
+        missing: [],
+        export_status: EMPTY_EXPORT_STATUS,
+        exportStatusLoading: true,
+      };
+    });
+    const staleNames = new Set(rowsToShow.map((client) => client.name));
+    cachedClientNamesRef.current = staleNames;
+    setCachedClientNames(staleNames);
+    setClients(rowsToShow);
+    setClientCacheLoadedRoot(root);
+    setClientListRevealedRoot(rowsToShow.length ? root : null);
+  };
+
+  useEffect(() => {
+    if (!projectRoot || clientCacheLoadedRoot !== projectRoot) return;
+    const snapshot: CachedClientRow[] = sortedClients.map((client, index) => {
+      const published = client.cachePublished ?? (isFinalised(client) || Boolean(manualPublishedPaths[client.path]));
+      const previous = sortedClients[index - 1];
+      const previousPublished = previous
+        ? previous.cachePublished ?? (isFinalised(previous) || Boolean(manualPublishedPaths[previous.path]))
+        : false;
+      const publishedDividerBefore = published && (!previous
+        || (projectRoot.split(/[\\/]/).pop()?.toLowerCase() === "8_mariya meets" && previous.season !== client.season)
+        || !previousPublished);
+      return {
+        name: client.name,
+        path: client.path,
+        season: client.season,
+        status: client.status,
+        published,
+        publishedDividerBefore,
+      };
+    });
+    try {
+      localStorage.setItem(clientLocalCacheKey(projectRoot), JSON.stringify(snapshot));
+    } catch (err) {
+      console.warn("Could not write the local client list cache", err);
+    }
+    if (clientCacheSaveTimerRef.current !== null) {
+      window.clearTimeout(clientCacheSaveTimerRef.current);
+    }
+    clientCacheSaveTimerRef.current = window.setTimeout(() => {
+      clientCacheSaveTimerRef.current = null;
+      void saveConfigValue(clientCacheKey(projectRoot), snapshot).catch((err) => {
+        console.warn("Could not save cached client list", err);
+      });
+    }, 300);
+    return () => {
+      if (clientCacheSaveTimerRef.current !== null) {
+        window.clearTimeout(clientCacheSaveTimerRef.current);
+        clientCacheSaveTimerRef.current = null;
+      }
+    };
+  }, [clients, sortedClients, manualPublishedPaths, projectRoot, clientCacheLoadedRoot]);
+
   const migrateLegacyFinalsOnce = async (root: string) => {
     const migratedRoots = (await CONFIG_STORE.get<string[]>("legacyFinalMigrationRoots")) ?? [];
     if (migratedRoots.includes(root)) return;
@@ -1176,12 +1375,16 @@ export default function App() {
         clientNames: clientNames ?? null,
       });
       if (scanSequence === clientsScanSequenceRef.current && root === projectRootRef.current) {
+        setClientRefreshFailedRoot(null);
+      }
+      if (scanSequence === clientsScanSequenceRef.current && root === projectRootRef.current) {
         window.requestAnimationFrame(() => {
           if (tableScrollRef.current) tableScrollRef.current.scrollTop = scrollTop;
         });
       }
     } catch (err) {
       if (scanSequence === clientsScanSequenceRef.current && root === projectRootRef.current) {
+        setClientRefreshFailedRoot(root);
         setError(String(err));
       }
     } finally {
@@ -1292,13 +1495,21 @@ export default function App() {
     watcherRefreshPendingRef.current = false;
     setProjectRoot(nextRoot);
     setClients([]);
+    setClientCacheLoadedRoot(null);
+    setClientListRevealedRoot(null);
+    cachedClientNamesRef.current = new Set();
+    setCachedClientNames(new Set());
+    setClientRefreshFailedRoot(null);
     setExpandedClients(new Set());
     setSelectedVersionByClient({});
     setLastClientsCheckedAt(null);
     setError(null);
     setLoading(Boolean(nextRoot));
+    setScanProgress(nextRoot ? { phase: "clients", completed: 0, total: 0 } : null);
+    scanProgressVisibleRef.current = Boolean(nextRoot);
     if (!nextRoot) {
       setLoading(false);
+      setClientCacheLoadedRoot("");
       try {
         await saveConfigValue("projectRoot", "");
       } catch (err) {
@@ -1306,11 +1517,10 @@ export default function App() {
       }
       return;
     }
+    await loadClientCache(nextRoot);
+    if (projectRootRef.current !== nextRoot) return;
     try {
       await saveConfigValue("projectRoot", nextRoot);
-      const nextRecentProjectPaths = [nextRoot, ...recentProjectPaths.filter((path) => path !== nextRoot)].slice(0, 4);
-      setRecentProjectPaths(nextRecentProjectPaths);
-      await saveConfigValue("recentProjectPaths", nextRecentProjectPaths);
     } catch (err) {
       setError(`Could not save project selection: ${String(err)}`);
     }
@@ -1320,6 +1530,28 @@ export default function App() {
       console.error("Could not migrate existing FINAL status", err);
     }
     await refreshClients(nextRoot, true, true, true);
+  };
+
+  const createProject = async () => {
+    const showName = customProjectShowSelected ? customProjectShow.trim() : selectedProjectShow;
+    if (!showName || projectCreateBusy) return;
+    setProjectCreateBusy(true);
+    setProjectCreateError("");
+    try {
+      const created = await invoke<ProjectRootOption>("create_project_folder", {
+        showName,
+        year: projectYear,
+      });
+      const roots = await invoke<ProjectRootOption[]>("list_project_roots");
+      setProjectRoots(roots);
+      setShowProjectCreate(false);
+      setShowProjectMenu(false);
+      await changeProjectRoot(created.path);
+    } catch (err) {
+      setProjectCreateError(String(err));
+    } finally {
+      setProjectCreateBusy(false);
+    }
   };
 
   useEffect(() => {
@@ -1338,13 +1570,13 @@ export default function App() {
   }, [projectRoot, busy, lastClientsCheckedAt]);
 
   const toggleClientExpanded = (name: string) => {
-    const isExpanded = expandedClients.has(name);
-    if (isExpanded) {
-      setClientScrollSpacerHeight(0);
-      setExpandedClientScrollTarget(null);
-    } else {
-      setClientScrollSpacerHeight(0);
-      setExpandedClientScrollTarget(name);
+    if (!expandedClients.has(name)) {
+      setSelectedVersionByClient((current) => {
+        if (!(name in current)) return current;
+        const next = { ...current };
+        delete next[name];
+        return next;
+      });
     }
     setExpandedClients((current) => {
       return current.has(name) ? new Set() : new Set([name]);
@@ -1358,14 +1590,12 @@ export default function App() {
     }
     const baseName = newClientName.trim();
     if (!baseName) return;
-    const customType = normalizeClientInput(customClientType);
+    const customType = normalizeClientInput(customClientType).toUpperCase();
     if (newClientType === "CUSTOM" && !customType) {
       setError("Enter a custom mode name.");
       return;
     }
-    const normalized = normalizeClientInput(
-      `${baseName}_${newClientType === "CUSTOM" ? customType : newClientType}`
-    );
+    const normalized = `${normalizeClientInput(baseName)}_${newClientType === "CUSTOM" ? customType : newClientType}`;
     if (!normalized) return;
     const parsed = parseClientLabel(normalized);
     if (!parsed.type && newClientType !== "CUSTOM") {
@@ -1425,18 +1655,36 @@ export default function App() {
     if (!exportStatus.latest_filename || exportStatus.issue) return;
     setPendingPromotion(null);
     setPublishingClientPath(client.path);
+    setPublishingStage("publishing");
     setError(null);
     try {
-      const message = await invoke<string>("promote_latest_export", {
-        clientPath: client.path,
-        expectedFilename: exportStatus.latest_filename,
+      let message: string;
+      try {
+        message = await invoke<string>("promote_latest_export", {
+          clientPath: client.path,
+          expectedFilename: exportStatus.latest_filename,
+        });
+      } catch (err) {
+        setPublishFailedClientPaths((current) => new Set(current).add(client.path));
+        setError(`Publish failed: ${String(err)}`);
+        void refreshClients(undefined, false, true).catch((refreshError) => console.warn("Could not refresh failed publish status", refreshError));
+        return;
+      }
+      setPublishFailedClientPaths((current) => {
+        const next = new Set(current);
+        next.delete(client.path);
+        return next;
       });
       showToast(message, "success");
-      await refreshClients(undefined, false, true);
-    } catch (err) {
-      setError(`Publish failed: ${String(err)}`);
+      setPublishingStage("refreshing");
+      try {
+        await refreshClients(undefined, false, true);
+      } catch (err) {
+        setError(`Published, but project status could not refresh: ${String(err)}`);
+      }
     } finally {
       setPublishingClientPath(null);
+      setPublishingStage(null);
     }
   };
 
@@ -1500,8 +1748,8 @@ export default function App() {
         projectRoot: root,
         clientName: client.name,
         mode,
-        operation,
-        dryRun,
+        operation: "move",
+        dryRun: false,
         paths,
       });
       setLastBatch(buildUndoBatch(result.entries));
@@ -1575,9 +1823,14 @@ export default function App() {
   const handleLogOpen = async () => {
     if (!projectRoot) return;
     try {
+      const hasLogs = await invoke<boolean>("project_has_sort_logs", { projectRoot });
+      if (!hasLogs) {
+        showToast("No sort logs have been recorded for this project yet.", "info", 4500);
+        return;
+      }
       await invoke("open_folder", { path: `${projectRoot}/_logs` });
     } catch (err) {
-      setError(formatOpenError(`${projectRoot}/_logs`, err));
+      showToast(formatOpenError(`${projectRoot}/_logs`, err), "error", 7000);
     }
   };
 
@@ -1688,7 +1941,7 @@ export default function App() {
                     {notificationHistory.map((entry) => (
                       <li key={entry.id} className={`notification-entry ${entry.tone}`}>
                         <span className="notification-entry-mark" aria-hidden="true" />
-                        <div><p>{entry.message}</p><time dateTime={new Date(entry.createdAt).toISOString()}>{new Date(entry.createdAt).toLocaleString()}</time></div>
+                        <div><p>{entry.message}</p><time dateTime={new Date(entry.createdAt).toISOString()}>{formatUiDateTime(entry.createdAt)}</time></div>
                       </li>
                     ))}
                   </ul>
@@ -1712,7 +1965,7 @@ export default function App() {
             title="Maximize"
             onClick={() => void getCurrentWindow().toggleMaximize()}
           >
-            <Maximize2 size={14} aria-hidden="true" />
+            <Square size={14} aria-hidden="true" />
           </button>
           <button
             type="button"
@@ -1725,7 +1978,6 @@ export default function App() {
           </button>
         </div>
       </header>
-
       {error && <div className="banner error">{error}</div>}
       {(processingToast ?? toast) && (
         <div className={`toast ${(processingToast ?? toast)!.tone}`}>
@@ -1767,10 +2019,21 @@ export default function App() {
                     }}
                   />
                   <div className="project-menu" role="listbox" aria-label="Production projects">
-                    <div className="project-menu-heading">
-                      <strong>Switch project</strong>
-                      <span>{projectRoots.length} available</span>
-                    </div>
+                    <button
+                      type="button"
+                      className="project-create-menu-action"
+                      onClick={() => {
+                        setProjectCreateError("");
+                        setProjectYear(new Date().getFullYear());
+                        if (projectShowCatalog?.shows[0]) setSelectedProjectShow(projectShowCatalog.shows[0].name);
+                        setCustomProjectShowSelected(false);
+                        setCustomProjectShow("");
+                        setShowProjectMenu(false);
+                        setShowProjectCreate(true);
+                      }}
+                    >
+                      <Plus size={15} aria-hidden="true" /> New Project
+                    </button>
                     <div className="project-menu-search">
                       <Search size={15} aria-hidden="true" />
                       <input
@@ -1783,52 +2046,24 @@ export default function App() {
                       />
                     </div>
                     <div className="project-menu-scroll">
-                      {recentProjects.length > 0 && (
-                        <div className="project-group">
-                          <div className="project-group-label">Recent</div>
-                          {recentProjects.map((project) => (
-                            <button
-                              type="button"
-                              role="option"
-                              aria-selected={project.path === projectRoot}
-                              className={`project-option ${project.path === projectRoot ? "selected" : ""}`}
-                              key={`recent-${project.path}`}
-                              onClick={() => {
-                                setShowProjectMenu(false);
-                                setProjectSearch("");
-                                void changeProjectRoot(project.path);
-                              }}
-                            >
-                              <span className="project-option-number">{project.number}</span>
-                              <span className="project-option-name">{projectDisplayName(project.name)}</span>
-                              {project.path === projectRoot && <Check size={15} aria-hidden="true" />}
-                            </button>
-                          ))}
-                        </div>
-                      )}
-                      {otherProjects.length > 0 && (
-                        <div className="project-group">
-                          {recentProjects.length > 0 && <div className="project-group-label">All projects</div>}
-                          {otherProjects.map((project) => (
-                            <button
-                              type="button"
-                              role="option"
-                              aria-selected={project.path === projectRoot}
-                              className={`project-option ${project.path === projectRoot ? "selected" : ""}`}
-                              key={project.path}
-                              onClick={() => {
-                                setShowProjectMenu(false);
-                                setProjectSearch("");
-                                void changeProjectRoot(project.path);
-                              }}
-                            >
-                              <span className="project-option-number">{project.number}</span>
-                              <span className="project-option-name">{projectDisplayName(project.name)}</span>
-                              {project.path === projectRoot && <Check size={15} aria-hidden="true" />}
-                            </button>
-                          ))}
-                        </div>
-                      )}
+                      {visibleProjectRoots.map((project) => (
+                        <button
+                          type="button"
+                          role="option"
+                          aria-selected={project.path === projectRoot}
+                          className={`project-option ${project.path === projectRoot ? "selected" : ""}`}
+                          key={project.path}
+                          onClick={() => {
+                            setShowProjectMenu(false);
+                            setProjectSearch("");
+                            void changeProjectRoot(project.path);
+                          }}
+                        >
+                          <span className="project-option-number">{project.number}</span>
+                          <span className="project-option-name">{projectDisplayName(project.name)}</span>
+                          {project.path === projectRoot && <Check size={15} aria-hidden="true" />}
+                        </button>
+                      ))}
                       {visibleProjectRoots.length === 0 && (
                         <div className="project-menu-empty">No projects match “{projectSearch}”.</div>
                       )}
@@ -1944,18 +2179,22 @@ export default function App() {
                 )}
               </div>
               <div className="client-toolbar-actions">
-                <span className="client-result-count">{visibleClients.length} {visibleClients.length === 1 ? "client" : "clients"}</span>
+                <span className="client-result-count" aria-live="polite">
+                  {clientRefreshFailedRoot === projectRoot && cachedClientNames.size > 0
+                      ? "Cached · refresh failed"
+                    : `${visibleClients.length} ${visibleClients.length === 1 ? "client" : "clients"}`}
+                </span>
                 {isMariyaMeetsRoot && <button type="button" className="ghost new-season-button" onClick={() => void handleCreateMariyaMeetsSeason()} title="Create the next Mariya Meets season">New season</button>}
-                <button
+                {advancedMode && <button
                   type="button"
                   className="ghost icon-button refresh-button"
                   onClick={() => void refreshClients()}
                   disabled={!projectRoot || loading}
                   aria-label="Refresh clients"
-                  title={lastClientsCheckedAt ? `Last updated ${lastClientsCheckedAt.toLocaleString()}` : "Refresh clients"}
+                  title={lastClientsCheckedAt ? `Last updated ${formatUiDateTime(lastClientsCheckedAt)}` : "Refresh clients"}
                 >
                   <RefreshCw size={16} strokeWidth={1.9} aria-hidden="true" />
-                </button>
+                </button>}
                 <button
                   type="button"
                   className="ghost new-client-button"
@@ -2023,41 +2262,7 @@ export default function App() {
                     {advancedPasswordError && <small role="alert">{advancedPasswordError}</small>}
                   </form>
                 )}
-                <label className="toggle compact">
-                  <input
-                    type="checkbox"
-                    checked={operation === "copy"}
-                    onChange={(event) => {
-                      const next = event.target.checked ? "copy" : "move";
-                      setOperation(next);
-                      saveConfigValue("lastOperation", next);
-                    }}
-                  />
-                  Copy
-                </label>
-                <label className="toggle compact">
-                  <input
-                    type="checkbox"
-                    checked={dryRun}
-                    onChange={(event) => setDryRun(event.target.checked)}
-                  />
-                  Dry run
-                </label>
-                <label className="toggle compact">
-                  <input
-                    type="checkbox"
-                    checked={showApprovalMode}
-                    onChange={(event) => {
-                      const checked = event.target.checked;
-                      setShowApprovalMode(checked);
-                      saveConfigValue("showApprovalMode", checked);
-                      if (!checked && mode === "APPROVAL EXPORTS") {
-                        saveConfigValue("lastMode", "AUTO");
-                      }
-                    }}
-                  />
-                  Approval exports
-                </label>
+                {advancedMode && <>
                 <label className="toggle compact">
                   <input
                     type="checkbox"
@@ -2085,35 +2290,34 @@ export default function App() {
                   />
                   Show non-client folders
                 </label>
-                <button
-                  type="button"
-                  className="ghost advanced-menu-item"
-                  onClick={() => {
-                    setShowAdvancedMenu(false);
-                    openFrameIoSettings();
-                  }}
-                >
-                  <Settings2 size={15} aria-hidden="true" />
-                  <span>
-                    <strong>Frame.io</strong>
-                    <small>{frameIoConfigured ? "Destination configured" : "Setup required"}</small>
-                  </span>
-                </button>
-                <button
-                  type="button"
-                  className="update-check-button ghost"
-                  disabled={checkingForUpdates}
-                  onClick={() => void checkForUpdates()}
-                >
-                  {checkingForUpdates ? "Checking…" : "Check for updates"}
-                </button>
+                </>}
+                <div className="advanced-utility-row">
+                  <button
+                    type="button"
+                    className="ghost advanced-utility-button"
+                    aria-label="Frame.io settings"
+                    title={frameIoConfigured ? "Frame.io settings — destination configured" : "Frame.io settings — setup required"}
+                    onClick={() => {
+                      setShowAdvancedMenu(false);
+                      openFrameIoSettings();
+                    }}
+                  >
+                    <Settings2 size={16} aria-hidden="true" />
+                  </button>
+                  <button
+                    type="button"
+                    className="ghost advanced-utility-button"
+                    aria-label="Check for updates"
+                    title={checkingForUpdates ? "Checking for updates" : "Check for updates"}
+                    disabled={checkingForUpdates}
+                    onClick={() => void checkForUpdates()}
+                  >
+                    <RefreshCw size={15} className={checkingForUpdates ? "spinning" : ""} aria-hidden="true" />
+                  </button>
+                </div>
                 <div className="advanced-actions">
-                  <button type="button" className="ghost" onClick={() => setShowUndoConfirm(true)} disabled={!lastBatch.length}>
-                    Undo last
-                  </button>
-                  <button type="button" className="ghost" onClick={() => void handleLogOpen()} disabled={!projectRoot}>
-                    View log
-                  </button>
+                  {advancedMode && <button type="button" className="ghost" onClick={() => setShowUndoConfirm(true)} disabled={!lastBatch.length}>Undo last</button>}
+                  {advancedMode && <button type="button" className="ghost" onClick={() => void handleLogOpen()} disabled={!projectRoot}>View log</button>}
                 </div>
               </div>
             </div>
@@ -2218,15 +2422,15 @@ export default function App() {
                   type="button"
                   className={`column-sort ${clientSort.column === "status" ? "active" : ""}`}
                   onClick={() => toggleClientSort("status")}
-                  aria-label={clientSort.column === "status" && clientSort.direction === "asc" ? "Project status: unfinished first. Click to show finalised first" : "Sort project status: unfinished first"}
+                  aria-label={clientSort.column === "status" && clientSort.direction === "asc" ? "Status: unfinished first. Click to show finalised first" : "Sort status: unfinished first"}
                   title={clientSort.column === "status" && clientSort.direction === "asc" ? "Show finalised projects first" : "Show unfinished projects first"}
                 >
-                  Project status {sortIcon("status")}
+                  Status {sortIcon("status")}
                 </button>
               </div>
               <div>Actions</div>
             </div>
-            {loading && visibleClients.length === 0 && (
+            {loading && visibleClients.length === 0 && clients.length > 0 && (
               <div className="table-row">Loading…</div>
             )}
             {visibleClients.length === 0 && !loading && (
@@ -2237,12 +2441,20 @@ export default function App() {
             {isMariyaMeetsRoot && visibleClients.length === 0 && createdMariyaSeason && (
               <div className="season-divider" role="heading" aria-level={2}>{createdMariyaSeason}</div>
             )}
-            {visibleClients.map((client, index) => {
+            {clientListReady && visibleClients.map((client, index) => {
                 const label = parseClientLabel(client.name);
-                const droppable = screen === "sort" && client.status !== "Not a client";
+                const clientIsCached = cachedClientNames.has(client.name);
+                const droppable = screen === "sort" && client.status !== "Not a client" && !clientIsCached;
                 const exports = client.export_status;
                 const version = exports.latest_version ?? exports.final_version;
-                const sortedApprovalVersions = [...exports.approval_versions].sort((left, right) => right.version - left.version || right.filename.localeCompare(left.filename));
+                const sortedApprovalVersions = [...exports.approval_versions].sort((left, right) => {
+                  const leftSuperseded = left.relative_path.split(/[\\/]/).some((part) => part.toLowerCase() === "superseded");
+                  const rightSuperseded = right.relative_path.split(/[\\/]/).some((part) => part.toLowerCase() === "superseded");
+                  return right.version - left.version
+                    || Number(leftSuperseded) - Number(rightSuperseded)
+                    || Date.parse(right.added_at) - Date.parse(left.added_at)
+                    || right.filename.localeCompare(left.filename);
+                });
                 const latestApprovalVersion = sortedApprovalVersions[0];
                 const latestApprovalPath = latestApprovalVersion
                   ? `${client.path.replace(/[\\/]+$/, "")}\\03_EXPORTS\\${latestApprovalVersion.relative_path.replace(/[\\/]+/g, "\\")}`
@@ -2277,6 +2489,17 @@ export default function App() {
                 const expanded = expandedClients.has(client.name);
                 const manuallyPublished = Boolean(manualPublishedPaths[client.path]);
                 const published = manuallyPublished || isFinalised(client);
+                const previousClient = visibleClients[index - 1];
+                const previousPublished = previousClient
+                  ? Boolean(manualPublishedPaths[previousClient.path]) || isFinalised(previousClient)
+                  : false;
+                const computedPublishedDividerStarts = published && (!previousClient
+                  || (isMariyaMeetsRoot && previousClient.season !== client.season)
+                  || !previousPublished);
+                const publishedDividerStarts = search.trim()
+                  ? computedPublishedDividerStarts
+                  : client.cachePublishedDividerBefore ?? computedPublishedDividerStarts;
+                const publishFailed = exports.publish_failed || publishFailedClientPaths.has(client.path);
                 const exportLabel = manuallyPublished
                   ? "FINAL"
                   : client.exportStatusLoading
@@ -2312,9 +2535,8 @@ export default function App() {
                   exports.versions.length > 0 && `Versions: ${exports.versions.map((item) => `V${item.version}`).join(", ")}`,
                 ].filter(Boolean).join("\n");
                 const lastApprovalVersion = sortedApprovalVersions[0];
-                const defaultSelectedVersion = lastApprovalVersion?.version;
-                const selectedVersionNumber = selectedVersionByClient[client.name] ?? defaultSelectedVersion;
-                const selectedApprovalVersion = sortedApprovalVersions.find((item) => item.version === selectedVersionNumber)
+                const selectedVersionPath = selectedVersionByClient[client.name] ?? lastApprovalVersion?.relative_path;
+                const selectedApprovalVersion = sortedApprovalVersions.find((item) => item.relative_path === selectedVersionPath)
                   ?? lastApprovalVersion;
                 const selectedApprovalPath = selectedApprovalVersion
                   ? `${client.path.replace(/[\\/]+$/, "")}\\03_EXPORTS\\${selectedApprovalVersion.relative_path.replace(/[\\/]+/g, "\\")}`
@@ -2324,10 +2546,14 @@ export default function App() {
                   {isMariyaMeetsRoot && client.season && client.season !== visibleClients[index - 1]?.season && (
                     <div className="season-divider" role="heading" aria-level={2}>{client.season}</div>
                   )}
+                  {publishedDividerStarts && (
+                    <div className="published-divider" role="heading" aria-level={2}>Published</div>
+                  )}
                   <div
-                    className={`table-row client-row ${droppable ? "droppable-row" : ""} ${
+                    className={`table-row client-row ${clientIsCached ? "cached-client-row" : ""} ${droppable ? "droppable-row" : ""} ${
                       dragTarget === client.name ? "drag-over" : ""
                     } ${published ? "published-row" : ""} ${expanded ? "expanded-row" : ""}`}
+                    style={{ animationDelay: `${Math.min(index * 18, 180)}ms` }}
                     data-client-name={client.name}
                     data-client={droppable ? client.name : undefined}
                     onClick={() => toggleClientExpanded(client.name)}
@@ -2373,7 +2599,7 @@ export default function App() {
                         <span className="client-expand-icon" aria-hidden="true">
                           {expanded ? <ChevronDown size={16} /> : <ChevronRight size={16} />}
                         </span>
-                        <span className="client-name">{label.name}</span>
+                        <span className="client-name">{expanded ? label.name : label.name.toUpperCase()}</span>
                         {label.type && (
                           <span className={`client-tag ${label.type.toLowerCase()}`}>
                             {label.type}
@@ -2381,8 +2607,8 @@ export default function App() {
                         )}
                       </div>
                     </div>
-                    <div className="client-statuses">
-                      {client.status !== "OK" && (
+                    <div className={`client-statuses ${clientIsCached ? "" : !client.exportStatusLoading ? "client-status-enter" : ""}`}>
+                      {!clientIsCached && client.status !== "OK" && (
                       <span
                         className={`badge ${client.status
                           .toLowerCase()
@@ -2391,37 +2617,38 @@ export default function App() {
                         {client.status}
                       </span>
                       )}
-                      {client.status !== "Not a client" && (
+                      {!clientIsCached && client.status !== "Not a client" && (
                         <>
                           {client.exportStatusLoading ? (
-                            <span className="badge export-ready export-progress" title={exportDetails}>
-                              <LoaderCircle className="approval-progress-spinner" size={13} aria-hidden="true" />
-                              {exportLabel}
-                            </span>
-                          ) : exports.approval_in_progress ? (
-                            <span className="approval-progress-wrap" title={exportDetails}>
-                              <span className="badge export-ready export-progress">
-                                <LoaderCircle className="approval-progress-spinner" size={13} aria-hidden="true" />
-                                {exportLabel}
-                              </span>
-                              <span className="approval-progress-detail">
-                                {exports.approval_progress_phase ?? "Preparing approval copy"}
-                              </span>
-                            </span>
-                          ) : exportNeedsAttention ? (
-                            <span className="badge export-warning" title={exportDetails}>{exportSummary}</span>
-                          ) : exportLabel === "FINAL" ? (
-                            <span className="status-text final-state" title={exportDetails}>
-                              <Check size={14} aria-hidden="true" /> Final
-                            </span>
-                          ) : exportLabel === "Shared" ? (
-                            <span className="status-text shared-state" title={exportDetails}>
-                              <Link2 size={14} aria-hidden="true" /> {exportSummary}
-                            </span>
-                          ) : exportLabel === "No exports" ? (
-                            <span className="status-text empty-state" title={exportDetails}>No exports</span>
+                            <span className="client-status-space" aria-hidden="true" />
                           ) : (
-                            <span className="status-text" title={exportDetails}>{exportSummary}</span>
+                            <span className="client-export-status">
+                              {exports.approval_in_progress ? (
+                                <span className="approval-progress-wrap" title={exportDetails}>
+                                  <span className="badge export-ready export-progress">
+                                    <LoaderCircle className="approval-progress-spinner" size={13} aria-hidden="true" />
+                                    {exportLabel}
+                                  </span>
+                                  <span className="approval-progress-detail">
+                                    {exports.approval_progress_phase ?? "Preparing approval copy"}
+                                  </span>
+                                </span>
+                              ) : exportNeedsAttention ? (
+                                <span className="badge export-warning" title={exportDetails}>{exportSummary}</span>
+                              ) : exportLabel === "FINAL" ? (
+                                <span className="status-text final-state" title={exportDetails}>
+                                  <Check size={14} aria-hidden="true" /> Final
+                                </span>
+                              ) : exportLabel === "Shared" ? (
+                                <span className="status-text shared-state" title={exportDetails}>
+                                  <Link2 size={14} aria-hidden="true" /> {exportSummary}
+                                </span>
+                              ) : exportLabel === "No exports" ? (
+                                <span className="status-text empty-state" title={exportDetails}>No exports</span>
+                              ) : (
+                                <span className="status-text" title={exportDetails}>{exportSummary}</span>
+                              )}
+                            </span>
                           )}
                         </>
                       )}
@@ -2440,17 +2667,22 @@ export default function App() {
                       >
                         <FolderOpen size={17} strokeWidth={1.8} aria-hidden="true" />
                       </button>
-                      {client.status !== "Not a client" && !published && (
+                      {client.status !== "Not a client" && exports.latest_filename && !exports.issue && (!published || publishFailed) && (
                         <button
                           type="button"
                           className="ghost promote-button"
-                          onClick={() => setPendingPromotion(client)}
+                          onClick={() => setPendingPromotion({ ...client, export_status: { ...exports, publish_failed: publishFailed } })}
                           disabled={Boolean(busy || publishingClientPath || !exports.latest_filename || exports.issue)}
-                          title={exports.issue ?? (exports.latest_filename ? `Publish ${exports.latest_filename}` : "No source export available to publish")}
+                          title={`${publishFailed ? "Retry failed publish" : "Publish"} ${exports.latest_filename}`}
                         >
                           {publishingClientPath === client.path ? (
-                            <><LoaderCircle className="approval-progress-spinner" size={14} aria-hidden="true" /> Publishing…</>
-                          ) : "Publish"}
+                            <span className="publish-progress-content">
+                              <span className="publish-progress-label">{publishingStage === "refreshing" ? "Refreshing project…" : "Publishing export…"}</span>
+                              <span className="publish-progress-track" role="progressbar" aria-label={publishingStage === "refreshing" ? "Refreshing project status" : "Publishing export"} aria-valuetext={publishingStage === "refreshing" ? "Refreshing project status" : "Publishing export"}>
+                                <span className={`publish-progress-indicator ${publishingStage === "refreshing" ? "is-refreshing" : ""}`} />
+                              </span>
+                            </span>
+                          ) : publishFailed ? "Failed" : "Publish"}
                         </button>
                       )}
                       {client.status === "Missing folders" && (
@@ -2465,23 +2697,9 @@ export default function App() {
                       )}
                     </div>
                 </div>
-                {expanded && (
+                {expanded && !client.exportStatusLoading && (
                   <div className="client-details">
-                    <div className="client-details-heading">
-                      <div>
-                        <strong>Approval versions</strong>
-                        <span>{sortedApprovalVersions.length} {sortedApprovalVersions.length === 1 ? "version" : "versions"}</span>
-                      </div>
-                      {exports.approval_in_progress && (
-                        <span className="approval-detail-line">
-                          <LoaderCircle className="approval-progress-spinner" size={13} aria-hidden="true" />
-                          Approval copy: {exports.approval_progress_phase ?? "Preparing approval copy"}
-                        </span>
-                      )}
-                    </div>
-                    {client.exportStatusLoading ? (
-                      <div className="versions-empty"><LoaderCircle className="approval-progress-spinner" size={14} aria-hidden="true" /> Loading export versions…</div>
-                    ) : sortedApprovalVersions.length === 0 ? (
+                    {sortedApprovalVersions.length === 0 ? (
                       <div className="versions-empty">No finalized watermarked approval copies found.</div>
                     ) : selectedApprovalVersion && selectedApprovalPath && (
                       <div className="version-browser">
@@ -2492,19 +2710,21 @@ export default function App() {
                               <strong>{selectedApprovalVersion.filename}</strong>
                             </div>
                             <time dateTime={selectedApprovalVersion.added_at}>
-                              Added {new Date(selectedApprovalVersion.added_at).toLocaleString()}
+                              Added {formatUiDateTime(selectedApprovalVersion.added_at)}
                             </time>
                           </div>
                           <video
                             key={selectedApprovalPath}
+                            className="video-fade-in"
                             controls
                             preload="metadata"
                             src={convertFileSrc(selectedApprovalPath)}
+                            onLoadedData={(event) => event.currentTarget.classList.add("video-loaded")}
                           />
                         </article>
                         <div className="version-list" role="group" aria-label={`${label.name} approval versions`}>
                           {sortedApprovalVersions.map((approvalVersion) => {
-                            const selected = approvalVersion.version === selectedApprovalVersion.version;
+                            const selected = approvalVersion.relative_path === selectedApprovalVersion.relative_path;
                             return (
                               <div
                                 className={`version-entry ${selected ? "selected" : ""}`}
@@ -2516,19 +2736,18 @@ export default function App() {
                                   className="version-option"
                                   onClick={() => setSelectedVersionByClient((current) => ({
                                     ...current,
-                                    [client.name]: approvalVersion.version,
+                                    [client.name]: approvalVersion.relative_path,
                                   }))}
                                 >
                                   <span className="version-option-heading">
-                                    <span className="version-option-number">Version {approvalVersion.version}</span>
-                                    {approvalVersion.version === lastApprovalVersion?.version && <span className="version-latest">Latest</span>}
-                                    <time dateTime={approvalVersion.added_at} title={new Date(approvalVersion.added_at).toLocaleString()}>
+                                    <span className="version-option-number version-label">V{approvalVersion.version}</span>
+                                    {approvalVersion.relative_path === lastApprovalVersion?.relative_path && <span className="version-latest">Latest</span>}
+                                    <time dateTime={approvalVersion.added_at} title={formatUiDateTime(approvalVersion.added_at)}>
                                       {new Date(approvalVersion.added_at).toLocaleString(undefined, { day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" })}
                                     </time>
                                   </span>
-                                  <span className="version-option-filename" title={approvalVersion.filename}>{approvalVersion.filename}</span>
                                 </button>
-                                {approvalVersion.version === lastApprovalVersion?.version && latestApprovalPath && (
+                                {approvalVersion.relative_path === lastApprovalVersion?.relative_path && latestApprovalPath && (
                                   <div className="frameio-inline-row">
                                     {!latestFrameIoShareUrl && (
                                       <span className="frameio-inline-label">
@@ -2538,12 +2757,13 @@ export default function App() {
                                     {latestFrameIoShareUrl ? (
                                       <button
                                         type="button"
-                                        className="frameio-icon-button linked"
-                                        title="Open Frame.io review"
-                                        aria-label="Open Frame.io review"
+                                        className="frameio-open-link"
+                                        title="Frame.io review link"
+                                        aria-label={`Open Frame.io review: ${latestFrameIoShareUrl}`}
                                         onClick={() => void invoke("frameio_open_external_url", { url: latestFrameIoShareUrl }).catch((err) => showToast(String(err), "error", 7000))}
                                       >
-                                        <Link2 size={16} aria-hidden="true" />
+                                        <Link2 size={15} aria-hidden="true" />
+                                        <span>{latestFrameIoShareUrl.replace(/^https?:\/\//, "")}</span>
                                       </button>
                                     ) : latestFrameIoHasUnfinishedJob ? (
                                       <span className="frameio-inline-label">{latestFrameIoRecord?.last_error ?? "Frame.io upload needs reconciliation"}</span>
@@ -2572,25 +2792,15 @@ export default function App() {
                                       </button>
                                     )}
                                     {latestFrameIoShareUrl ? (
-                                      <>
-                                        <button
-                                          type="button"
-                                          className="frameio-inline-url"
-                                          title={latestFrameIoShareUrl}
-                                          onClick={() => void invoke("frameio_open_external_url", { url: latestFrameIoShareUrl }).catch((err) => showToast(String(err), "error", 7000))}
-                                        >
-                                          {latestFrameIoShareUrl.replace(/^https?:\/\//, "")}
-                                        </button>
-                                        <button
-                                          type="button"
-                                          className="frameio-icon-button copy"
-                                          title="Copy Frame.io share link"
-                                          aria-label="Copy Frame.io share link"
-                                          onClick={() => void copyFrameIoShareLink(latestFrameIoShareUrl)}
-                                        >
-                                          <Copy size={14} aria-hidden="true" />
-                                        </button>
-                                      </>
+                                      <button
+                                        type="button"
+                                        className="frameio-icon-button copy"
+                                        title="Copy to clipboard"
+                                        aria-label="Copy Frame.io share link"
+                                        onClick={() => void copyFrameIoShareLink(latestFrameIoShareUrl)}
+                                      >
+                                        <Copy size={14} aria-hidden="true" />
+                                      </button>
                                     ) : latestFrameIoProgress?.message || (latestFrameIoRecordMatchesDestination && latestFrameIoRecord?.last_error) ? (
                                       <span className="frameio-inline-message">{latestFrameIoProgress?.message ?? latestFrameIoRecord?.last_error}</span>
                                     ) : null}
@@ -2616,21 +2826,39 @@ export default function App() {
                 </Fragment>
               );
             })}
-            {scanProgress && visibleClients.length > 0 && (
-              <div className="table-row scan-progress-row">
-                <span>
-                  <LoaderCircle className="approval-progress-spinner" size={14} aria-hidden="true" />
-                  {scanProgress.phase === "clients"
-                    ? `Loading clients ${scanProgress.completed}${scanProgress.total ? ` of ${scanProgress.total}` : ""}…`
-                    : `Checking exports ${scanProgress.completed} of ${scanProgress.total}…`}
-                </span>
-              </div>
-            )}
             </div>
-            {clientScrollSpacerHeight > 0 && (
-              <div className="client-scroll-spacer" aria-hidden="true" style={{ height: clientScrollSpacerHeight }} />
-            )}
           </div>
+          {projectRoot && clientRefreshFailedRoot === projectRoot && (
+            <div
+              className="client-refresh-overlay"
+              role="alertdialog"
+              aria-modal="true"
+              aria-labelledby="client-refresh-error-title"
+              aria-describedby="client-refresh-error-description"
+              onKeyDown={(event) => {
+                if (event.key === "Tab") {
+                  event.preventDefault();
+                  event.currentTarget.querySelector<HTMLButtonElement>("button")?.focus();
+                }
+              }}
+            >
+              <div className="client-refresh-overlay-card">
+                <h2 id="client-refresh-error-title">Project folder unavailable</h2>
+                <p id="client-refresh-error-description">
+                  Pepper couldn’t refresh this project. The last saved client list is preserved, and project actions are paused until the folder is available again.
+                </p>
+                <button
+                  type="button"
+                  className="primary client-refresh-overlay-action"
+                  autoFocus
+                  disabled={loading}
+                  onClick={() => void refreshClients(projectRoot, true, true, true)}
+                >
+                  {loading ? "Retrying…" : "Retry refresh"}
+                </button>
+              </div>
+            </div>
+          )}
         </section>
       </div>
 
@@ -2644,19 +2872,8 @@ export default function App() {
         </div>
         <div className="status-actions">
           <span>{lastSummary || "No operations yet."}</span>
-          <button
-            className="ghost"
-            onClick={() => setShowUndoConfirm(true)}
-            disabled={!lastBatch.length}
-          >
-            Undo last
-          </button>
-          <button className="ghost" onClick={handleLogOpen} disabled={!projectRoot}>
-            View log
-          </button>
-          <button className="ghost" onClick={() => refreshClients()} disabled={!projectRoot}>
-            Refresh
-          </button>
+          {advancedMode && <button className="ghost" onClick={handleLogOpen} disabled={!projectRoot}>View log</button>}
+          {advancedMode && <button className="ghost" onClick={() => refreshClients()} disabled={!projectRoot}>Refresh</button>}
         </div>
       </footer>
 
@@ -2731,11 +2948,10 @@ export default function App() {
             setPendingPromotion(null);
           }}
         >
-          <h2 id="promotion-title">Publish version?</h2>
+          <h2 id="promotion-title">{pendingPromotion.export_status.publish_failed ? "Retry failed publish?" : "Publish version?"}</h2>
           <p id="promotion-description">
-            Publish <strong>V{pendingPromotion.export_status.latest_version}</strong> for{" "}
-            <strong>{parseClientLabel(pendingPromotion.name).name}</strong> to 04_FINAL.
-            The clean master below is the file that will be copied. The source export will be kept.
+            {pendingPromotion.export_status.publish_failed ? "Retry publishing" : "Publish"} <strong>V{pendingPromotion.export_status.latest_version}</strong> for{" "}
+            <strong>{parseClientLabel(pendingPromotion.name).name.toUpperCase()}</strong> to 04_FINAL.
           </p>
           {(() => {
             const cleanVersion = pendingPromotion.export_status.versions.find(
@@ -2752,7 +2968,7 @@ export default function App() {
                   </div>
                   <span className="promotion-clean-label">Exact file sent to FINAL</span>
                 </div>
-                <video controls preload="metadata" src={convertFileSrc(cleanPath)} />
+                <video className="video-fade-in" controls preload="metadata" src={convertFileSrc(cleanPath)} onLoadedData={(event) => event.currentTarget.classList.add("video-loaded")} />
               </article>
             );
           })()}
@@ -2772,7 +2988,7 @@ export default function App() {
               disabled={!pendingPromotion.export_status.versions.some((version) => version.version === pendingPromotion.export_status.latest_version)}
               onClick={() => void handlePromoteLatest(pendingPromotion)}
             >
-              Publish
+              {pendingPromotion.export_status.publish_failed ? "Retry publish" : "Publish"}
             </button>
           </div>
         </dialog>
@@ -2811,6 +3027,39 @@ export default function App() {
               >
                 {installingUpdate ? "Installing…" : "Install update"}
               </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {showProjectCreate && (
+        <div className="modal-backdrop" onClick={() => !projectCreateBusy && setShowProjectCreate(false)}>
+          <div className="modal project-create-modal" role="dialog" aria-modal="true" aria-labelledby="project-create-title" onClick={(event) => event.stopPropagation()}>
+            <button className="project-create-close" type="button" aria-label="Close" onClick={() => setShowProjectCreate(false)} disabled={projectCreateBusy}><X size={17} /></button>
+            <h2 id="project-create-title">New Project</h2>
+            <span className="project-year-label">Show</span>
+            <div className="project-show-grid" role="group" aria-label="Choose a show">
+              {(projectShowCatalog?.shows ?? []).map((show) => (
+                <button key={show.name} type="button" className={`project-show-option type-chip ${selectedProjectShow === show.name && !customProjectShowSelected ? "selected" : ""}`} aria-pressed={selectedProjectShow === show.name && !customProjectShowSelected} onClick={() => { setSelectedProjectShow(show.name); setCustomProjectShowSelected(false); }}>
+                  {show.name}
+                </button>
+              ))}
+              <button type="button" className={`project-show-option type-chip custom ${customProjectShowSelected ? "selected" : ""}`} aria-pressed={customProjectShowSelected} onClick={() => setCustomProjectShowSelected(true)}>CUSTOM</button>
+            </div>
+            {customProjectShowSelected && <input className="inline-input project-custom-show" autoFocus aria-label="Custom show name" placeholder="Custom show name" value={customProjectShow} onChange={(event) => setCustomProjectShow(event.target.value)} />}
+            <div className="project-create-controls">
+              <span className="project-year-label">Year</span>
+              <div className="project-year-grid" role="group" aria-label="Choose a year">
+                {Array.from({ length: 2 }, (_, offset) => new Date().getFullYear() + offset).map((year) => (
+                  <button key={year} type="button" className={`project-year-option type-chip ${projectYear === year ? "selected" : ""}`} aria-pressed={projectYear === year} onClick={() => setProjectYear(year)}>{year}</button>
+                ))}
+              </div>
+            </div>
+            <div className="project-create-preview">Folder: <strong>{String(Math.max(0, ...projectRoots.map((project) => project.number)) + 1).padStart(2, "0")}_{(customProjectShowSelected ? customProjectShow.trim() : selectedProjectShow) || "Show"} {projectYear}</strong></div>
+            {projectCreateError && <p className="project-create-error" role="alert">{projectCreateError}</p>}
+            <div className="modal-actions">
+              <button className="ghost" type="button" onClick={() => setShowProjectCreate(false)} disabled={projectCreateBusy}>Cancel</button>
+              <button className="primary" type="button" onClick={() => void createProject()} disabled={projectCreateBusy || !(customProjectShowSelected ? customProjectShow.trim() : selectedProjectShow) || !projectShowCatalog}>{projectCreateBusy ? "Creating…" : "Create Project"}</button>
             </div>
           </div>
         </div>

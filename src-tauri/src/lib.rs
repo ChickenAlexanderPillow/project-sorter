@@ -1,4 +1,5 @@
 use libc::EXDEV;
+use chrono::Datelike;
 use notify::{Event, RecommendedWatcher, RecursiveMode, Watcher};
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
@@ -38,6 +39,8 @@ struct ExportStatus {
     #[serde(default)]
     final_published_at: Option<String>,
     final_current: bool,
+    #[serde(default)]
+    publish_failed: bool,
     issue: Option<String>,
 }
 
@@ -71,6 +74,17 @@ struct ProjectRootOption {
     name: String,
     path: String,
     number: u32,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone, PartialEq, Eq)]
+struct ProjectShow {
+    name: String,
+}
+
+#[derive(Debug, Serialize)]
+struct ProjectShowCatalog {
+    path: String,
+    shows: Vec<ProjectShow>,
 }
 
 #[derive(Debug, Serialize, Clone)]
@@ -126,7 +140,14 @@ struct FinalPromotionRecord {
     migrated: bool,
 }
 
+#[derive(Debug, Serialize, Deserialize)]
+struct FinalPromotionAttempt {
+    source_filename: String,
+    version: u32,
+}
+
 const FINAL_PROMOTION_RECORD: &str = ".pepper-final.json";
+const FINAL_PROMOTION_ATTEMPT: &str = ".pepper-publish-attempt.json";
 const PRODUCTION_PROJECTS_ROOT: &str = r"Z:\The Huddle\Production";
 const APPROVAL_PROGRESS_STALE_AFTER: Duration = Duration::from_secs(300);
 
@@ -382,8 +403,17 @@ fn is_video_file(path: &Path) -> bool {
 
 fn versioned_stem(stem: &str) -> Result<(String, Option<u32>), String> {
     let upper = stem.to_ascii_uppercase();
-    if let Some(index) = upper.rfind("_V") {
-        let suffix = &stem[index + 2..];
+    let version_marker = upper.char_indices().rev().find_map(|(index, character)| {
+        if character != 'V' || index == 0 {
+            return None;
+        }
+        let separator = stem[..index].chars().next_back()?;
+        (separator == '_' || separator.is_whitespace()).then_some(index)
+    });
+    if let Some(index) = version_marker {
+        let separator = stem[..index].chars().next_back().expect("version marker has a separator");
+        let base_end = index - separator.len_utf8();
+        let suffix = &stem[index + 1..];
         if suffix.is_empty() || !suffix.chars().all(|character| character.is_ascii_digit()) {
             return Err(format!("Malformed version suffix in {stem}"));
         }
@@ -393,7 +423,7 @@ fn versioned_stem(stem: &str) -> Result<(String, Option<u32>), String> {
         if version == 0 {
             return Err(format!("Version numbers start at 1: {stem}"));
         }
-        return Ok((stem[..index].to_string(), Some(version)));
+        return Ok((stem[..base_end].to_string(), Some(version)));
     }
     Ok((stem.to_string(), None))
 }
@@ -520,48 +550,60 @@ fn read_frameio_record(video_path: &Path) -> Option<FrameIoRecord> {
 
 fn scan_approval_versions(exports_dir: &Path) -> Result<Vec<ExportVersion>, String> {
     let approval_dir = exports_dir.join("APPROVAL");
-    let entries = match fs::read_dir(&approval_dir) {
-        Ok(entries) => entries,
-        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(Vec::new()),
-        Err(error) => return Err(format!("Unable to read {}: {error}", approval_dir.display())),
-    };
     let mut files = Vec::new();
-    for entry in entries {
-        let entry = entry.map_err(|error| error.to_string())?;
-        let metadata = entry.metadata().map_err(|error| error.to_string())?;
-        let path = entry.path();
-        if !metadata.is_file() || !is_video_file(&path) {
-            continue;
-        }
-        let stem = path.file_stem().and_then(|value| value.to_str()).unwrap_or_default();
-        // Only the watcher’s finalized, watermarked approval render is a
-        // deliverable. This excludes source copies, staging/partial names,
-        // and other files that merely contain the word APPROVAL.
-        const APPROVAL_SUFFIX: &str = "_APPROVAL_1080P_WM_TC";
-        let upper_stem = stem.to_ascii_uppercase();
-        let Some(source_stem) = upper_stem.strip_suffix(APPROVAL_SUFFIX).map(|_| &stem[..stem.len() - APPROVAL_SUFFIX.len()]) else {
-            continue;
+    let approval_dirs = [approval_dir.clone(), approval_dir.join("SUPERSEDED")];
+    for directory in approval_dirs {
+        let entries = match fs::read_dir(&directory) {
+            Ok(entries) => entries,
+            Err(error) if error.kind() == io::ErrorKind::NotFound => continue,
+            Err(error) => return Err(format!("Unable to read {}: {error}", directory.display())),
         };
-        if metadata.len() == 0 {
-            continue;
+        for entry in entries {
+            let entry = entry.map_err(|error| error.to_string())?;
+            let metadata = entry.metadata().map_err(|error| error.to_string())?;
+            let path = entry.path();
+            if !metadata.is_file() || !is_video_file(&path) {
+                continue;
+            }
+            let stem = path.file_stem().and_then(|value| value.to_str()).unwrap_or_default();
+            // Only the watcher’s finalized, watermarked approval render is a
+            // deliverable. This excludes source copies, staging/partial names,
+            // and other files that merely contain the word APPROVAL.
+            const APPROVAL_SUFFIX: &str = "_APPROVAL_1080P_WM_TC";
+            let upper_stem = stem.to_ascii_uppercase();
+            let Some(source_stem) = upper_stem.strip_suffix(APPROVAL_SUFFIX).map(|_| &stem[..stem.len() - APPROVAL_SUFFIX.len()]) else {
+                continue;
+            };
+            if metadata.len() == 0 {
+                continue;
+            }
+            let (_, version) = versioned_stem(source_stem)?;
+            let relative_path = path
+                .strip_prefix(exports_dir)
+                .map_err(|error| error.to_string())?
+                .to_string_lossy()
+                .to_string();
+            files.push(ExportVersion {
+                version: version.unwrap_or(1),
+                filename: entry.file_name().to_string_lossy().to_string(),
+                relative_path,
+                added_at: chrono::DateTime::<chrono::Utc>::from(
+                    metadata.created().or_else(|_| metadata.modified()).map_err(|error| error.to_string())?,
+                ).to_rfc3339(),
+                frameio: read_frameio_record(&path),
+            });
         }
-        let (_, version) = versioned_stem(source_stem)?;
-        let relative_path = path
-            .strip_prefix(exports_dir)
-            .map_err(|error| error.to_string())?
-            .to_string_lossy()
-            .to_string();
-        files.push(ExportVersion {
-            version: version.unwrap_or(1),
-            filename: entry.file_name().to_string_lossy().to_string(),
-            relative_path,
-            added_at: chrono::DateTime::<chrono::Utc>::from(
-                metadata.created().or_else(|_| metadata.modified()).map_err(|error| error.to_string())?,
-            ).to_rfc3339(),
-            frameio: read_frameio_record(&path),
-        });
     }
-    files.sort_by(|left, right| left.version.cmp(&right.version).then_with(|| left.filename.to_lowercase().cmp(&right.filename.to_lowercase())));
+    files.sort_by(|left, right| {
+        let left_superseded = left.relative_path.split(['\\', '/']).any(|part| part.eq_ignore_ascii_case("SUPERSEDED"));
+        let right_superseded = right.relative_path.split(['\\', '/']).any(|part| part.eq_ignore_ascii_case("SUPERSEDED"));
+        right.version.cmp(&left.version)
+            .then_with(|| left_superseded.cmp(&right_superseded))
+            .then_with(|| right.added_at.cmp(&left.added_at))
+            .then_with(|| left.filename.to_lowercase().cmp(&right.filename.to_lowercase()))
+    });
+    let mut seen_names = HashSet::new();
+    files.retain(|file| seen_names.insert(file.filename.to_lowercase()));
     Ok(files)
 }
 
@@ -693,6 +735,26 @@ fn scan_export_status(client_path: &Path) -> ExportStatus {
                     == Some(&record.source)
         })
     });
+    let attempt_path = final_dir.join(FINAL_PROMOTION_ATTEMPT);
+    let publish_failed = latest.is_some_and(|export| {
+        if recorded_current {
+            return false;
+        }
+        let attempt_matches = match fs::read(&attempt_path) {
+            Ok(bytes) => serde_json::from_slice::<FinalPromotionAttempt>(&bytes)
+                .map(|attempt| attempt.source_filename == export.filename && attempt.version == export.version)
+                .unwrap_or(true),
+            Err(_) => false,
+        };
+        let stage_prefix = format!("{}.", export.filename);
+        let abandoned_stage = fs::read_dir(final_dir.join(".staging"))
+            .ok()
+            .into_iter()
+            .flatten()
+            .flatten()
+            .any(|entry| entry.file_name().to_string_lossy().starts_with(&stage_prefix));
+        attempt_matches || abandoned_stage
+    });
     // Older promotions renamed the video without recording its source version.
     // Verify those copies by content; cache unchanged pairs to avoid rereading NAS videos.
     let verified_legacy = if promotion_record.is_none() {
@@ -784,6 +846,7 @@ fn scan_export_status(client_path: &Path) -> ExportStatus {
         final_filename,
         final_published_at,
         final_current,
+        publish_failed,
         issue,
     }
 }
@@ -866,13 +929,22 @@ fn promote_latest_export_for_client(
     let staging_dir = final_dir.join(".staging");
     fs::create_dir_all(&staging_dir)
         .map_err(|error| format!("Unable to create FINAL staging folder: {error}"))?;
-    let stamp = chrono::Utc::now().format("%Y%m%d_%H%M%S_%3f");
+    let stage_stamp = chrono::Utc::now().format("%Y%m%d_%H%M%S_%3f");
     let stage = staging_dir.join(format!(
         "{}.{}.{}.part",
         latest.filename,
         std::process::id(),
-        stamp
+        stage_stamp
     ));
+    let attempt = FinalPromotionAttempt {
+        source_filename: latest.filename.clone(),
+        version: latest.version,
+    };
+    fs::write(
+        final_dir.join(FINAL_PROMOTION_ATTEMPT),
+        serde_json::to_vec(&attempt).map_err(|error| error.to_string())?,
+    )
+    .map_err(|error| format!("Unable to record FINAL publish attempt: {error}"))?;
     let source_before =
         fs::metadata(&source).map_err(|error| format!("Unable to read export: {error}"))?;
     let copied = match fs::copy(&source, &stage) {
@@ -974,10 +1046,11 @@ fn promote_latest_export_for_client(
             let _ = fs::remove_file(&staged_record);
             return Err(format!("Unable to create FINAL archive: {error}"));
         }
-        let mut candidate = archive_root.join(stamp.to_string());
+        let archive_stamp = chrono::Utc::now().format("%Y%m%d_%H%M%S").to_string();
+        let mut candidate = archive_root.join(&archive_stamp);
         let mut suffix = 2;
         while candidate.exists() {
-            candidate = archive_root.join(format!("{}_{}", stamp, suffix));
+            candidate = archive_root.join(format!("{}_{}", archive_stamp, suffix));
             suffix += 1;
         }
         if let Err(error) = fs::create_dir(&candidate) {
@@ -1018,6 +1091,7 @@ fn promote_latest_export_for_client(
         let _ = fs::remove_file(&staged_record);
         return Err(format!("Unable to publish FINAL version record: {error}"));
     }
+    let _ = fs::remove_file(final_dir.join(FINAL_PROMOTION_ATTEMPT));
     Ok(format!(
         "Promoted {} to {}{}",
         latest.filename,
@@ -1707,6 +1781,80 @@ async fn list_project_roots() -> Result<Vec<ProjectRootOption>, String> {
     .map_err(|error| error.to_string())?
 }
 
+fn project_show_catalog_path(app: &tauri::AppHandle) -> Result<PathBuf, String> {
+    let dir = app.path().app_config_dir().map_err(|error| error.to_string())?;
+    fs::create_dir_all(&dir).map_err(|error| error.to_string())?;
+    let path = dir.join("project-shows.json");
+    if !path.exists() {
+        fs::write(&path, include_bytes!("../project-shows.json")).map_err(|error| error.to_string())?;
+    }
+    Ok(path)
+}
+
+#[tauri::command]
+fn get_project_show_catalog(app: tauri::AppHandle) -> Result<ProjectShowCatalog, String> {
+    let path = project_show_catalog_path(&app)?;
+    let data = fs::read(&path).map_err(|error| error.to_string())?;
+    #[derive(Serialize, Deserialize)]
+    struct CatalogFile { shows: Vec<ProjectShow> }
+    let mut catalog: CatalogFile = serde_json::from_slice(&data)
+        .map_err(|error| format!("Could not read {}: {error}", path.display()))?;
+    let bundled: CatalogFile = serde_json::from_slice(include_bytes!("../project-shows.json"))
+        .map_err(|error| format!("Could not read bundled project show list: {error}"))?;
+    if catalog.shows.is_empty() || catalog.shows.iter().any(|show| show.name.trim().is_empty()) {
+        return Err(format!("{} must contain at least one named show", path.display()));
+    }
+    let original_shows = catalog.shows.clone();
+    catalog.shows.retain(|show| !show.name.trim().eq_ignore_ascii_case("SBC Lisbon"));
+    for bundled_show in bundled.shows {
+        if !catalog.shows.iter().any(|show| show.name.trim().eq_ignore_ascii_case(bundled_show.name.trim())) {
+            catalog.shows.push(bundled_show);
+        }
+    }
+    catalog.shows.sort_by(|left, right| left.name.to_lowercase().cmp(&right.name.to_lowercase()));
+    if catalog.shows != original_shows {
+        fs::write(&path, serde_json::to_vec_pretty(&catalog).map_err(|error| error.to_string())?)
+            .map_err(|error| format!("Could not update {}: {error}", path.display()))?;
+    }
+    if catalog.shows.is_empty() {
+        return Err(format!("{} must contain at least one named show", path.display()));
+    }
+    Ok(ProjectShowCatalog { path: path.to_string_lossy().to_string(), shows: catalog.shows })
+}
+
+#[tauri::command]
+async fn create_project_folder(show_name: String, year: u32) -> Result<ProjectRootOption, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let show_name = show_name.trim();
+        if show_name.is_empty() || show_name.chars().any(|ch| !(ch.is_ascii_alphanumeric() || ch == ' ' || ch == '-' || ch == '_')) {
+            return Err("Show names may contain letters, numbers, spaces, hyphens, and underscores".to_string());
+        }
+        let current_year = chrono::Local::now().year() as u32;
+        if year < current_year || year > current_year + 1 {
+            return Err("Choose the current year or the following year".to_string());
+        }
+        let production = Path::new(PRODUCTION_PROJECTS_ROOT);
+        let entries = fs::read_dir(production).map_err(|error| format!("Unable to read production folder: {error}"))?;
+        let mut next_number = 1u32;
+        for entry in entries.flatten().filter(|entry| entry.path().is_dir()) {
+            if let Some(name) = entry.file_name().to_str() {
+                if let Some((prefix, _)) = name.split_once('_') {
+                    if let Ok(number) = prefix.parse::<u32>() { next_number = next_number.max(number.saturating_add(1)); }
+                }
+            }
+        }
+        loop {
+            let name = format!("{next_number:02}_{show_name} {year}");
+            let path = production.join(&name);
+            match fs::create_dir(&path) {
+                Ok(()) => return Ok(ProjectRootOption { name, path: path.to_string_lossy().to_string(), number: next_number }),
+                Err(error) if error.kind() == io::ErrorKind::AlreadyExists => next_number = next_number.saturating_add(1),
+                Err(error) => return Err(format!("Could not create project folder: {error}")),
+            }
+        }
+    }).await.map_err(|error| error.to_string())?
+}
+
 #[tauri::command]
 async fn promote_latest_export(
     client_path: String,
@@ -1925,6 +2073,31 @@ fn open_folder(path: String) -> Result<(), String> {
             .map_err(|e| format!("Failed to open folder {}: {}", target.display(), e))?;
         return Ok(());
     }
+}
+
+#[tauri::command]
+fn project_has_sort_logs(project_root: String) -> Result<bool, String> {
+    let project = Path::new(&project_root);
+    if !project.is_dir() {
+        return Err(format!("Project folder is unavailable: {}", project.display()));
+    }
+    let log_dir = project.join("_logs");
+    let entries = match fs::read_dir(&log_dir) {
+        Ok(entries) => entries,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(false),
+        Err(error) => return Err(format!("Unable to inspect {}: {error}", log_dir.display())),
+    };
+    for entry in entries {
+        let entry = entry.map_err(|error| error.to_string())?;
+        let name = entry.file_name().to_string_lossy().to_string();
+        if entry.file_type().map_err(|error| error.to_string())?.is_file()
+            && name.starts_with("sort_log_")
+            && name.ends_with(".csv")
+        {
+            return Ok(true);
+        }
+    }
+    Ok(false)
 }
 
 #[tauri::command]
@@ -2358,6 +2531,8 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             list_project_roots,
+            get_project_show_catalog,
+            create_project_folder,
             create_mariya_meets_season,
             scan_project_root,
             scan_approval_progress,
@@ -2366,6 +2541,7 @@ pub fn run() {
             set_watch_root,
             create_client,
             open_folder,
+            project_has_sort_logs,
             fix_client,
             sort_files,
             append_debug_log,
@@ -2415,6 +2591,12 @@ mod tests {
             Some("03_EXPORTS/APPROVAL")
         );
         assert_eq!(destination_for_mode("UNKNOWN"), None);
+    }
+
+    #[test]
+    fn versioned_stem_accepts_underscore_and_space_version_markers() {
+        assert_eq!(versioned_stem("Spotlight_V2").unwrap(), ("Spotlight".to_string(), Some(2)));
+        assert_eq!(versioned_stem("SPAYZ.IO_EXHIBITOR SPOTLIGHT V3").unwrap(), ("SPAYZ.IO_EXHIBITOR SPOTLIGHT".to_string(), Some(3)));
     }
 
     #[test]
