@@ -7,6 +7,7 @@ import { cursorPosition, getCurrentWindow, LogicalSize } from "@tauri-apps/api/w
 import { type DragDropEvent } from "@tauri-apps/api/webview";
 import { writeText } from "@tauri-apps/plugin-clipboard-manager";
 import { check, type Update } from "@tauri-apps/plugin-updater";
+import { InlineVideoPlayer } from "./components/InlineVideoPlayer";
 import { ArrowDown, ArrowUp, ArrowUpDown, Bell, Check, ChevronDown, ChevronRight, ChevronsUpDown, CloudUpload, Copy, FolderKanban, FolderOpen, Link2, LoaderCircle, Minus, Plus, RefreshCw, Search, Settings2, Square, Trash2, Wrench, X } from "lucide-react";
 import pepperIcon from "../src-tauri/icons/128x128.png";
 import "./App.css";
@@ -2713,13 +2714,10 @@ export default function App() {
                               Added {formatUiDateTime(selectedApprovalVersion.added_at)}
                             </time>
                           </div>
-                          <video
+                          <InlineVideoPlayer
                             key={selectedApprovalPath}
-                            className="video-fade-in"
-                            controls
-                            preload="metadata"
+                            className="approval-video-player"
                             src={convertFileSrc(selectedApprovalPath)}
-                            onLoadedData={(event) => event.currentTarget.classList.add("video-loaded")}
                           />
                         </article>
                         <div className="version-list" role="group" aria-label={`${label.name} approval versions`}>
@@ -2968,7 +2966,7 @@ export default function App() {
                   </div>
                   <span className="promotion-clean-label">Exact file sent to FINAL</span>
                 </div>
-                <video className="video-fade-in" controls preload="metadata" src={convertFileSrc(cleanPath)} onLoadedData={(event) => event.currentTarget.classList.add("video-loaded")} />
+                <InlineVideoPlayer className="promotion-video-player" src={convertFileSrc(cleanPath)} />
               </article>
             );
           })()}

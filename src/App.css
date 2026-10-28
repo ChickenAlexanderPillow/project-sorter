@@ -1590,7 +1590,7 @@ button.accent {
 
 .video-fade-in.video-loaded { opacity: 1; }
 
-.promotion-preview video { max-height: 420px; }
+.promotion-preview .pepper-video-skin { max-height: 420px; }
 .promotion-clean-label,
 .promotion-preview-empty { color: var(--pepper-muted); font-size: 11px; }
 .promotion-preview-empty { padding: 12px; border: 1px solid var(--pepper-line); border-radius: 6px; }
@@ -2934,16 +2934,42 @@ button.ghost,
   font-size: 10px;
 }
 
-.export-preview video {
+.export-preview .pepper-video-skin {
   display: block;
   width: 100%;
-  height: auto;
   max-height: 440px;
   aspect-ratio: 16 / 9;
   background: var(--pepper-bg);
+  border-radius: 0 0 6px 6px;
+  overflow: hidden;
 }
 
-.version-browser .export-preview video { max-height: none; }
+.version-browser .export-preview .pepper-video-skin { max-height: none; }
+
+/* These previews stay local to Pepper, so remote playback controls are not useful here. */
+.pepper-video-skin .media-cast-button,
+.pepper-video-skin .media-pip-button {
+  display: none !important;
+}
+
+/* Keep the controls available on hover without darkening the video underneath them. */
+.pepper-video-skin .video-controls-backdrop {
+  opacity: 0 !important;
+}
+
+/* Keep the control bar and pointer available even when playback is idle. */
+.pepper-video-skin .video-controls-content {
+  opacity: 1 !important;
+  pointer-events: auto !important;
+  translate: 0 0 !important;
+  filter: none !important;
+}
+
+@media (pointer: fine) {
+  .pepper-video-skin.video-skin:not([data-controls-visible]) {
+    cursor: default !important;
+  }
+}
 
 .frameio-inline-row {
   display: flex;
