@@ -178,8 +178,8 @@ fn approval_progress_phase(marker_path: &Path) -> Option<String> {
 
 fn approval_progress_for_client(client_name: &str, client_path: &Path) -> Option<ApprovalProgressStatus> {
     let progress_dir = client_path.join("03_EXPORTS/APPROVAL/JSON/.staging");
-    let entries = fs::read_dir(progress_dir).ok()?;
-    let mut active: Vec<(std::time::SystemTime, PathBuf)> = entries
+    let mut active: Vec<(std::time::SystemTime, PathBuf)> = fs::read_dir(&progress_dir)
+        .ok()?
         .flatten()
         .filter_map(|entry| {
             let path = entry.path();
@@ -194,10 +194,27 @@ fn approval_progress_for_client(client_name: &str, client_path: &Path) -> Option
         })
         .collect();
     active.sort_by(|left, right| right.0.cmp(&left.0));
-    let (_, marker_path) = active.into_iter().next()?;
-    Some(ApprovalProgressStatus {
+    if let Some((_, marker_path)) = active.into_iter().next() {
+        return Some(ApprovalProgressStatus {
+            client_name: client_name.to_string(),
+            phase: approval_progress_phase(&marker_path),
+        });
+    }
+
+    // Older watcher containers do not write JSON progress markers. A recent
+    // partial video in approval/.staging still reliably indicates an active render.
+    let render_staging = client_path.join("03_EXPORTS/APPROVAL/.staging");
+    let entries = fs::read_dir(render_staging).ok()?;
+    let has_active_render = entries.flatten().any(|entry| {
+        let path = entry.path();
+        path.file_name()
+            .is_some_and(|name| name.to_string_lossy().contains(".part-"))
+            && entry.file_type().is_ok_and(|kind| kind.is_file())
+            && approval_progress_marker_is_active(&path)
+    });
+    has_active_render.then(|| ApprovalProgressStatus {
         client_name: client_name.to_string(),
-        phase: approval_progress_phase(&marker_path),
+        phase: Some("Rendering approval copy".to_string()),
     })
 }
 

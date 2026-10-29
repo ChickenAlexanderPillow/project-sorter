@@ -1444,6 +1444,12 @@ export default function App() {
           if (client.export_status.approval_in_progress) previouslyActive.add(client.name);
         }
         const nextActive = new Set(byClient.keys());
+        // NAS filesystem notifications can be missed. The progress marker is a
+        // reliable signal that a new source export has reached the watcher, so
+        // refresh its version immediately as well as when rendering completes.
+        for (const name of nextActive) {
+          if (!previouslyActive.has(name)) approvalProgressRefreshPendingRef.current.add(name);
+        }
         for (const name of previouslyActive) {
           if (!nextActive.has(name)) approvalProgressRefreshPendingRef.current.add(name);
         }
