@@ -68,3 +68,34 @@ jobs:
           releaseDraft: false
           prerelease: false
           args: "--bundles msi"
+
+      - name: Use direct release URLs for updater assets
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          $tag = "v$env:APP_VERSION"
+          $manifestDir = Join-Path $env:RUNNER_TEMP "pepper-updater-manifest"
+          New-Item -ItemType Directory -Path $manifestDir -Force | Out-Null
+          gh release download $tag --pattern latest.json --dir $manifestDir
+
+          $manifestPath = Join-Path $manifestDir "latest.json"
+          $manifest = Get-Content -Raw $manifestPath | ConvertFrom-Json
+          $release = gh api "repos/$env:GITHUB_REPOSITORY/releases/tags/$tag" | ConvertFrom-Json
+          $assetUrls = @{}
+          foreach ($asset in $release.assets) {
+            $assetUrls[$asset.url] = $asset.browser_download_url
+          }
+
+          foreach ($platform in $manifest.platforms.PSObject.Properties) {
+            $directUrl = $assetUrls[$platform.Value.url]
+            if (-not $directUrl) {
+              throw "Could not resolve a direct download URL for $($platform.Name)"
+            }
+            $platform.Value.url = $directUrl
+          }
+
+          $json = $manifest | ConvertTo-Json -Depth 20
+          $utf8NoBom = New-Object System.Text.UTF8Encoding($false)
+          [System.IO.File]::WriteAllText($manifestPath, $json, $utf8NoBom)
+          gh release upload $tag $manifestPath --clobber
