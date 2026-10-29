@@ -49,7 +49,7 @@ type ClientScanProgress = {
 };
 
 type ClientsChanged = { project_root: string; client_names: string[]; all_clients: boolean };
-type ApprovalProgressStatus = { client_name: string; phase: string | null };
+type ApprovalProgressStatus = { client_name: string; phase: string | null; pending_version: number | null };
 
 type ExportVersion = {
   version: number;
@@ -73,6 +73,7 @@ type ExportStatus = {
   approval_ready: boolean;
   approval_in_progress: boolean;
   approval_progress_phase: string | null;
+  approval_progress_version: number | null;
   final_version: number | null;
   final_filename: string | null;
   final_published_at: string | null;
@@ -89,6 +90,7 @@ const EMPTY_EXPORT_STATUS: ExportStatus = {
   approval_ready: false,
   approval_in_progress: false,
   approval_progress_phase: null,
+  approval_progress_version: null,
   final_version: null,
   final_filename: null,
   final_published_at: null,
@@ -631,9 +633,21 @@ export default function App() {
         setClients((current) => current.map((client) => {
           const update = scan.export_updates.find((item) => item.name === client.name);
           if (!update) return client;
-          const unchanged = JSON.stringify(client.export_status) === JSON.stringify(update.export_status);
+          const keepProgress = approvalProgressActiveRef.current.has(client.name);
+          const exportStatus = keepProgress
+            ? {
+              ...update.export_status,
+              approval_in_progress: true,
+              approval_progress_phase: update.export_status.approval_progress_phase
+                ?? client.export_status.approval_progress_phase
+                ?? "Waiting for export to stabilize",
+              approval_progress_version: update.export_status.approval_progress_version
+                ?? client.export_status.approval_progress_version,
+            }
+            : update.export_status;
+          const unchanged = JSON.stringify(client.export_status) === JSON.stringify(exportStatus);
           if (unchanged && !client.exportStatusLoading) return client;
-          return { ...client, export_status: update.export_status, exportStatusLoading: false };
+          return { ...client, export_status: exportStatus, exportStatusLoading: false };
         }));
       } else {
         setClientListRevealedRoot(scan.project_root);
@@ -1488,14 +1502,18 @@ export default function App() {
           const phase = progress?.phase ?? (completing
             ? "Finishing approval copy"
             : inProgress ? "Preparing approval copy" : null);
+          const pendingVersion = progress?.pending_version
+            ?? (completing ? client.export_status.approval_progress_version : null);
           if (client.export_status.approval_in_progress === inProgress
-            && client.export_status.approval_progress_phase === phase) return client;
+            && client.export_status.approval_progress_phase === phase
+            && client.export_status.approval_progress_version === pendingVersion) return client;
           return {
             ...client,
             export_status: {
               ...client.export_status,
               approval_in_progress: inProgress,
               approval_progress_phase: phase,
+              approval_progress_version: pendingVersion,
             },
           };
         }));
@@ -2514,8 +2532,8 @@ export default function App() {
                   ? sortedApprovalVersions.find((approval) => approval.filename.toLowerCase() === expectedApprovalFilename)
                   : undefined;
                 const creatingApprovalVersion = exports.approval_in_progress
-                  && exports.latest_version !== null
-                  && !currentExportApproval;
+                  && exports.approval_progress_version !== null
+                  && currentExportApproval?.version !== exports.approval_progress_version;
                 const latestApprovalIsRendering = exports.approval_in_progress
                   && latestApprovalVersion?.relative_path === currentExportApproval?.relative_path;
                 const latestApprovalPath = latestApprovalVersion
@@ -2582,8 +2600,11 @@ export default function App() {
                 const exportNeedsAttention = Boolean(
                   exports.issue || exportLabel === "FINAL outdated" || exportLabel === "FINAL unverified"
                 );
-                const exportSummary = version !== null && exportLabel !== "FINAL"
-                  ? `V${version} · ${exportLabel}`
+                const exportDisplayVersion = exports.approval_in_progress
+                  ? exports.approval_progress_version ?? version
+                  : version;
+                const exportSummary = exportDisplayVersion !== null && exportLabel !== "FINAL"
+                  ? `V${exportDisplayVersion} · ${exportLabel}`
                   : exportLabel;
                 const versionCreatedAt = exports.versions
                   .map((item) => Date.parse(item.added_at))
@@ -2627,12 +2648,12 @@ export default function App() {
                 const selectedApprovalPath = selectedApprovalVersion
                   ? `${client.path.replace(/[\\/]+$/, "")}\\03_EXPORTS\\${selectedApprovalVersion.relative_path.replace(/[\\/]+/g, "\\")}`
                   : null;
-                const pendingApprovalEntry = creatingApprovalVersion && exports.latest_version !== null
+                const pendingApprovalEntry = creatingApprovalVersion && exports.approval_progress_version !== null
                   ? (
-                    <div className="version-entry version-pending" aria-label={`V${exports.latest_version} approval export in progress`}>
+                    <div className="version-entry version-pending" aria-label={`V${exports.approval_progress_version} approval export in progress`}>
                       <div className="version-option" aria-disabled="true">
                         <span className="version-option-heading">
-                          <span className="version-option-number version-label">V{exports.latest_version}</span>
+                          <span className="version-option-number version-label">V{exports.approval_progress_version}</span>
                           <span className="version-pending-label">Creating approval copy</span>
                           <LoaderCircle className="approval-progress-spinner" size={15} aria-hidden="true" />
                         </span>
@@ -2723,14 +2744,9 @@ export default function App() {
                           ) : (
                             <span className="client-export-status">
                               {exports.approval_in_progress ? (
-                                <span className="approval-progress-wrap" title={exportDetails}>
-                                  <span className="badge export-ready export-progress">
-                                    <LoaderCircle className="approval-progress-spinner" size={13} aria-hidden="true" />
-                                    {exportLabel}
-                                  </span>
-                                  <span className="approval-progress-detail">
-                                    {exports.approval_progress_phase ?? "Preparing approval copy"}
-                                  </span>
+                                <span className="badge export-ready export-progress" title={exportDetails}>
+                                  <LoaderCircle className="approval-progress-spinner" size={13} aria-hidden="true" />
+                                  {exportLabel}
                                 </span>
                               ) : exportNeedsAttention ? (
                                 <span className="badge export-warning" title={exportDetails}>{exportSummary}</span>

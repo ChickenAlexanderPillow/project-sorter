@@ -34,6 +34,7 @@ struct ExportStatus {
     approval_ready: bool,
     approval_in_progress: bool,
     approval_progress_phase: Option<String>,
+    approval_progress_version: Option<u32>,
     final_version: Option<u32>,
     final_filename: Option<String>,
     #[serde(default)]
@@ -97,6 +98,7 @@ struct ClientExportStatusUpdate {
 struct ApprovalProgressStatus {
     client_name: String,
     phase: Option<String>,
+    pending_version: Option<u32>,
 }
 
 #[derive(Debug, Serialize, Clone)]
@@ -150,6 +152,7 @@ const FINAL_PROMOTION_RECORD: &str = ".pepper-final.json";
 const FINAL_PROMOTION_ATTEMPT: &str = ".pepper-publish-attempt.json";
 const PRODUCTION_PROJECTS_ROOT: &str = r"Z:\The Huddle\Production";
 const APPROVAL_PROGRESS_STALE_AFTER: Duration = Duration::from_secs(300);
+const APPROVAL_CANDIDATE_STALE_AFTER: Duration = Duration::from_secs(600);
 
 fn approval_progress_marker_is_active(marker_path: &Path) -> bool {
     fs::metadata(marker_path)
@@ -179,7 +182,9 @@ fn approval_progress_phase(marker_path: &Path) -> Option<String> {
 fn approval_progress_for_client(client_name: &str, client_path: &Path) -> Option<ApprovalProgressStatus> {
     let progress_dir = client_path.join("03_EXPORTS/APPROVAL/JSON/.staging");
     let mut active: Vec<(std::time::SystemTime, PathBuf)> = fs::read_dir(&progress_dir)
-        .ok()?
+        .ok()
+        .into_iter()
+        .flatten()
         .flatten()
         .filter_map(|entry| {
             let path = entry.path();
@@ -195,26 +200,78 @@ fn approval_progress_for_client(client_name: &str, client_path: &Path) -> Option
         .collect();
     active.sort_by(|left, right| right.0.cmp(&left.0));
     if let Some((_, marker_path)) = active.into_iter().next() {
+        let status = scan_export_status(client_path);
         return Some(ApprovalProgressStatus {
             client_name: client_name.to_string(),
             phase: approval_progress_phase(&marker_path),
+            pending_version: status.latest_version,
         });
     }
 
     // Older watcher containers do not write JSON progress markers. A recent
     // partial video in approval/.staging still reliably indicates an active render.
     let render_staging = client_path.join("03_EXPORTS/APPROVAL/.staging");
-    let entries = fs::read_dir(render_staging).ok()?;
-    let has_active_render = entries.flatten().any(|entry| {
+    let entries = fs::read_dir(render_staging).ok();
+    let has_active_render = entries.into_iter().flatten().flatten().any(|entry| {
         let path = entry.path();
         path.file_name()
             .is_some_and(|name| name.to_string_lossy().contains(".part-"))
             && entry.file_type().is_ok_and(|kind| kind.is_file())
             && approval_progress_marker_is_active(&path)
     });
-    has_active_render.then(|| ApprovalProgressStatus {
+    if has_active_render {
+        return Some(ApprovalProgressStatus {
+            client_name: client_name.to_string(),
+            phase: Some("Rendering approval copy".to_string()),
+            pending_version: scan_export_status(client_path).latest_version,
+        });
+    }
+
+    // Show the pending version while an unnumbered source waits for the
+    // watcher's stability check, before it creates its approval marker.
+    let exports_dir = client_path.join("03_EXPORTS");
+    let mut candidates: Vec<(std::time::SystemTime, String)> = fs::read_dir(&exports_dir)
+        .ok()?
+        .flatten()
+        .filter_map(|entry| {
+            if !entry.file_type().ok()?.is_file() {
+                return None;
+            }
+            let path = entry.path();
+            if !is_video_file(&path) || path.file_name()?.to_string_lossy().contains(".part-") {
+                return None;
+            }
+            let filename = path.file_name()?.to_string_lossy().to_string();
+            let stem = path.file_stem()?.to_str()?;
+            let expected_approval = format!("{stem}_APPROVAL_1080p_WM_TC.mp4");
+            if exports_dir.join("APPROVAL").join(expected_approval).is_file() {
+                return None;
+            }
+            let metadata = entry.metadata().ok()?;
+            let modified = metadata.modified().ok()?;
+            let age = std::time::SystemTime::now().duration_since(modified).ok()?;
+            (age <= APPROVAL_CANDIDATE_STALE_AFTER).then_some((modified, filename))
+        })
+        .collect();
+    candidates.sort_by(|left, right| right.0.cmp(&left.0));
+    let (_, filename) = candidates.into_iter().next()?;
+    let status = scan_export_status(client_path);
+    let pending_version = Path::new(&filename)
+        .file_stem()
+        .and_then(|stem| stem.to_str())
+        .and_then(|stem| versioned_stem(stem).ok())
+        .and_then(|(_, version)| version)
+        .or_else(|| {
+            if status.latest_filename.as_deref() == Some(filename.as_str()) {
+                status.latest_version
+            } else {
+                status.latest_version.map(|version| version.saturating_add(1)).or(Some(1))
+            }
+        });
+    Some(ApprovalProgressStatus {
         client_name: client_name.to_string(),
-        phase: Some("Rendering approval copy".to_string()),
+        phase: Some("Waiting for export to stabilize".to_string()),
+        pending_version,
     })
 }
 
@@ -451,6 +508,38 @@ fn scan_video_versions(directory: &Path) -> Result<Vec<ExportVersion>, String> {
         directory,
         &directory.join("APPROVAL/PENDING"),
     )?);
+    let versioned_bases: HashSet<String> = files
+        .iter()
+        .filter_map(|file| {
+            let stem = Path::new(&file.filename).file_stem()?.to_str()?;
+            versioned_stem(stem).ok().and_then(|(base, version)| {
+                version.map(|_| base.to_lowercase())
+            })
+        })
+        .collect();
+    let recent_unversioned_roots: Vec<String> = files
+        .iter()
+        .filter_map(|file| {
+            if Path::new(&file.relative_path).components().count() != 1 {
+                return None;
+            }
+            let stem = Path::new(&file.filename).file_stem()?.to_str()?;
+            if versioned_stem(stem).ok()?.1.is_some() {
+                return None;
+            }
+            let modified = fs::metadata(directory.join(&file.relative_path))
+                .and_then(|metadata| metadata.modified())
+                .ok()?;
+            let age = std::time::SystemTime::now().duration_since(modified).ok()?;
+            (age <= APPROVAL_CANDIDATE_STALE_AFTER).then(|| file.relative_path.clone())
+        })
+        .collect();
+    // While the watcher is qualifying a new raw export, keep the previous
+    // canonical version visible instead of reporting a false deliverable conflict.
+    if versioned_bases.len() == 1 && recent_unversioned_roots.len() == 1 {
+        let in_flight_path = &recent_unversioned_roots[0];
+        files.retain(|file| &file.relative_path != in_flight_path);
+    }
     validate_video_versions(files)
 }
 
@@ -742,6 +831,9 @@ fn scan_export_status(client_path: &Path) -> ExportStatus {
         let marker = exports_dir.join("APPROVAL/JSON/.staging").join(review_name);
         approval_progress_phase(&marker)
     });
+    let approval_progress_version = approval_in_progress
+        .then(|| latest.map(|export| export.version))
+        .flatten();
     let recorded_current = latest.is_some_and(|export| {
         promotion_record.as_ref().is_some_and(|record| {
             record.source_filename == export.filename
@@ -859,6 +951,7 @@ fn scan_export_status(client_path: &Path) -> ExportStatus {
         approval_ready,
         approval_in_progress,
         approval_progress_phase,
+        approval_progress_version,
         final_version,
         final_filename,
         final_published_at,

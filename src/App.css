@@ -849,23 +849,6 @@ button.accent {
   color: #1d4b7a;
 }
 
-.approval-progress-wrap {
-  display: flex;
-  flex-direction: column;
-  align-items: flex-start;
-  gap: 3px;
-}
-
-.approval-progress-detail,
-.approval-detail-line {
-  display: inline-flex;
-  align-items: center;
-  gap: 4px;
-  color: #52667d;
-  font-size: 0.65rem;
-  line-height: 1.25;
-}
-
 @keyframes approval-progress-spin {
   to { transform: rotate(360deg); }
 }
