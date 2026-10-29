@@ -373,6 +373,7 @@ export default function App() {
   const approvalProgressPollInFlightRef = useRef(false);
   const approvalProgressActiveRef = useRef(new Set<string>());
   const approvalProgressRefreshPendingRef = useRef(new Set<string>());
+  const approvalProgressCompletionPendingRef = useRef(new Set<string>());
   const scanProgressVisibleRef = useRef(false);
   const watcherRefreshTimerRef = useRef<number | null>(null);
   const watcherRefreshPendingRef = useRef(false);
@@ -598,6 +599,25 @@ export default function App() {
         });
       } else if (scan.phase === "exports") {
         setClientListRevealedRoot(scan.project_root);
+        for (const update of scan.export_updates) {
+          if (!approvalProgressCompletionPendingRef.current.has(update.name)) continue;
+          const latestSourceStem = update.export_status.latest_filename?.replace(/\.[^.]+$/, "");
+          const expectedApprovalFilename = latestSourceStem
+            ? `${latestSourceStem}_APPROVAL_1080p_WM_TC.mp4`.toLowerCase()
+            : null;
+          const completedApproval = expectedApprovalFilename
+            ? update.export_status.approval_versions.find(
+              (version) => version.filename.toLowerCase() === expectedApprovalFilename,
+            )
+            : undefined;
+          if (update.export_status.approval_ready && completedApproval) {
+            setSelectedVersionByClient((current) => ({
+              ...current,
+              [update.name]: completedApproval.relative_path,
+            }));
+          }
+          approvalProgressCompletionPendingRef.current.delete(update.name);
+        }
         const refreshedNames = new Set(scan.export_updates.map((item) => item.name));
         if (refreshedNames.size) {
           const remainingCachedNames = new Set(cachedClientNamesRef.current);
@@ -1421,6 +1441,7 @@ export default function App() {
     if (!projectRoot) {
       approvalProgressActiveRef.current.clear();
       approvalProgressRefreshPendingRef.current.clear();
+      approvalProgressCompletionPendingRef.current.clear();
       return;
     }
     let cancelled = false;
@@ -1441,7 +1462,10 @@ export default function App() {
         const byClient = new Map(activeProgress.map((progress) => [progress.client_name, progress]));
         const previouslyActive = new Set(approvalProgressActiveRef.current);
         for (const client of clientsRef.current) {
-          if (client.export_status.approval_in_progress) previouslyActive.add(client.name);
+          if (client.export_status.approval_in_progress
+            && !approvalProgressCompletionPendingRef.current.has(client.name)) {
+            previouslyActive.add(client.name);
+          }
         }
         const nextActive = new Set(byClient.keys());
         // NAS filesystem notifications can be missed. The progress marker is a
@@ -1451,13 +1475,19 @@ export default function App() {
           if (!previouslyActive.has(name)) approvalProgressRefreshPendingRef.current.add(name);
         }
         for (const name of previouslyActive) {
-          if (!nextActive.has(name)) approvalProgressRefreshPendingRef.current.add(name);
+          if (!nextActive.has(name)) {
+            approvalProgressRefreshPendingRef.current.add(name);
+            approvalProgressCompletionPendingRef.current.add(name);
+          }
         }
         approvalProgressActiveRef.current = nextActive;
         setClients((current) => current.map((client) => {
           const progress = byClient.get(client.name);
-          const inProgress = Boolean(progress);
-          const phase = progress?.phase ?? (inProgress ? "Preparing approval copy" : null);
+          const completing = approvalProgressCompletionPendingRef.current.has(client.name);
+          const inProgress = Boolean(progress) || completing;
+          const phase = progress?.phase ?? (completing
+            ? "Finishing approval copy"
+            : inProgress ? "Preparing approval copy" : null);
           if (client.export_status.approval_in_progress === inProgress
             && client.export_status.approval_progress_phase === phase) return client;
           return {
@@ -1488,6 +1518,7 @@ export default function App() {
       window.clearInterval(interval);
       approvalProgressActiveRef.current.clear();
       approvalProgressRefreshPendingRef.current.clear();
+      approvalProgressCompletionPendingRef.current.clear();
     };
   }, [projectRoot]);
 
@@ -2475,6 +2506,18 @@ export default function App() {
                     || right.filename.localeCompare(left.filename);
                 });
                 const latestApprovalVersion = sortedApprovalVersions[0];
+                const latestSourceStem = exports.latest_filename?.replace(/\.[^.]+$/, "");
+                const expectedApprovalFilename = latestSourceStem
+                  ? `${latestSourceStem}_APPROVAL_1080p_WM_TC.mp4`.toLowerCase()
+                  : null;
+                const currentExportApproval = expectedApprovalFilename
+                  ? sortedApprovalVersions.find((approval) => approval.filename.toLowerCase() === expectedApprovalFilename)
+                  : undefined;
+                const creatingApprovalVersion = exports.approval_in_progress
+                  && exports.latest_version !== null
+                  && !currentExportApproval;
+                const latestApprovalIsRendering = exports.approval_in_progress
+                  && latestApprovalVersion?.relative_path === currentExportApproval?.relative_path;
                 const latestApprovalPath = latestApprovalVersion
                   ? `${client.path.replace(/[\\/]+$/, "")}\\03_EXPORTS\\${latestApprovalVersion.relative_path.replace(/[\\/]+/g, "\\")}`
                   : null;
@@ -2576,11 +2619,26 @@ export default function App() {
                       exports.versions.length > 0 && `Versions: ${exports.versions.map((item) => `V${item.version}`).join(", ")}`,
                     ].filter(Boolean).join("\n");
                 const lastApprovalVersion = sortedApprovalVersions[0];
-                const selectedVersionPath = selectedVersionByClient[client.name] ?? lastApprovalVersion?.relative_path;
+                const selectedVersionPath = (exports.approval_in_progress
+                  ? lastApprovalVersion?.relative_path
+                  : selectedVersionByClient[client.name]) ?? lastApprovalVersion?.relative_path;
                 const selectedApprovalVersion = sortedApprovalVersions.find((item) => item.relative_path === selectedVersionPath)
                   ?? lastApprovalVersion;
                 const selectedApprovalPath = selectedApprovalVersion
                   ? `${client.path.replace(/[\\/]+$/, "")}\\03_EXPORTS\\${selectedApprovalVersion.relative_path.replace(/[\\/]+/g, "\\")}`
+                  : null;
+                const pendingApprovalEntry = creatingApprovalVersion && exports.latest_version !== null
+                  ? (
+                    <div className="version-entry version-pending" aria-label={`V${exports.latest_version} approval export in progress`}>
+                      <div className="version-option" aria-disabled="true">
+                        <span className="version-option-heading">
+                          <span className="version-option-number version-label">V{exports.latest_version}</span>
+                          <span className="version-pending-label">Creating approval copy</span>
+                          <LoaderCircle className="approval-progress-spinner" size={15} aria-hidden="true" />
+                        </span>
+                      </div>
+                    </div>
+                  )
                   : null;
                 return (
                   <Fragment key={client.path}>
@@ -2752,7 +2810,9 @@ export default function App() {
                 {expanded && !client.exportStatusLoading && (
                   <div className="client-details">
                     {sortedApprovalVersions.length === 0 ? (
-                      <div className="versions-empty">No finalized watermarked approval copies found.</div>
+                      pendingApprovalEntry
+                        ? <div className="version-list" role="group" aria-label={`${label.name} approval versions`}>{pendingApprovalEntry}</div>
+                        : <div className="versions-empty">No finalized watermarked approval copies found.</div>
                     ) : selectedApprovalVersion && selectedApprovalPath && (
                       <div className="version-browser">
                         <article className="export-preview">
@@ -2772,6 +2832,7 @@ export default function App() {
                           />
                         </article>
                         <div className="version-list" role="group" aria-label={`${label.name} approval versions`}>
+                          {pendingApprovalEntry}
                           {sortedApprovalVersions.map((approvalVersion) => {
                             const selected = approvalVersion.relative_path === selectedApprovalVersion.relative_path;
                             return (
@@ -2830,9 +2891,13 @@ export default function App() {
                                       <button
                                         type="button"
                                         className="frameio-icon-button"
-                                        title={latestFrameIoBusy ? frameIoUploadLabel : latestFrameIoShareRetryAvailable ? "Retry share link; video already uploaded" : "Send for review"}
-                                        aria-label={latestFrameIoBusy ? frameIoUploadLabel : latestFrameIoShareRetryAvailable ? "Retry share link; video already uploaded" : "Send for review"}
-                                        disabled={client.exportStatusLoading || !activeProject || frameIoBusyPath === latestApprovalPath}
+                                        title={latestApprovalIsRendering
+                                          ? "Wait until this approval version has finished rendering"
+                                          : latestFrameIoBusy ? frameIoUploadLabel : latestFrameIoShareRetryAvailable ? "Retry share link; video already uploaded" : "Send for review"}
+                                        aria-label={latestApprovalIsRendering
+                                          ? "Approval export in progress"
+                                          : latestFrameIoBusy ? frameIoUploadLabel : latestFrameIoShareRetryAvailable ? "Retry share link; video already uploaded" : "Send for review"}
+                                        disabled={client.exportStatusLoading || !activeProject || frameIoBusyPath === latestApprovalPath || latestApprovalIsRendering}
                                         onClick={() => activeProject && void uploadApprovalToFrameIo(latestApprovalPath, client.name, activeProject.name, activeProject.path)}
                                       >
                                         {frameIoBusyPath === latestApprovalPath

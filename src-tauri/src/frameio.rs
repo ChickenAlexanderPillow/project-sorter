@@ -30,6 +30,7 @@ pub const REDIRECT_URI: &str = "adobe+4694cbd42914a67015f420c3d5241c8540f26611:/
 #[cfg(target_os = "windows")]
 const CREATE_NO_WINDOW: u32 = 0x08000000;
 const CLAIM_STALE_AFTER: Duration = Duration::from_secs(180);
+const APPROVAL_PROGRESS_STALE_AFTER: Duration = Duration::from_secs(300);
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct SharedRecord {
@@ -630,6 +631,9 @@ pub async fn frameio_upload(
     if !path.file_stem().and_then(|stem| stem.to_str()).unwrap_or_default().to_ascii_uppercase().contains("_APPROVAL") {
         return Err("This file is not a watermarked approval copy.".into());
     }
+    if approval_render_is_active(&path) {
+        return Err("Frame.io upload is unavailable until this approval version has finished rendering.".into());
+    }
     ensure_latest_approval(&path)?;
     let project_name = production_project_name.trim();
     if project_name.is_empty() || project_name.contains(['/', '\\']) {
@@ -910,6 +914,42 @@ fn ensure_latest_approval(selected: &Path) -> Result<(), String> {
         return Err(format!("Only the latest approval version can be published. This is V{selected_version}; the latest in APPROVAL is V{latest_version}. Refresh the project and send the latest version."));
     }
     Ok(())
+}
+
+fn approval_render_is_active(approval_path: &Path) -> bool {
+    let Some(filename) = approval_path.file_name().and_then(|name| name.to_str()) else {
+        return false;
+    };
+    let recently_modified = |path: &Path| {
+        fs::metadata(path)
+            .and_then(|metadata| metadata.modified())
+            .map(|modified| {
+                SystemTime::now()
+                    .duration_since(modified)
+                    .map(|age| age <= APPROVAL_PROGRESS_STALE_AFTER)
+                    .unwrap_or(true)
+            })
+            .unwrap_or(false)
+    };
+    let Some(approval_dir) = approval_path.parent() else {
+        return false;
+    };
+    let marker_path = approval_dir
+        .join("JSON/.staging")
+        .join(format!("{filename}.progress.json"));
+    if recently_modified(&marker_path) {
+        return true;
+    }
+
+    let partial_prefix = format!("{filename}.part-");
+    fs::read_dir(approval_dir.join(".staging"))
+        .is_ok_and(|entries| {
+            entries.flatten().any(|entry| {
+                entry.file_type().is_ok_and(|kind| kind.is_file())
+                    && entry.file_name().to_string_lossy().starts_with(&partial_prefix)
+                    && recently_modified(&entry.path())
+            })
+        })
 }
 
 #[cfg(test)]

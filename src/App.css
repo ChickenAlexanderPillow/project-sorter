@@ -3187,6 +3187,16 @@ button.ghost,
   background: var(--pepper-selection);
 }
 
+.version-pending {
+  opacity: 0.86;
+}
+
+.version-pending-label {
+  margin-left: auto;
+  color: var(--pepper-muted);
+  font-size: 11px;
+}
+
 .version-option {
   display: grid;
   grid-template-columns: minmax(0, 1fr);
