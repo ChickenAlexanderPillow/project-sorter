@@ -2533,9 +2533,10 @@ export default function App() {
                   : undefined;
                 const creatingApprovalVersion = exports.approval_in_progress
                   && exports.approval_progress_version !== null
-                  && currentExportApproval?.version !== exports.approval_progress_version;
+                  && !sortedApprovalVersions.some((approval) => approval.version === exports.approval_progress_version);
                 const latestApprovalIsRendering = exports.approval_in_progress
-                  && latestApprovalVersion?.relative_path === currentExportApproval?.relative_path;
+                  && (latestApprovalVersion?.version === exports.approval_progress_version
+                    || latestApprovalVersion?.relative_path === currentExportApproval?.relative_path);
                 const latestApprovalPath = latestApprovalVersion
                   ? `${client.path.replace(/[\\/]+$/, "")}\\03_EXPORTS\\${latestApprovalVersion.relative_path.replace(/[\\/]+/g, "\\")}`
                   : null;
@@ -2602,10 +2603,16 @@ export default function App() {
                 );
                 const exportDisplayVersion = exports.approval_in_progress
                   ? exports.approval_progress_version ?? version
-                  : version;
+                  : latestApprovalVersion?.version ?? version;
                 const exportSummary = exportDisplayVersion !== null && exportLabel !== "FINAL"
                   ? `V${exportDisplayVersion} · ${exportLabel}`
                   : exportLabel;
+                const tooltipVersionNumbers = Array.from(new Set([
+                  ...sortedApprovalVersions.map((approval) => approval.version),
+                  ...(creatingApprovalVersion && exports.approval_progress_version !== null
+                    ? [exports.approval_progress_version]
+                    : []),
+                ])).sort((left, right) => right - left);
                 const versionCreatedAt = exports.versions
                   .map((item) => Date.parse(item.added_at))
                   .filter(Number.isFinite);
@@ -2627,24 +2634,26 @@ export default function App() {
                     timeToFinal && `Time from first version to FINAL: ${timeToFinal}`,
                   ]
                   : [];
-                const exportDetails = manuallyPublished
-                  ? "Manually marked as published in Advanced mode"
+                const exportTooltipDetails = manuallyPublished
+                  ? ["Manually marked as published in Advanced mode"]
                   : client.exportStatusLoading
-                  ? "Checking this client's exports…"
-                  : isFinalised(client)
-                    ? publishedVersionDetails.filter(Boolean).join("\n")
+                    ? ["Checking this client's exports…"]
+                    : isFinalised(client)
+                      ? publishedVersionDetails.filter((detail): detail is string => Boolean(detail))
                     : [
                       exports.issue,
                       exports.approval_in_progress && `Approval copy is being rendered and validated${exports.approval_progress_phase ? ` (${exports.approval_progress_phase})` : ""}`,
                       exports.final_filename && `FINAL: ${exports.final_filename}`,
-                      exports.versions.length > 0 && `Versions: ${exports.versions.map((item) => `V${item.version}`).join(", ")}`,
-                    ].filter(Boolean).join("\n");
+                    ].filter((detail): detail is string => Boolean(detail));
                 const lastApprovalVersion = sortedApprovalVersions[0];
-                const selectedVersionPath = (exports.approval_in_progress
-                  ? lastApprovalVersion?.relative_path
-                  : selectedVersionByClient[client.name]) ?? lastApprovalVersion?.relative_path;
-                const selectedApprovalVersion = sortedApprovalVersions.find((item) => item.relative_path === selectedVersionPath)
-                  ?? lastApprovalVersion;
+                const pendingVersion = exports.approval_progress_version;
+                const workingApprovalVersion = exports.approval_in_progress && pendingVersion !== null
+                  ? sortedApprovalVersions.find((approval) => approval.version < pendingVersion)
+                  : undefined;
+                const selectedApprovalVersion = exports.approval_in_progress
+                  ? workingApprovalVersion
+                  : sortedApprovalVersions.find((item) => item.relative_path === selectedVersionByClient[client.name])
+                    ?? lastApprovalVersion;
                 const selectedApprovalPath = selectedApprovalVersion
                   ? `${client.path.replace(/[\\/]+$/, "")}\\03_EXPORTS\\${selectedApprovalVersion.relative_path.replace(/[\\/]+/g, "\\")}`
                   : null;
@@ -2743,26 +2752,50 @@ export default function App() {
                             <span className="client-status-space" aria-hidden="true" />
                           ) : (
                             <span className="client-export-status">
-                              {exports.approval_in_progress ? (
-                                <span className="badge export-ready export-progress" title={exportDetails}>
-                                  <LoaderCircle className="approval-progress-spinner" size={13} aria-hidden="true" />
-                                  {exportLabel}
+                              <span
+                                className="export-status-tooltip-anchor"
+                                tabIndex={0}
+                                aria-describedby={`export-versions-tooltip-${index}`}
+                                onClick={(event) => event.stopPropagation()}
+                              >
+                                {exports.approval_in_progress ? (
+                                  <span className="badge export-ready export-progress">
+                                    <LoaderCircle className="approval-progress-spinner" size={13} aria-hidden="true" />
+                                    {exportSummary}
+                                  </span>
+                                ) : exportNeedsAttention ? (
+                                  <span className="badge export-warning">{exportSummary}</span>
+                                ) : exportLabel === "FINAL" ? (
+                                  <span className="status-text final-state" aria-label="Published">
+                                    <Check size={14} aria-hidden="true" />
+                                  </span>
+                                ) : exportLabel === "Shared" ? (
+                                  <span className="status-text shared-state">
+                                    <Link2 size={14} aria-hidden="true" /> {exportSummary}
+                                  </span>
+                                ) : exportLabel === "No exports" ? (
+                                  <span className="status-text empty-state">No exports</span>
+                                ) : (
+                                  <span className="status-text">{exportSummary}</span>
+                                )}
+                                <span
+                                  className="export-status-tooltip"
+                                  id={`export-versions-tooltip-${index}`}
+                                  role="tooltip"
+                                >
+                                  {exportTooltipDetails.map((detail) => (
+                                    <span className="export-status-tooltip-detail" key={detail}>{detail}</span>
+                                  ))}
+                                  <span className="export-status-tooltip-versions">
+                                    <span>Versions:</span>
+                                    <span className="export-status-tooltip-version-list">
+                                      {tooltipVersionNumbers.map((tooltipVersion) => (
+                                        <span className="version-label" key={tooltipVersion}>V{tooltipVersion}</span>
+                                      ))}
+                                    </span>
+                                  </span>
                                 </span>
-                              ) : exportNeedsAttention ? (
-                                <span className="badge export-warning" title={exportDetails}>{exportSummary}</span>
-                              ) : exportLabel === "FINAL" ? (
-                                <span className="status-text final-state" title={exportDetails} aria-label="Published">
-                                  <Check size={14} aria-hidden="true" />
-                                </span>
-                              ) : exportLabel === "Shared" ? (
-                                <span className="status-text shared-state" title={exportDetails}>
-                                  <Link2 size={14} aria-hidden="true" /> {exportSummary}
-                                </span>
-                              ) : exportLabel === "No exports" ? (
-                                <span className="status-text empty-state" title={exportDetails}>No exports</span>
-                              ) : (
-                                <span className="status-text" title={exportDetails}>{exportSummary}</span>
-                              )}
+                              </span>
                             </span>
                           )}
                         </>
@@ -2850,7 +2883,10 @@ export default function App() {
                         <div className="version-list" role="group" aria-label={`${label.name} approval versions`}>
                           {pendingApprovalEntry}
                           {sortedApprovalVersions.map((approvalVersion) => {
-                            const selected = approvalVersion.relative_path === selectedApprovalVersion.relative_path;
+                            const approvalIsBeingRendered = exports.approval_in_progress
+                              && approvalVersion.version === exports.approval_progress_version;
+                            const selected = !approvalIsBeingRendered
+                              && approvalVersion.relative_path === selectedApprovalVersion?.relative_path;
                             return (
                               <div
                                 className={`version-entry ${selected ? "selected" : ""}`}
@@ -2859,7 +2895,9 @@ export default function App() {
                                 <button
                                   type="button"
                                   aria-pressed={selected}
-                                  className="version-option"
+                                  aria-disabled={approvalIsBeingRendered}
+                                  className={`version-option ${approvalIsBeingRendered ? "version-option-rendering" : ""}`}
+                                  disabled={approvalIsBeingRendered}
                                   onClick={() => setSelectedVersionByClient((current) => ({
                                     ...current,
                                     [client.name]: approvalVersion.relative_path,
@@ -2867,10 +2905,19 @@ export default function App() {
                                 >
                                   <span className="version-option-heading">
                                     <span className="version-option-number version-label">V{approvalVersion.version}</span>
-                                    {approvalVersion.relative_path === lastApprovalVersion?.relative_path && <span className="version-latest">Latest</span>}
-                                    <time dateTime={approvalVersion.added_at} title={formatUiDateTime(approvalVersion.added_at)}>
-                                      {new Date(approvalVersion.added_at).toLocaleString(undefined, { day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" })}
-                                    </time>
+                                    {approvalIsBeingRendered ? (
+                                      <>
+                                        <span className="version-pending-label">Creating approval copy</span>
+                                        <LoaderCircle className="approval-progress-spinner" size={15} aria-hidden="true" />
+                                      </>
+                                    ) : (
+                                      <>
+                                        {approvalVersion.relative_path === lastApprovalVersion?.relative_path && <span className="version-latest">Latest</span>}
+                                        <time dateTime={approvalVersion.added_at} title={formatUiDateTime(approvalVersion.added_at)}>
+                                          {new Date(approvalVersion.added_at).toLocaleString(undefined, { day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" })}
+                                        </time>
+                                      </>
+                                    )}
                                   </span>
                                 </button>
                                 {approvalVersion.relative_path === lastApprovalVersion?.relative_path && latestApprovalPath && (
