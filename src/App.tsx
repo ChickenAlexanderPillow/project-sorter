@@ -2618,21 +2618,13 @@ export default function App() {
                   .filter(Number.isFinite);
                 const firstVersionAt = versionCreatedAt.length ? Math.min(...versionCreatedAt) : null;
                 const finalPublishedAt = exports.final_published_at ? Date.parse(exports.final_published_at) : Number.NaN;
-                const totalVersions = Math.max(
-                  exports.versions.length,
-                  exports.latest_version ?? 0,
-                  exports.final_version ?? 0,
-                );
                 const timeToFinal = firstVersionAt !== null
                   && Number.isFinite(finalPublishedAt)
                   && finalPublishedAt >= firstVersionAt
                   ? formatAverageDuration(finalPublishedAt - firstVersionAt)
                   : null;
                 const publishedVersionDetails = !manuallyPublished && isFinalised(client)
-                  ? [
-                    `Versions: ${totalVersions}`,
-                    timeToFinal && `Time from first version to FINAL: ${timeToFinal}`,
-                  ]
+                  ? [timeToFinal && `Time from first version to FINAL: ${timeToFinal}`]
                   : [];
                 const exportTooltipDetails = manuallyPublished
                   ? ["Manually marked as published in Advanced mode"]
