@@ -179,6 +179,15 @@ fn approval_progress_phase(marker_path: &Path) -> Option<String> {
         .and_then(|progress| progress.phase)
 }
 
+fn approval_version_from_progress_filename(filename: &str) -> Option<u32> {
+    let marker = filename.to_ascii_uppercase();
+    let approval_index = marker.find("_APPROVAL_1080P_WM_TC")?;
+    let source_stem = &filename[..approval_index];
+    versioned_stem(source_stem)
+        .ok()
+        .map(|(_, version)| version.unwrap_or(1))
+}
+
 fn approval_progress_for_client(client_name: &str, client_path: &Path) -> Option<ApprovalProgressStatus> {
     let progress_dir = client_path.join("03_EXPORTS/APPROVAL/JSON/.staging");
     let mut active: Vec<(std::time::SystemTime, PathBuf)> = fs::read_dir(&progress_dir)
@@ -204,14 +213,18 @@ fn approval_progress_for_client(client_name: &str, client_path: &Path) -> Option
         return Some(ApprovalProgressStatus {
             client_name: client_name.to_string(),
             phase: approval_progress_phase(&marker_path),
-            pending_version: status.latest_version,
+            pending_version: marker_path
+                .file_name()
+                .and_then(|name| name.to_str())
+                .and_then(approval_version_from_progress_filename)
+                .or(status.latest_version),
         });
     }
 
     // Older watcher containers do not write JSON progress markers. A recent
     // partial video in approval/.staging still reliably indicates an active render.
     let render_staging = client_path.join("03_EXPORTS/APPROVAL/.staging");
-    let entries = fs::read_dir(render_staging).ok();
+    let entries = fs::read_dir(&render_staging).ok();
     let has_active_render = entries.into_iter().flatten().flatten().any(|entry| {
         let path = entry.path();
         path.file_name()
@@ -220,10 +233,17 @@ fn approval_progress_for_client(client_name: &str, client_path: &Path) -> Option
             && approval_progress_marker_is_active(&path)
     });
     if has_active_render {
+        let pending_version = fs::read_dir(&render_staging)
+            .ok()
+            .into_iter()
+            .flatten()
+            .flatten()
+            .filter_map(|entry| entry.file_name().to_str().map(str::to_string))
+            .find_map(|filename| approval_version_from_progress_filename(&filename));
         return Some(ApprovalProgressStatus {
             client_name: client_name.to_string(),
             phase: Some("Rendering approval copy".to_string()),
-            pending_version: scan_export_status(client_path).latest_version,
+            pending_version: pending_version.or_else(|| scan_export_status(client_path).latest_version),
         });
     }
 
@@ -508,6 +528,42 @@ fn scan_video_versions(directory: &Path) -> Result<Vec<ExportVersion>, String> {
         directory,
         &directory.join("APPROVAL/PENDING"),
     )?);
+    // A recent source export is not a deliverable until its approval copy has
+    // been created. Keep it out of the version list during the watcher handoff;
+    // scan_approval_progress adds it as a pending spinner once processing starts.
+    let approval_dir = directory.join("APPROVAL");
+    if approval_dir.is_dir() {
+        files.retain(|file| {
+            let relative_path = Path::new(&file.relative_path);
+            let components: Vec<String> = relative_path
+                .components()
+                .map(|component| component.as_os_str().to_string_lossy().to_string())
+                .collect();
+            let is_source_root = components.len() == 1;
+            let is_pending_source = components.len() == 3
+                && components[0].eq_ignore_ascii_case("APPROVAL")
+                && components[1].eq_ignore_ascii_case("PENDING");
+            if !is_source_root && !is_pending_source {
+                return true;
+            }
+            let source = directory.join(&file.relative_path);
+            let Ok(modified) = fs::metadata(&source).and_then(|metadata| metadata.modified()) else {
+                return true;
+            };
+            let Ok(age) = std::time::SystemTime::now().duration_since(modified) else {
+                return true;
+            };
+            if age > APPROVAL_CANDIDATE_STALE_AFTER {
+                return true;
+            }
+            let stem = Path::new(&file.filename)
+                .file_stem()
+                .and_then(|value| value.to_str())
+                .unwrap_or_default();
+            let expected = format!("{stem}_APPROVAL_1080p_WM_TC.mp4");
+            approval_dir.join(expected).is_file()
+        });
+    }
     let versioned_bases: HashSet<String> = files
         .iter()
         .filter_map(|file| {
