@@ -2524,19 +2524,12 @@ export default function App() {
                     || right.filename.localeCompare(left.filename);
                 });
                 const latestApprovalVersion = sortedApprovalVersions[0];
-                const latestSourceStem = exports.latest_filename?.replace(/\.[^.]+$/, "");
-                const expectedApprovalFilename = latestSourceStem
-                  ? `${latestSourceStem}_APPROVAL_1080p_WM_TC.mp4`.toLowerCase()
-                  : null;
-                const currentExportApproval = expectedApprovalFilename
-                  ? sortedApprovalVersions.find((approval) => approval.filename.toLowerCase() === expectedApprovalFilename)
-                  : undefined;
                 const creatingApprovalVersion = exports.approval_in_progress
                   && exports.approval_progress_version !== null
                   && !sortedApprovalVersions.some((approval) => approval.version === exports.approval_progress_version);
                 const latestApprovalIsRendering = exports.approval_in_progress
-                  && (latestApprovalVersion?.version === exports.approval_progress_version
-                    || latestApprovalVersion?.relative_path === currentExportApproval?.relative_path);
+                  && exports.approval_progress_version !== null
+                  && latestApprovalVersion?.version === exports.approval_progress_version;
                 const latestApprovalPath = latestApprovalVersion
                   ? `${client.path.replace(/[\\/]+$/, "")}\\03_EXPORTS\\${latestApprovalVersion.relative_path.replace(/[\\/]+/g, "\\")}`
                   : null;
