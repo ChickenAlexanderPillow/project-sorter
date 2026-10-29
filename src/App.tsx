@@ -6,9 +6,10 @@ import { LazyStore } from "@tauri-apps/plugin-store";
 import { cursorPosition, getCurrentWindow, LogicalSize } from "@tauri-apps/api/window";
 import { type DragDropEvent } from "@tauri-apps/api/webview";
 import { writeText } from "@tauri-apps/plugin-clipboard-manager";
+import { openPath } from "@tauri-apps/plugin-opener";
 import { check, type Update } from "@tauri-apps/plugin-updater";
 import { InlineVideoPlayer } from "./components/InlineVideoPlayer";
-import { ArrowDown, ArrowUp, ArrowUpDown, Bell, Check, ChevronDown, ChevronRight, ChevronsUpDown, CloudUpload, Copy, FolderKanban, FolderOpen, Link2, LoaderCircle, Minus, Plus, RefreshCw, Search, Settings2, Square, Trash2, Wrench, X } from "lucide-react";
+import { ArrowDown, ArrowUp, ArrowUpDown, Bell, Check, ChevronDown, ChevronRight, ChevronsUpDown, Clapperboard, CloudUpload, Copy, FolderKanban, FolderOpen, Link2, LoaderCircle, Minus, Plus, RefreshCw, Search, Settings2, Square, Trash2, Wrench, X } from "lucide-react";
 import pepperIcon from "../src-tauri/icons/128x128.png";
 import "./App.css";
 
@@ -1821,6 +1822,17 @@ export default function App() {
     }
   };
 
+  const handleOpenFinal = async (client: ClientInfo) => {
+    const filename = client.export_status.final_filename;
+    if (!filename) return;
+    const path = `${client.path.replace(/[\\/]+$/, "")}\\04_FINAL\\${filename}`;
+    try {
+      await openPath(path);
+    } catch (err) {
+      setError(`Failed to open FINAL video: ${path}. ${String(err)}`);
+    }
+  };
+
   const handleLogOpen = async () => {
     if (!projectRoot) return;
     try {
@@ -2524,17 +2536,39 @@ export default function App() {
                 const exportSummary = version !== null && exportLabel !== "FINAL"
                   ? `V${version} · ${exportLabel}`
                   : exportLabel;
+                const versionCreatedAt = exports.versions
+                  .map((item) => Date.parse(item.added_at))
+                  .filter(Number.isFinite);
+                const firstVersionAt = versionCreatedAt.length ? Math.min(...versionCreatedAt) : null;
+                const finalPublishedAt = exports.final_published_at ? Date.parse(exports.final_published_at) : Number.NaN;
+                const totalVersions = Math.max(
+                  exports.versions.length,
+                  exports.latest_version ?? 0,
+                  exports.final_version ?? 0,
+                );
+                const timeToFinal = firstVersionAt !== null
+                  && Number.isFinite(finalPublishedAt)
+                  && finalPublishedAt >= firstVersionAt
+                  ? formatAverageDuration(finalPublishedAt - firstVersionAt)
+                  : null;
+                const publishedVersionDetails = !manuallyPublished && isFinalised(client)
+                  ? [
+                    `Versions: ${totalVersions}`,
+                    timeToFinal && `Time from first version to FINAL: ${timeToFinal}`,
+                  ]
+                  : [];
                 const exportDetails = manuallyPublished
                   ? "Manually marked as published in Advanced mode"
                   : client.exportStatusLoading
                   ? "Checking this client's exports…"
-                  : [
-                  exports.issue,
-                  exports.latest_filename && `Latest: ${exports.latest_filename}`,
-                  exports.approval_in_progress && `Approval copy is being rendered and validated${exports.approval_progress_phase ? ` (${exports.approval_progress_phase})` : ""}`,
-                  exports.final_filename && `FINAL: ${exports.final_filename}`,
-                  exports.versions.length > 0 && `Versions: ${exports.versions.map((item) => `V${item.version}`).join(", ")}`,
-                ].filter(Boolean).join("\n");
+                  : isFinalised(client)
+                    ? publishedVersionDetails.filter(Boolean).join("\n")
+                    : [
+                      exports.issue,
+                      exports.approval_in_progress && `Approval copy is being rendered and validated${exports.approval_progress_phase ? ` (${exports.approval_progress_phase})` : ""}`,
+                      exports.final_filename && `FINAL: ${exports.final_filename}`,
+                      exports.versions.length > 0 && `Versions: ${exports.versions.map((item) => `V${item.version}`).join(", ")}`,
+                    ].filter(Boolean).join("\n");
                 const lastApprovalVersion = sortedApprovalVersions[0];
                 const selectedVersionPath = selectedVersionByClient[client.name] ?? lastApprovalVersion?.relative_path;
                 const selectedApprovalVersion = sortedApprovalVersions.find((item) => item.relative_path === selectedVersionPath)
@@ -2637,8 +2671,8 @@ export default function App() {
                               ) : exportNeedsAttention ? (
                                 <span className="badge export-warning" title={exportDetails}>{exportSummary}</span>
                               ) : exportLabel === "FINAL" ? (
-                                <span className="status-text final-state" title={exportDetails}>
-                                  <Check size={14} aria-hidden="true" /> Final
+                                <span className="status-text final-state" title={exportDetails} aria-label="Published">
+                                  <Check size={14} aria-hidden="true" />
                                 </span>
                               ) : exportLabel === "Shared" ? (
                                 <span className="status-text shared-state" title={exportDetails}>
@@ -2694,6 +2728,17 @@ export default function App() {
                           title="Fix"
                         >
                           <Wrench size={17} strokeWidth={2} aria-hidden="true" />
+                        </button>
+                      )}
+                      {exports.final_filename && !exports.issue && (
+                        <button
+                          type="button"
+                          className="ghost icon-button"
+                          onClick={() => void handleOpenFinal(client)}
+                          aria-label="Open FINAL video"
+                          title="Open FINAL video"
+                        >
+                          <Clapperboard size={17} strokeWidth={1.8} aria-hidden="true" />
                         </button>
                       )}
                     </div>

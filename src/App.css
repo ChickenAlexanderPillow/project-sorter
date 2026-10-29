@@ -2819,7 +2819,7 @@ button.ghost,
 }
 
 .actions {
-  justify-content: flex-end;
+  justify-content: flex-start;
   flex-wrap: nowrap;
 }
 
@@ -2950,6 +2950,120 @@ button.ghost,
 .pepper-video-skin .media-cast-button,
 .pepper-video-skin .media-pip-button {
   display: none !important;
+}
+
+.pepper-video-skin .media-settings-menu-trigger {
+  display: none !important;
+}
+
+.pepper-video-skin .media-button {
+  box-sizing: border-box;
+  width: var(--media-control-size) !important;
+  min-width: var(--media-control-size) !important;
+  height: var(--media-control-size) !important;
+  min-height: var(--media-control-size) !important;
+  padding: 0 !important;
+  border-color: rgba(255, 255, 255, 0.12) !important;
+  background-color: rgba(18, 20, 23, 0.42) !important;
+  backdrop-filter: blur(5px);
+}
+
+.pepper-video-skin .media-button:hover:not([aria-disabled="true"]),
+.pepper-video-skin .pepper-speed-button:hover:not(:disabled) {
+  border-color: rgba(255, 255, 255, 0.18) !important;
+  background-color: rgba(18, 20, 23, 0.58) !important;
+}
+
+.pepper-video-skin .pepper-speed-button {
+  position: absolute;
+  z-index: 31;
+  right: calc(var(--media-control-size) + var(--media-spacing) * 4.5);
+  bottom: calc(var(--media-spacing) * 3);
+  display: inline-grid;
+  flex: 0 0 var(--media-control-size);
+  place-items: center;
+  font: inherit;
+  font-size: 11px;
+  font-weight: 700;
+  color: var(--media-controls-foreground);
+}
+
+.pepper-video-skin .video-controls-start,
+.pepper-video-skin .video-controls-end,
+.pepper-video-skin .video-controls-trailing {
+  gap: 6px;
+}
+
+.pepper-video-skin .media-time-group {
+  min-height: var(--media-control-size);
+  gap: 5px;
+  padding: 0 9px;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: var(--media-control-radius);
+  background-color: rgba(18, 20, 23, 0.42);
+  color: rgba(255, 255, 255, 0.96);
+  backdrop-filter: blur(5px);
+  font-variant-numeric: tabular-nums;
+}
+
+.pepper-video-skin .media-slider-track:before {
+  background-color: rgba(5, 8, 11, 0.78) !important;
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.34);
+}
+
+.pepper-video-skin .media-slider-buffer:before {
+  background-color: rgba(190, 196, 202, 0.88) !important;
+}
+
+.pepper-video-skin .media-slider-fill:before {
+  background-color: #fff !important;
+  box-shadow: 0 0 5px rgba(255, 255, 255, 0.38);
+}
+
+.pepper-video-skin .media-slider-thumb {
+  width: 3px !important;
+  height: 18px !important;
+  border-radius: 2px !important;
+  background-color: #fff !important;
+  box-shadow: 0 0 0 1px rgba(5, 8, 11, 0.82), 0 0 5px rgba(255, 255, 255, 0.36) !important;
+}
+
+.pepper-video-skin .media-time-slider::after {
+  content: "";
+  position: absolute;
+  z-index: 12;
+  top: 50%;
+  left: var(--media-slider-pointer);
+  width: 2px;
+  height: 18px;
+  border-radius: 1px;
+  background-color: rgba(255, 255, 255, 0.52);
+  box-shadow: 0 0 0 1px rgba(5, 8, 11, 0.65);
+  opacity: 0;
+  pointer-events: none;
+  transform: translate(-50%, -50%);
+  transition: opacity 100ms ease;
+}
+
+.pepper-video-skin .media-time-slider:hover:not([data-dragging])::after {
+  opacity: 1;
+}
+
+.pepper-video-skin .media-slider-track[data-orientation="horizontal"] {
+  height: 6px !important;
+}
+
+@container media-root (width >= 42rem) {
+  .pepper-video-skin .video-controls-trailing {
+    padding-left: calc(var(--media-control-size) + var(--media-spacing) * 4.5);
+  }
+}
+
+@container media-root (width < 42rem) {
+  .pepper-video-skin .pepper-speed-button {
+    right: calc(var(--media-control-size) + var(--media-spacing) * 3);
+    bottom: calc(var(--media-spacing) * 1.5);
+  }
 }
 
 /* Keep the controls available on hover without darkening the video underneath them. */
