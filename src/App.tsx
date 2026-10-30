@@ -1,5 +1,6 @@
-import { Fragment, useEffect, useMemo, useRef, useState } from "react";
-import type { DragEvent } from "react";
+import { Fragment, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import type { DragEvent, MouseEvent, ReactNode } from "react";
+import { createPortal } from "react-dom";
 import { convertFileSrc, invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { LazyStore } from "@tauri-apps/plugin-store";
@@ -15,6 +16,106 @@ import "./App.css";
 
 type ClientStatus = "OK" | "Missing folders" | "Not a client";
 type ClientSort = { column: "name" | "status"; direction: "asc" | "desc" };
+type PepperMenuItem = { label: string; action: () => void; disabled?: boolean; separatorBefore?: boolean };
+type PepperContextMenu = { x: number; y: number; title: string; items: PepperMenuItem[] };
+
+function ExportStatusTooltip({
+  id,
+  details,
+  versions,
+  children,
+}: {
+  id: string;
+  details: string[];
+  versions: number[];
+  children: ReactNode;
+}) {
+  const anchorRef = useRef<HTMLSpanElement | null>(null);
+  const tooltipRef = useRef<HTMLSpanElement | null>(null);
+  const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const [open, setOpen] = useState(false);
+  const [position, setPosition] = useState({ left: 0, top: 0 });
+
+  const updatePosition = () => {
+    const anchor = anchorRef.current?.getBoundingClientRect();
+    const tooltip = tooltipRef.current?.getBoundingClientRect();
+    if (!anchor || !tooltip) return;
+    const left = Math.max(8, Math.min(anchor.left + anchor.width / 2 - tooltip.width / 2, window.innerWidth - tooltip.width - 8));
+    const below = anchor.bottom + 7;
+    const top = below + tooltip.height <= window.innerHeight - 8
+      ? below
+      : Math.max(8, anchor.top - tooltip.height - 7);
+    setPosition({ left, top });
+  };
+
+  const scheduleOpen = () => {
+    if (timerRef.current) clearTimeout(timerRef.current);
+    timerRef.current = setTimeout(() => {
+      updatePosition();
+      setOpen(true);
+    }, 600);
+  };
+
+  const close = () => {
+    if (timerRef.current) clearTimeout(timerRef.current);
+    timerRef.current = null;
+    setOpen(false);
+  };
+
+  useLayoutEffect(() => {
+    if (open) updatePosition();
+  }, [open]);
+
+  useEffect(() => {
+    if (!open) return;
+    const reposition = () => updatePosition();
+    window.addEventListener("resize", reposition);
+    window.addEventListener("scroll", reposition, true);
+    return () => {
+      window.removeEventListener("resize", reposition);
+      window.removeEventListener("scroll", reposition, true);
+    };
+  }, [open]);
+
+  useEffect(() => () => {
+    if (timerRef.current) clearTimeout(timerRef.current);
+  }, []);
+
+  return (
+    <span
+      ref={anchorRef}
+      className="export-status-tooltip-anchor"
+      tabIndex={0}
+      aria-describedby={id}
+      onMouseEnter={scheduleOpen}
+      onMouseLeave={close}
+      onFocus={scheduleOpen}
+      onBlur={close}
+    >
+      {children}
+      {open && createPortal(
+        <span
+          ref={tooltipRef}
+          className="export-status-tooltip"
+          id={id}
+          role="tooltip"
+          style={{ left: position.left, top: position.top }}
+        >
+          {details.map((detail) => (
+            <span className="export-status-tooltip-detail" key={detail}>{detail}</span>
+          ))}
+          <span className="export-status-tooltip-versions">
+            <span>Versions:</span>
+            <span className="export-status-tooltip-version-list">
+              {versions.map((version) => <span className="version-label" key={version}>V{version}</span>)}
+            </span>
+          </span>
+        </span>,
+        document.body
+      )}
+    </span>
+  );
+}
 
 type ClientInfo = {
   name: string;
@@ -287,6 +388,7 @@ export default function App() {
   const [projectCreateBusy, setProjectCreateBusy] = useState(false);
   const [projectCreateError, setProjectCreateError] = useState("");
   const [clients, setClients] = useState<ClientInfo[]>([]);
+  const [pepperContextMenu, setPepperContextMenu] = useState<PepperContextMenu | null>(null);
   const [expandedClients, setExpandedClients] = useState<Set<string>>(() => new Set());
   const [selectedVersionByClient, setSelectedVersionByClient] = useState<Record<string, string>>({});
   const [frameIoConfig, setFrameIoConfig] = useState({
@@ -312,6 +414,38 @@ export default function App() {
   const [publishFailedClientPaths, setPublishFailedClientPaths] = useState<Set<string>>(new Set());
   const [pendingPromotion, setPendingPromotion] = useState<ClientInfo | null>(null);
   const promotionDialogRef = useRef<HTMLDialogElement | null>(null);
+  const pepperContextMenuRef = useRef<HTMLDivElement | null>(null);
+  const openPepperContextMenu = (event: MouseEvent, title: string, items: PepperMenuItem[]) => {
+    event.preventDefault();
+    event.stopPropagation();
+    const menuWidth = 230;
+    const menuHeight = items.length * 34 + 42;
+    setPepperContextMenu({
+      x: Math.max(8, Math.min(event.clientX, window.innerWidth - menuWidth - 8)),
+      y: Math.max(8, Math.min(event.clientY, window.innerHeight - menuHeight - 8)),
+      title,
+      items,
+    });
+  };
+  const copyFromContextMenu = (value: string, description: string) => {
+    void writeText(value).then(() => showToast(`${description} copied to clipboard.`, "success"))
+      .catch((error) => showToast(`Could not copy ${description.toLowerCase()}: ${String(error)}`, "error", 6000));
+  };
+  useEffect(() => {
+    if (!pepperContextMenu) return;
+    const closeOnPointerDown = (event: PointerEvent) => {
+      if (!pepperContextMenuRef.current?.contains(event.target as Node)) setPepperContextMenu(null);
+    };
+    const closeOnKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") setPepperContextMenu(null);
+    };
+    window.addEventListener("pointerdown", closeOnPointerDown);
+    window.addEventListener("keydown", closeOnKeyDown);
+    return () => {
+      window.removeEventListener("pointerdown", closeOnPointerDown);
+      window.removeEventListener("keydown", closeOnKeyDown);
+    };
+  }, [pepperContextMenu]);
   useEffect(() => {
     if (pendingPromotion && !promotionDialogRef.current?.open) {
       promotionDialogRef.current?.showModal();
@@ -1960,7 +2094,40 @@ export default function App() {
   };
 
   return (
-    <div className={`app ${screen === "sort" ? "sort-mode" : ""}`}>
+    <div
+      className={`app ${screen === "sort" ? "sort-mode" : ""}`}
+      onContextMenu={(event) => {
+        if ((event.target as HTMLElement).closest("input, textarea, [contenteditable='true']")) return;
+        event.preventDefault();
+      }}
+    >
+      {pepperContextMenu && (
+        <div
+          ref={pepperContextMenuRef}
+          className="pepper-context-menu"
+          role="menu"
+          aria-label={`${pepperContextMenu.title} menu`}
+          style={{ left: pepperContextMenu.x, top: pepperContextMenu.y }}
+          onContextMenu={(event) => event.preventDefault()}
+        >
+          <div className="pepper-context-menu-title">{pepperContextMenu.title}</div>
+          {pepperContextMenu.items.map((item, index) => (
+            <button
+              type="button"
+              role="menuitem"
+              className={`pepper-context-menu-item ${item.separatorBefore ? "has-separator" : ""}`}
+              key={`${item.label}-${index}`}
+              disabled={item.disabled}
+              onClick={() => {
+                setPepperContextMenu(null);
+                item.action();
+              }}
+            >
+              {item.label}
+            </button>
+          ))}
+        </div>
+      )}
       {DEBUG_ENABLED && debugPoint && screen === "sort" && (
         <div className="debug-layer">
           <div className="debug-hit" style={{ left: debugPoint.x, top: debugPoint.y }} />
@@ -2574,12 +2741,17 @@ export default function App() {
                   ? computedPublishedDividerStarts
                   : client.cachePublishedDividerBefore ?? computedPublishedDividerStarts;
                 const publishFailed = exports.publish_failed || publishFailedClientPaths.has(client.path);
+                const cleanExportInProgress = exports.approval_in_progress
+                  && exports.approval_progress_phase?.toLowerCase() === "waiting for export to stabilize";
+                const exportProgressLabel = cleanExportInProgress
+                  ? "Clean export in progress"
+                  : "Approval export in progress";
                 const exportLabel = manuallyPublished
                   ? "FINAL"
                   : client.exportStatusLoading
                   ? "Loading exports…"
                   : exports.approval_in_progress
-                    ? "Approval export in progress"
+                    ? exportProgressLabel
                   : exports.issue
                   ? "Check exports"
                   : published
@@ -2597,8 +2769,13 @@ export default function App() {
                 const exportDisplayVersion = exports.approval_in_progress
                   ? exports.approval_progress_version ?? version
                   : latestApprovalVersion?.version ?? version;
-                const exportSummary = exportDisplayVersion !== null && exportLabel !== "FINAL"
-                  ? `V${exportDisplayVersion} · ${exportLabel}`
+                const exportStatusSummary = exportDisplayVersion !== null && exportLabel !== "FINAL"
+                  ? (
+                    <>
+                      <span className="version-label export-status-version">V{exportDisplayVersion}</span>
+                      <span>{exportLabel}</span>
+                    </>
+                  )
                   : exportLabel;
                 const tooltipVersionNumbers = Array.from(new Set([
                   ...sortedApprovalVersions.map((approval) => approval.version),
@@ -2627,7 +2804,9 @@ export default function App() {
                       ? publishedVersionDetails.filter((detail): detail is string => Boolean(detail))
                     : [
                       exports.issue,
-                      exports.approval_in_progress && `Approval copy is being rendered and validated${exports.approval_progress_phase ? ` (${exports.approval_progress_phase})` : ""}`,
+                      exports.approval_in_progress && (cleanExportInProgress
+                        ? "Clean export is being written and checked for stability"
+                        : `Approval copy is being rendered and validated${exports.approval_progress_phase ? ` (${exports.approval_progress_phase})` : ""}`),
                       exports.final_filename && `FINAL: ${exports.final_filename}`,
                     ].filter((detail): detail is string => Boolean(detail));
                 const lastApprovalVersion = sortedApprovalVersions[0];
@@ -2644,11 +2823,14 @@ export default function App() {
                   : null;
                 const pendingApprovalEntry = creatingApprovalVersion && exports.approval_progress_version !== null
                   ? (
-                    <div className="version-entry version-pending" aria-label={`V${exports.approval_progress_version} approval export in progress`}>
+                    <div
+                      className="version-entry version-pending"
+                      aria-label={`V${exports.approval_progress_version} ${exportProgressLabel.toLowerCase()}`}
+                      title={exportProgressLabel}
+                    >
                       <div className="version-option" aria-disabled="true">
                         <span className="version-option-heading">
                           <span className="version-option-number version-label">V{exports.approval_progress_version}</span>
-                          <span className="version-pending-label">Creating approval copy</span>
                           <LoaderCircle className="approval-progress-spinner" size={15} aria-hidden="true" />
                         </span>
                       </div>
@@ -2671,6 +2853,11 @@ export default function App() {
                     data-client-name={client.name}
                     data-client={droppable ? client.name : undefined}
                     onClick={() => toggleClientExpanded(client.name)}
+                    onContextMenu={(event) => openPepperContextMenu(event, label.name, [
+                      { label: "Open client folder", action: () => void handleOpenFolder(client.path) },
+                      { label: "Copy client name", action: () => copyFromContextMenu(client.name, "Client name") },
+                      { label: "Refresh project", action: () => void refreshClients(projectRoot, true, true, true) },
+                    ])}
                     onDragOver={
                       droppable
                         ? (event) => {
@@ -2737,50 +2924,32 @@ export default function App() {
                             <span className="client-status-space" aria-hidden="true" />
                           ) : (
                             <span className="client-export-status">
-                              <span
-                                className="export-status-tooltip-anchor"
-                                tabIndex={0}
-                                aria-describedby={`export-versions-tooltip-${index}`}
-                                onClick={(event) => event.stopPropagation()}
+                              <ExportStatusTooltip
+                                id={`export-versions-tooltip-${index}`}
+                                details={exportTooltipDetails}
+                                versions={tooltipVersionNumbers}
                               >
                                 {exports.approval_in_progress ? (
                                   <span className="badge export-ready export-progress">
                                     <LoaderCircle className="approval-progress-spinner" size={13} aria-hidden="true" />
-                                    {exportSummary}
+                                    {exportStatusSummary}
                                   </span>
                                 ) : exportNeedsAttention ? (
-                                  <span className="badge export-warning">{exportSummary}</span>
+                                  <span className="badge export-warning">{exportStatusSummary}</span>
                                 ) : exportLabel === "FINAL" ? (
                                   <span className="status-text final-state" aria-label="Published">
                                     <Check size={14} aria-hidden="true" />
                                   </span>
                                 ) : exportLabel === "Shared" ? (
                                   <span className="status-text shared-state">
-                                    <Link2 size={14} aria-hidden="true" /> {exportSummary}
+                                    <Link2 size={14} aria-hidden="true" /> {exportStatusSummary}
                                   </span>
                                 ) : exportLabel === "No exports" ? (
                                   <span className="status-text empty-state">No exports</span>
                                 ) : (
-                                  <span className="status-text">{exportSummary}</span>
+                                  <span className="status-text">{exportStatusSummary}</span>
                                 )}
-                                <span
-                                  className="export-status-tooltip"
-                                  id={`export-versions-tooltip-${index}`}
-                                  role="tooltip"
-                                >
-                                  {exportTooltipDetails.map((detail) => (
-                                    <span className="export-status-tooltip-detail" key={detail}>{detail}</span>
-                                  ))}
-                                  <span className="export-status-tooltip-versions">
-                                    <span>Versions:</span>
-                                    <span className="export-status-tooltip-version-list">
-                                      {tooltipVersionNumbers.map((tooltipVersion) => (
-                                        <span className="version-label" key={tooltipVersion}>V{tooltipVersion}</span>
-                                      ))}
-                                    </span>
-                                  </span>
-                                </span>
-                              </span>
+                              </ExportStatusTooltip>
                             </span>
                           )}
                         </>
@@ -2863,6 +3032,25 @@ export default function App() {
                             key={selectedApprovalPath}
                             className="approval-video-player"
                             src={convertFileSrc(selectedApprovalPath)}
+                            onContextMenu={(event) => {
+                              const player = event.currentTarget.querySelector("video");
+                              const video = ((event.target as HTMLElement).closest("video") ?? player) as HTMLVideoElement | null;
+                              const currentSeconds = video?.currentTime ?? 0;
+                              const wholeSeconds = Math.floor(currentSeconds);
+                              const hours = Math.floor(wholeSeconds / 3600);
+                              const minutes = Math.floor((wholeSeconds % 3600) / 60);
+                              const seconds = wholeSeconds % 60;
+                              const milliseconds = Math.floor((currentSeconds - wholeSeconds) * 1000);
+                              const playbackTime = `${String(hours).padStart(2, "0")}:${String(minutes).padStart(2, "0")}:${String(seconds).padStart(2, "0")}.${String(milliseconds).padStart(3, "0")}`;
+                              const containingFolder = selectedApprovalPath.replace(/[\\/][^\\/]*$/, "");
+                              openPepperContextMenu(event, `V${selectedApprovalVersion.version} video`, [
+                                { label: video?.paused ? "Play" : "Pause", action: () => video?.paused ? void video.play() : video?.pause() },
+                                { label: video?.muted ? "Unmute" : "Mute", action: () => { if (video) video.muted = !video.muted; } },
+                                { label: `Copy timecode  ${playbackTime}`, action: () => copyFromContextMenu(playbackTime, "Timecode"), separatorBefore: true },
+                                { label: "Copy video path", action: () => copyFromContextMenu(selectedApprovalPath, "Video path") },
+                                { label: "Open containing folder", action: () => void handleOpenFolder(containingFolder) },
+                              ]);
+                            }}
                           />
                         </article>
                         <div className="version-list" role="group" aria-label={`${label.name} approval versions`}>
@@ -2876,6 +3064,14 @@ export default function App() {
                               <div
                                 className={`version-entry ${selected ? "selected" : ""}`}
                                 key={`${approvalVersion.version}-${approvalVersion.filename}`}
+                                onContextMenu={(event) => openPepperContextMenu(event, `V${approvalVersion.version}`, approvalIsBeingRendered ? [
+                                  { label: "Creating approval copy", action: () => undefined, disabled: true },
+                                ] : [
+                                  { label: "Select version", action: () => setSelectedVersionByClient((current) => ({ ...current, [client.name]: approvalVersion.relative_path })) },
+                                  { label: "Copy version name", action: () => copyFromContextMenu(`V${approvalVersion.version}`, "Version name") },
+                                  { label: "Copy file path", action: () => copyFromContextMenu(`${client.path.replace(/[\\/]+$/, "")}\\03_EXPORTS\\${approvalVersion.relative_path.replace(/[\\/]+/g, "\\")}`, "File path") },
+                                  { label: "Open file location", action: () => void handleOpenFolder(`${client.path.replace(/[\\/]+$/, "")}\\03_EXPORTS\\${approvalVersion.relative_path.replace(/[\\/]+/g, "\\")}`.replace(/[\\/][^\\/]*$/, "")) },
+                                ])}
                               >
                                 <button
                                   type="button"
@@ -2891,10 +3087,9 @@ export default function App() {
                                   <span className="version-option-heading">
                                     <span className="version-option-number version-label">V{approvalVersion.version}</span>
                                     {approvalIsBeingRendered ? (
-                                      <>
-                                        <span className="version-pending-label">Creating approval copy</span>
+                                      <span role="img" aria-label={exportProgressLabel} title={exportProgressLabel}>
                                         <LoaderCircle className="approval-progress-spinner" size={15} aria-hidden="true" />
-                                      </>
+                                      </span>
                                     ) : (
                                       <>
                                         {approvalVersion.relative_path === lastApprovalVersion?.relative_path && <span className="version-latest">Latest</span>}

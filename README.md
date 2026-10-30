@@ -58,10 +58,6 @@ Run dev:
 pnpm tauri dev
 ```
 
-## Internal update server
-
-Pepper can check for signed updates from the lightweight Docker service in `update-server/`. Start it with `docker compose up -d`; see [`update-server/README.md`](update-server/README.md) for publishing releases. The service is designed to host update files for multiple apps under separate folders.
-
 ## Build / Package
 
 ```bash
@@ -85,7 +81,7 @@ The GitHub Actions workflow in `.github/workflows/publish.yml` builds the signed
 - `TAURI_SIGNING_PRIVATE_KEY`: contents of the private key stored outside this repository
 - `TAURI_SIGNING_PRIVATE_KEY_PASSWORD`: password for that key
 
-The public key is embedded in `src-tauri/tauri.conf.json`; never commit the private key. The Docker update server remains available for future apps that need LAN-only distribution.
+The public key is embedded in `src-tauri/tauri.conf.json`; never commit the private key.
 
 The build outputs native installers/bundles for Windows/macOS (no external runtime required).
 

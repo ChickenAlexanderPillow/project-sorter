@@ -1,9 +1,11 @@
 import { NeutralVideoSkin, Video, VideoPlayer, usePlayer } from "@videojs/react/video";
 import "@videojs/react/video/neutral-skin.css";
+import type { MouseEvent } from "react";
 
 type InlineVideoPlayerProps = {
   src: string;
   className?: string;
+  onContextMenu?: (event: MouseEvent<HTMLDivElement>) => void;
 };
 
 const PLAYBACK_RATES = [1, 2, 4];
@@ -29,20 +31,22 @@ function PlaybackSpeedButton() {
   );
 }
 
-export function InlineVideoPlayer({ src, className }: InlineVideoPlayerProps) {
+export function InlineVideoPlayer({ src, className, onContextMenu }: InlineVideoPlayerProps) {
   return (
     <VideoPlayer>
-      <NeutralVideoSkin className={`pepper-video-skin ${className ?? ""}`} style={{ width: "100%", aspectRatio: "16 / 9" }}>
-        <Video
-          key={src}
-          className="video-fade-in"
-          src={src}
-          playsInline
-          preload="metadata"
-          onLoadedData={(event) => event.currentTarget.classList.add("video-loaded")}
-        />
-        <PlaybackSpeedButton />
-      </NeutralVideoSkin>
+      <div onContextMenu={onContextMenu}>
+        <NeutralVideoSkin className={`pepper-video-skin ${className ?? ""}`} style={{ width: "100%", aspectRatio: "16 / 9" }}>
+          <Video
+            key={src}
+            className="video-fade-in"
+            src={src}
+            playsInline
+            preload="metadata"
+            onLoadedData={(event) => event.currentTarget.classList.add("video-loaded")}
+          />
+          <PlaybackSpeedButton />
+        </NeutralVideoSkin>
+      </div>
     </VideoPlayer>
   );
 }
