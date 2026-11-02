@@ -14,6 +14,8 @@ use tauri::{Emitter, Manager};
 use walkdir::WalkDir;
 
 mod frameio;
+mod ingest;
+mod media_browser;
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 struct ClientInfo {
@@ -1700,7 +1702,7 @@ async fn scan_project_root(
         let mut removed_names = Vec::new();
         if partial {
             for name in &requested_names {
-                if name == "_logs" || Path::new(name).components().count() != 1 {
+                if name == "_logs" || name == "_INGEST" || Path::new(name).components().count() != 1 {
                     continue;
                 }
                 let direct_path = root.join(name);
@@ -1737,7 +1739,7 @@ async fn scan_project_root(
                     Some(name) => name.to_string(),
                     None => continue,
                 };
-                if name == "_logs" {
+                if name == "_logs" || name == "_INGEST" {
                     continue;
                 }
                 let is_season = is_mariya_meets && name.to_ascii_uppercase().starts_with("SEASON ");
@@ -2142,7 +2144,10 @@ fn set_watch_root(
 }
 
 #[tauri::command]
-fn create_client(
+async fn create_client(project_root:String,client_name:String,client_type:String,huddle_template:Option<String>)->Result<(),String>{
+    tauri::async_runtime::spawn_blocking(move||create_client_sync(project_root,client_name,client_type,huddle_template)).await.map_err(|error|error.to_string())?
+}
+fn create_client_sync(
     project_root: String,
     client_name: String,
     client_type: String,
@@ -2696,6 +2701,20 @@ pub fn run() {
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
+            ingest::ingest_load,
+            media_browser::media_valid_client_paths,
+            media_browser::media_source_locations,
+            media_browser::media_browse_folder,
+            media_browser::media_resolve_files,
+            media_browser::media_prepare_preview,
+            ingest::ingest_progress,
+            ingest::ingest_collect,
+            ingest::ingest_save,
+            ingest::ingest_file,
+            ingest::ingest_lease_status,
+            ingest::ingest_recover_stale_lease,
+            ingest::ingest_source_availability,
+            ingest::ingest_preview_filing,
             list_project_roots,
             get_project_show_catalog,
             create_project_folder,

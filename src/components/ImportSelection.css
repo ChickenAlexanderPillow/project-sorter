@@ -1,0 +1,92 @@
+/* Separate selections and one classification bar per video section. */
+.ig-media-section{padding:0 0 24px;margin-bottom:24px;border-bottom:1px solid #505050}
+.ig-media-section:last-child{border-bottom:0;margin-bottom:0}
+.ig-media-section-heading{display:flex;align-items:center;gap:9px;min-height:36px;margin:0 0 10px;color:#bcbcbc}
+.ig-media-section-heading h2{font-size:13px;font-weight:500;margin:0;flex:1}
+.ig-media-section-heading>span{font-size:10px;color:#888;font-variant-numeric:tabular-nums}
+.ig-media-section-heading>.ig-text-button{margin-left:8px}
+.ig-source-typebar{position:sticky;top:-1px;z-index:3;padding:7px 0 10px;background:#202020;border-bottom:1px solid #343434}
+.ig-type-tags{display:flex;gap:10px;align-items:center;flex-wrap:wrap}
+.ig-video-tags{display:flex;align-items:center;gap:6px;flex-wrap:wrap}
+.ig-type-scope{display:none}
+.ig-type-tag{display:inline-flex;align-items:center;gap:6px;border:1px solid #4a4a4a;border-radius:4px;background:#292929;color:#bfbfbf;padding:7px 10px;font-size:11px}
+.ig-type-tag[aria-disabled=true]{color:#737373;border-color:#3b3b3b}
+.ig-type-tag[aria-pressed=true]{background:#414141;border-color:#828282;color:#f0f0f0}
+.ig-type-tag:hover:not(:disabled){border-color:#888;background:#363636}
+.ig-type-tag.drop-ready{outline:2px solid #d1d1d1;background:#444;color:#fff}
+.ig-identified-tag{display:inline-flex;gap:6px;align-items:center;font-size:11px;color:#999}
+.ig-source-media-tile{cursor:pointer;user-select:none;gap:16px;min-height:108px}
+.ig-source-media-tile:hover{border-color:#6b6b6b;background:#2a2a2a}
+.ig-source-media-tile.selected{border-color:#b4b4b4;background:#303030}
+.ig-source-media-tile:focus-visible{outline:2px solid #ccc;outline-offset:3px}
+.ig-source-media-tile .ig-source-preview-link{pointer-events:none}
+.ig-source-role{font-size:10px;color:#c0c0c0;margin-left:auto}
+.ig-source-role.untyped{color:#777}
+.ig-source-media-tile.imported{opacity:.5}
+.ig-source-media-tile.imported:hover,.ig-source-media-tile.imported:focus-within{opacity:.75}
+.ig-source-media-tile.imported.selected,.ig-source-media-tile.imported.selected:hover{opacity:1}
+.ig-source-imported-tick{margin-left:auto;color:#d0d0d0}
+.ig-source-media-tile header .ig-icon-button{margin-left:2px;padding:3px}
+.ig-source-preview-meta{display:flex;justify-content:space-between;gap:10px;padding:11px 13px;border-top:1px solid #383838;color:#999;font-size:10px}
+.ig-browser-media-section{border-bottom:1px solid #535353;padding:17px 0 20px;margin-bottom:10px}
+.ig-browser-media-section:last-child{border-bottom:0}
+.ig-browser-media-section>.ig-type-tags{margin:0 0 12px}
+.ig-browser-media-section .ig-media-section-heading h2{font-size:12px}
+.ig-browser-media-section .ig-browser-entry{cursor:pointer}
+.ig-preview-media,.ig-preview-media img,.ig-preview-media video,.ig-preview-media .pepper-video-skin{border-radius:0!important}
+
+/* This variant is opt-in; production retains its controls and speed button. */
+.pepper-preview-player{padding-bottom:50px;background:#222}
+.pepper-video-skin.pepper-video-compact{--media-control-size:26px;--media-control-radius:2px;--media-controls-radius:0px;--media-icon-size:15px;--media-spacing:3px;border-radius:0!important;overflow:visible!important}
+.pepper-video-compact video{border-radius:0!important}
+.pepper-video-skin.pepper-video-compact .video-controls-content{inset-inline:0!important;bottom:-50px!important;min-height:50px;padding:2px 6px!important;gap:0!important;flex-wrap:wrap!important;background:#242424!important;border-radius:0!important}
+.pepper-video-skin.pepper-video-compact .video-time-slider-group{flex:0 0 100%!important;order:-1;gap:6px!important;padding:0 2px!important;flex-direction:row!important;--media-slider-height:16px;min-height:18px}
+.pepper-video-skin.pepper-video-compact .video-controls-start{flex:1!important;gap:2px!important}
+.pepper-video-skin.pepper-video-compact .video-controls-end{flex:0 0 auto!important;gap:2px!important;mask-image:none!important;padding:0!important}
+.pepper-video-skin.pepper-video-compact .video-controls-trailing{padding:0!important;gap:2px!important}
+.pepper-video-skin.pepper-video-compact .media-button{width:26px!important;min-width:26px!important;height:26px!important;min-height:26px!important;border:0!important;background:transparent!important;backdrop-filter:none}
+.pepper-video-skin.pepper-video-compact .media-button svg{width:15px!important;height:15px!important}
+.pepper-video-skin.pepper-video-compact .media-time-group{min-height:16px!important;padding:0!important;border:0!important;background:transparent!important;font-size:10px!important;gap:3px!important;backdrop-filter:none;white-space:nowrap}
+.pepper-video-skin.pepper-video-compact .media-time-slider{min-width:0;flex:1}
+.pepper-video-skin.pepper-video-compact .media-slider-thumb{height:11px!important}
+.pepper-video-skin.pepper-video-compact .media-time-slider::after{height:11px}
+.pepper-video-skin.pepper-video-compact .media-slider-track[data-orientation=horizontal]{height:3px!important}
+.pepper-video-skin.pepper-video-compact .media-volume-popover{display:none!important}
+.ig-preview-media audio{border-radius:0}
+
+/* A narrow right rail keeps preview available without reserving its column. */
+.ig-preview-rail{position:sticky;top:0;min-width:0;border-radius:var(--pepper-radius-card)}
+.ig-preview-toolbar{display:flex;align-items:center;gap:7px;height:32px;min-height:32px;box-sizing:border-box;padding:0 3px 0 11px}
+.ig-preview-title{display:flex;align-items:center;gap:7px;flex:1;min-width:0;color:#999}
+.ig-preview-title strong{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:11px;font-weight:500;color:#ccc}
+.ig-preview-collapse{position:static;flex-shrink:0;width:28px;min-width:28px;height:28px;min-height:28px;margin-left:auto;padding:5px}
+.ig-preview-rail.collapsed{width:36px;min-height:140px;border:1px solid transparent;border-radius:0;border-left-color:#3f3f3f;background:transparent}
+.ig-preview-rail.collapsed .ig-preview-toolbar{padding:0 3px}
+.ig-sources-layout:has(>.ig-preview-rail.collapsed),.ig-group-layout:has(>.ig-preview-rail.collapsed),.ig-browser-split:has(>.ig-preview-rail.collapsed){grid-template-columns:minmax(0,1fr) 36px;gap:16px}
+.ig-group-layout:has(>.ig-preview-rail.collapsed) .ig-group-main{grid-template-columns:minmax(0,1fr) minmax(260px,1fr)}
+
+/* Audio uses the Video.js audio preset with the same compact control language. */
+.pepper-audio-art{min-height:100px;display:grid;place-items:center;color:#777;background:#171717}
+.pepper-audio-compact{width:100%;--media-control-size:26px;--media-icon-size:15px;--media-spacing:3px;--media-control-radius:2px;--media-controls-radius:0px;--media-slider-height:18px}
+.pepper-audio-compact .audio-controls-content{display:flex!important;flex-wrap:wrap!important;gap:2px!important;padding:5px 8px!important;border:0!important;border-radius:0!important;background:#242424!important}
+.pepper-audio-compact .audio-time-slider-group{order:-1;flex:0 0 100%!important;display:flex!important;flex-direction:row!important;gap:6px!important;padding:0!important;min-height:20px}
+.pepper-audio-compact .audio-controls-start{flex:1!important;gap:2px!important}
+.pepper-audio-compact .audio-controls-end{flex:0 0 auto!important;gap:2px!important}
+.pepper-audio-compact .media-button{display:grid!important;place-items:center;padding:0!important;width:26px!important;min-width:26px!important;height:26px!important;min-height:26px!important;border:0!important;background:transparent!important;color:#ccc!important;border-radius:2px!important;box-shadow:none!important}
+.pepper-audio-compact .media-time-toggle{padding:0!important;min-height:0!important;border:0!important;background:transparent!important;color:#ccc!important;font:inherit}
+.pepper-audio-compact .media-button svg{width:15px!important;height:15px!important}
+.pepper-audio-compact .media-time-group{font-size:10px!important;white-space:nowrap;background:transparent!important;border:0!important;padding:0!important;gap:3px!important}
+.pepper-audio-compact .media-time-slider{flex:1;min-width:0}
+.pepper-audio-compact .media-slider-track[data-orientation=horizontal]{height:3px!important}
+.pepper-audio-compact .media-slider-thumb{height:11px!important}
+.pepper-audio-compact .media-playback-rate-button,.pepper-audio-compact .media-settings-menu-trigger{display:none!important}
+.pepper-audio-compact .media-volume-popover{display:none!important}
+
+.ig-media-section-heading>input[type=checkbox]{margin:0 2px 0 0;accent-color:#bdbdbd;width:14px;height:14px;cursor:pointer}
+.ig-source-media-tile .ig-media-type-control{order:3;margin-top:0;width:100%}
+.ig-source-media-tile .ig-source-preview-link{order:2}
+.ig-source-media-tile{gap:12px}
+.ig-sources-icon{display:inline-block;position:relative;flex-shrink:0}
+.ig-sources-icon>svg:first-child{position:absolute;left:0;top:0}
+.ig-sources-icon>svg:last-child{position:absolute;right:-1px;bottom:-1px;background:#202020;box-shadow:-2px -2px 0 #202020}
+.ig-browser-device-notice{display:flex;align-items:center;gap:8px;padding:0 24px 12px;color:#aaa;font-size:11px;flex-wrap:wrap}

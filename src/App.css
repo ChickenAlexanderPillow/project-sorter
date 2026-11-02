@@ -17,6 +17,12 @@
   box-sizing: border-box;
 }
 
+/* Keep focus from adding a second outline around Pepper's controls and rows. */
+:focus,
+:focus-visible {
+  outline: none !important;
+}
+
 body {
   margin: 0;
   overflow: hidden;
@@ -2129,6 +2135,9 @@ body,
   --pepper-focus: #b5b5b5;
   --pepper-selection: #3a3a3a;
   --pepper-info: #c0c0c0;
+  --pepper-radius-control: 5px;
+  --pepper-radius-card: 6px;
+  --pepper-radius-dialog: 8px;
 }
 
 body,
@@ -2676,6 +2685,7 @@ button.ghost,
   border-top: 0;
   border-right: 0;
   border-left: 0;
+  border-radius: 0;
   transform: none !important;
   cursor: pointer;
   transition: background-color 100ms ease, color 100ms ease, border-color 100ms ease;
@@ -3892,3 +3902,55 @@ input[type="radio"] {
     justify-self: start;
   }
 }
+.ingest-entry{display:inline-flex;align-items:center;gap:7px;margin-left:10px;padding:9px 13px;border:1px solid #45484c;border-radius:8px;background:#292b2e;color:#eee;font:inherit;cursor:pointer}.ingest-entry:disabled{opacity:.45;cursor:not-allowed}
+.ingest-actions{display:flex;align-items:center;gap:8px}.ingest-lock{margin:14px 0;padding:12px 14px;border:1px solid #625b45;border-radius:8px;background:#302d26;color:#e2d4a5}.ingest-lock details{margin-top:6px}.ingest-lock pre{white-space:pre-wrap;font-size:11px}.ingest-toolbar{display:flex;gap:8px;margin:12px 0}.ingest-group>button{margin:8px 12px}.ingest-client-picker{display:flex;align-items:center;flex-wrap:wrap;gap:12px;padding:10px 14px;border-top:1px solid #343638;color:#bbb;font-size:12px}.ingest-client-picker label{display:flex;align-items:center;gap:5px}.ingest-client-picker input{accent-color:#aaa}.ingest-file.selected{background:#303236}.ingest-file-name{min-width:0;flex:1;display:flex;flex-direction:column;gap:4px;text-align:left;border:0;background:transparent;color:inherit;cursor:pointer}.ingest-preview{position:sticky;bottom:74px;z-index:2;max-width:620px;margin:16px auto;padding:12px;background:#292b2e;border:1px solid #494b4e;border-radius:9px;box-shadow:0 8px 30px #0008}.ingest-preview header{display:flex;justify-content:space-between;align-items:center;margin-bottom:10px}.ingest-preview img{display:block;max-width:100%;max-height:45vh;margin:auto}.ingest-preview audio{width:100%}.ingest-review{margin-top:14px}.ingest-review p{padding:0 14px;color:#c4c5c6}
+.ingest-sources{display:grid;gap:8px;margin:14px 0}.ingest-sources>div{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:4px 16px;padding:11px 14px;border:1px solid #383a3d;border-radius:7px;background:#282a2c}.ingest-sources span{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.ingest-sources strong{color:#b8cbbd;font-size:12px}.ingest-sources small{grid-column:1/-1;color:#aaa}.ingest-progress-entry{display:inline-flex;align-items:center;gap:7px;padding:8px 11px;margin-left:9px;background:#292b2e;color:#ddd;border:1px solid #46484a;border-radius:7px;cursor:pointer;font-size:12px}.ingest-progress-entry .spin{animation:ingest-spin 1s linear infinite}@keyframes ingest-spin{to{transform:rotate(360deg)}}
+.ingest-sources label{display:flex;align-items:center;gap:7px;color:#aaa;font-size:11px}.ingest-sources label input{max-width:220px;padding:5px;background:#242628;color:#eee;border:1px solid #484a4c;border-radius:5px}.ingest-duplicate{margin-left:7px;font-style:normal;font-size:10px;color:#c7c0a3;border:1px solid #6b644d;border-radius:4px;padding:2px 5px}
+.ingest-destination-review{display:grid;gap:7px;margin-top:10px}.ingest-destination-review>div{display:grid;gap:4px;padding:10px 12px;border:1px solid #414346;border-radius:6px}.ingest-destination-review>div.has-error{border-color:#75423c}.ingest-destination-review span,.ingest-destination-review em{color:#aaa;font-size:12px;font-style:normal}.ingest-destination-review code{color:#ddd;overflow-wrap:anywhere}.ingest-destination-review em{color:#d8c98e}.ingest-conflict-confirm{display:flex;gap:8px;align-items:center;color:#ddd;font-size:12px}
+.ingest-workspace{height:100%;min-height:100vh;box-sizing:border-box;padding:24px 34px;background:#202123;color:#ededed;overflow:auto}.ingest-heading{display:flex;align-items:center;gap:22px;border-bottom:1px solid #3a3b3d;padding-bottom:20px}.ingest-heading h1{font-size:21px;margin:3px 0}.ingest-heading small,.ingest-title p{color:#a4a6a8}.ingest-saved{margin-left:auto;color:#aaa;font-size:12px}.ingest-steps{display:flex;gap:8px;padding:18px 0;border-bottom:1px solid #3a3b3d}.ingest-steps button{display:flex;align-items:center;gap:9px;padding:8px 14px;border:0;border-radius:7px;background:transparent;color:#aaa;font:inherit}.ingest-steps button.active{background:#35373a;color:#fff}.ingest-steps b{display:grid;place-items:center;width:22px;height:22px;border:1px solid #666;border-radius:50%;font-size:12px}.ingest-content{max-width:1050px;margin:24px auto}.ingest-title{display:flex;justify-content:space-between;align-items:center;margin-bottom:20px}.ingest-title h2{font-size:20px;margin:0 0 6px}.ingest-title p{font-size:13px;margin:0}.ingest-empty{min-height:220px;display:flex;align-items:center;justify-content:center;gap:12px;flex-direction:column;border:1px dashed #555;border-radius:12px;color:#bcbec0}.ingest-empty strong{color:#eee}.ingest-group{margin:14px 0;border:1px solid #3b3d40;border-radius:9px;overflow:hidden}.ingest-group>header{display:flex;justify-content:space-between;padding:12px 15px;background:#292b2e}.ingest-group>header small,.ingest-file small{color:#a1a3a6}.ingest-file{display:flex;align-items:center;gap:16px;padding:11px 15px;border-top:1px solid #343638}.ingest-file-name{min-width:0;flex:1;display:flex;flex-direction:column;gap:4px}.ingest-file-name strong,.ingest-file-name small{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.ingest-file>input,.ingest-file>select{width:170px;background:#282a2c;color:#eee;border:1px solid #4b4d50;border-radius:5px;padding:7px}.ingest-file>span{min-width:75px;text-align:right;color:#aaa;font-size:12px}.ingest-footer{position:sticky;bottom:0;display:flex;justify-content:space-between;align-items:center;margin-top:24px;padding:14px 0;background:#202123;border-top:1px solid #3a3b3d;color:#aaa}.ingest-footer>div{display:flex;gap:8px}.ingest-error{padding:10px;margin:12px 0;background:#402c2b;color:#f1c4bf;border-radius:6px}
+
+/* Ingest workspace refinements */
+.ingest-workspace{flex:1;min-height:0;height:auto;overflow:auto;padding:20px 28px 12px;background:var(--pepper-bg,#202123)}
+.ingest-content{max-width:1160px;margin:18px auto 0}
+.ingest-heading{gap:16px;padding:0 0 13px;min-height:44px}
+.ingest-heading h1{font-size:18px;font-weight:600;letter-spacing:.01em}
+.ingest-heading>button:first-child{padding:7px 9px}
+.ingest-source-entry{position:relative;margin-left:auto}
+.ingest-save-state{font-size:11px;color:#a9aaac;min-width:72px;text-align:right}
+.ingest-save-state.failed{color:#e6a69f}
+.ingest-source-menu{position:absolute;z-index:12;right:0;top:calc(100% + 5px);display:grid;min-width:150px;padding:4px;background:#292b2e;border:1px solid #484a4d;border-radius:6px;box-shadow:0 8px 20px #0008}
+.ingest-source-menu button{padding:8px 10px;text-align:left;background:transparent;border:0;color:#ddd;border-radius:4px;cursor:pointer}
+.ingest-source-menu button:hover{background:#393b3e}
+.ingest-steps{gap:4px;padding:11px 0;border-bottom:1px solid #393b3d}
+.ingest-steps button{padding:6px 12px;font-size:12px}
+.ingest-steps button.complete{color:#c5c9c5}
+.ingest-steps button.complete b{background:#454a46;border-color:#737a74}
+.ingest-title{margin:0 0 14px;align-items:flex-start}
+.ingest-title h2{font-size:17px;font-weight:600;margin-bottom:4px}
+.ingest-title p{font-size:12px;line-height:1.45}
+.ingest-empty{min-height:190px;border:1px dashed #4a4c4e;border-radius:7px;background:transparent}
+.ingest-group{margin:9px 0;border:0;border-bottom:1px solid #383a3c;border-radius:0;overflow:visible}
+.ingest-group>header{align-items:center;padding:8px 5px;background:transparent;gap:10px}
+.ingest-group-toggle{display:flex;flex:1;min-width:0;align-items:baseline;gap:14px;text-align:left;background:transparent;border:0;color:#eee;cursor:pointer}
+.ingest-group-toggle strong{font-size:13px;font-weight:600}
+.ingest-group-toggle small{color:#9fa1a3;font-size:11px}
+.ingest-file{gap:10px;padding:8px 6px;border-top:1px solid #303234}
+.ingest-file-name{font-size:12px}
+.ingest-file>input:not([type=checkbox]),.ingest-file>select,.ingest-client-picker select,.ingest-toolbar>input{max-width:190px;padding:6px 8px;background:#252729;color:#eee;border:1px solid #45474a;border-radius:5px;font:inherit;font-size:11px}
+.ingest-file details{font-size:11px;color:#999}
+.ingest-file details small{display:block;white-space:normal;line-height:1.6;padding:6px 0}
+.ingest-preview{position:sticky;right:0;bottom:10px;width:min(390px,38%);margin:0 0 12px auto;padding:10px;background:#242628;border:1px solid #3b3d40;border-radius:6px;box-shadow:0 8px 24px #0006}
+.ingest-preview header{font-size:12px}
+.ingest-footer{bottom:0;margin-top:14px;padding:10px 0;background:#202123;font-size:11px}
+.ingest-sources{gap:5px;margin:10px 0}
+.ingest-sources>div{padding:8px 10px;border:0;border-bottom:1px solid #383a3c;border-radius:0;background:transparent}
+.ingest-sources h3{margin:5px 0;color:#aaa;font-size:11px;font-weight:500}
+.ingest-source-entry~.ingest-save-state{margin-left:8px}
+.ingest-client-picker{gap:10px;padding:8px 6px;border:0;color:#bbb;font-size:11px}
+.ingest-client-picker>label{display:flex;align-items:center;gap:6px}
+.ingest-client-picker details{margin-left:auto}
+.ingest-review .ingest-group p{margin:5px;padding:0;color:#aaa;font-size:11px}
+.ingest-destination-review>div{padding:8px 10px;border:0;border-bottom:1px solid #37393b;border-radius:0}
+.ingest-error{padding:8px 10px;font-size:12px}
+@media(max-width:1050px){.ingest-workspace{padding:16px 16px 10px}.ingest-content{margin-top:14px}.ingest-file{flex-wrap:wrap}.ingest-file-name{flex-basis:55%}.ingest-preview{position:static;width:auto;max-width:none;margin:12px 4px}.ingest-group-toggle{align-items:flex-start;flex-direction:column;gap:4px}}
+@media(max-width:700px){.ingest-heading{flex-wrap:wrap}.ingest-save-state{margin-left:auto}.ingest-steps{overflow:auto}.ingest-steps button{flex:0 0 auto}.ingest-footer{align-items:flex-start;gap:10px;flex-direction:column}.ingest-footer>div{width:100%;justify-content:flex-end}}

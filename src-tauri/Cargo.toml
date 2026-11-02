@@ -38,6 +38,7 @@ tokio = { version = "1", features = ["fs", "io-util", "time"] }
 keyring = { version = "3", features = ["windows-native", "apple-native", "sync-secret-service"] }
 base64 = "0.22"
 sha2 = "0.10"
+filetime = "0.2"
 uuid = { version = "1", features = ["v4"] }
 futures-util = "0.3"
 bytes = "1"

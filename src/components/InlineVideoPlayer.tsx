@@ -6,6 +6,8 @@ type InlineVideoPlayerProps = {
   src: string;
   className?: string;
   onContextMenu?: (event: MouseEvent<HTMLDivElement>) => void;
+  onError?: () => void;
+  compact?: boolean;
 };
 
 const PLAYBACK_RATES = [1, 2, 4];
@@ -31,20 +33,21 @@ function PlaybackSpeedButton() {
   );
 }
 
-export function InlineVideoPlayer({ src, className, onContextMenu }: InlineVideoPlayerProps) {
+export function InlineVideoPlayer({ src, className, onContextMenu, onError, compact = false }: InlineVideoPlayerProps) {
   return (
     <VideoPlayer>
-      <div onContextMenu={onContextMenu}>
-        <NeutralVideoSkin className={`pepper-video-skin ${className ?? ""}`} style={{ width: "100%", aspectRatio: "16 / 9" }}>
+      <div className={compact ? "pepper-preview-player" : undefined} onContextMenu={onContextMenu}>
+        <NeutralVideoSkin className={`pepper-video-skin ${compact ? "pepper-video-compact" : ""} ${className ?? ""}`} style={{ width: "100%", aspectRatio: "16 / 9" }}>
           <Video
             key={src}
             className="video-fade-in"
             src={src}
             playsInline
             preload="metadata"
+            onError={onError}
             onLoadedData={(event) => event.currentTarget.classList.add("video-loaded")}
           />
-          <PlaybackSpeedButton />
+          {!compact && <PlaybackSpeedButton />}
         </NeutralVideoSkin>
       </div>
     </VideoPlayer>

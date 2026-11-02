@@ -10,12 +10,15 @@ import { writeText } from "@tauri-apps/plugin-clipboard-manager";
 import { openPath } from "@tauri-apps/plugin-opener";
 import { check, type Update } from "@tauri-apps/plugin-updater";
 import { InlineVideoPlayer } from "./components/InlineVideoPlayer";
-import { ArrowDown, ArrowUp, ArrowUpDown, Bell, Check, ChevronDown, ChevronRight, ChevronsUpDown, Clapperboard, CloudUpload, Copy, FolderKanban, FolderOpen, Link2, LoaderCircle, Minus, Plus, RefreshCw, Search, Settings2, Square, Trash2, Wrench, X } from "lucide-react";
+import { ArrowDown, ArrowUp, ArrowUpDown, Bell, Check, ChevronDown, ChevronRight, ChevronsUpDown, Clapperboard, CloudUpload, Copy, FolderInput, FolderKanban, FolderOpen, Link2, LoaderCircle, Minus, Plus, RefreshCw, Search, Settings2, Square, Trash2, Wrench, X } from "lucide-react";
+import { IngestWorkspace } from "./components/IngestWorkspace";
+import { ClientLabel, parseClientLabel } from "./components/ClientLabel";
 import pepperIcon from "../src-tauri/icons/128x128.png";
 import "./App.css";
 
 type ClientStatus = "OK" | "Missing folders" | "Not a client";
 type ClientSort = { column: "name" | "status"; direction: "asc" | "desc" };
+type IngestProgress = { project_root:string; phase:string; source:string; completed:number; total:number };
 type PepperMenuItem = { label: string; action: () => void; disabled?: boolean; separatorBefore?: boolean };
 type PepperContextMenu = { x: number; y: number; title: string; items: PepperMenuItem[] };
 
@@ -322,22 +325,6 @@ type HuddleTemplate = "PHYSICAL" | "VIDEO_CALL";
 const normalizeClientInput = (value: string) =>
   value.trim().replace(/\s+/g, "_");
 
-const parseClientLabel = (raw: string) => {
-  const normalized = normalizeClientInput(raw);
-  const parts = normalized.split("_").filter(Boolean);
-  if (parts.length >= 2) {
-    const typeCandidate = parts[parts.length - 1].toUpperCase();
-    if ((CLIENT_TYPES as readonly string[]).includes(typeCandidate)) {
-      return {
-        name: parts.slice(0, -1).join(" "),
-        type: typeCandidate,
-        normalized,
-      };
-    }
-  }
-  return { name: normalized.replace(/_/g, " "), type: null as string | null, normalized };
-};
-
 const formatProjectName = (name: string) => {
   const match = name.match(/^(\d+)[_\s-]+(.+)$/);
   return match ? `${match[1]} · ${match[2].replace(/_/g, " ")}` : name.replace(/_/g, " ");
@@ -375,7 +362,12 @@ const formatUiDateTime = (value: Date | string | number) =>
 
 export default function App() {
   const [screen] = useState<"home" | "sort">("sort");
+  const [ingestOpen, setIngestOpen] = useState(false);
+  const [ingestProgress,setIngestProgress]=useState<IngestProgress|null>(null);
   const [projectRoot, setProjectRoot] = useState<string>("");
+  const ingestOpenRef=useRef(ingestOpen);ingestOpenRef.current=ingestOpen;
+  useEffect(()=>{let active=true;const poll=async()=>{if(!projectRoot)return;try{const current=await invoke<IngestProgress|null>("ingest_progress",{projectRoot});if(active)setIngestProgress(current);}catch{}};void poll();const timer=window.setInterval(()=>void poll(),1500);return()=>{active=false;window.clearInterval(timer);};},[projectRoot]);
+
   const [projectRoots, setProjectRoots] = useState<ProjectRootOption[]>([]);
   const [showProjectMenu, setShowProjectMenu] = useState(false);
   const [projectSearch, setProjectSearch] = useState("");
@@ -1237,6 +1229,10 @@ export default function App() {
       const appWindow = getCurrentWindow();
       const unlistenFn = await appWindow.onDragDropEvent(async (event) => {
         const payload = event.payload as DragDropEvent;
+        if(ingestOpenRef.current){
+          if(payload.type==="drop"&&payload.paths.length)window.dispatchEvent(new CustomEvent("pepper-ingest-drop",{detail:payload.paths}));
+          return;
+        }
         if (screen !== "sort") return;
         if (payload.type === "leave") {
           setDragTarget(null);
@@ -2220,7 +2216,7 @@ export default function App() {
         </div>
       )}
 
-      <div className="app-content">
+      {ingestOpen ? <IngestWorkspace projectRoot={projectRoot} projectTitle={formatProjectName(projectRoot.split(/[\\/]/).filter(Boolean).slice(-1)[0] || "Import media")} clients={clients} onBack={()=>setIngestOpen(false)} onCreateClient={async(name,clientMode,template)=>{await invoke("create_client",{projectRoot,clientName:`${normalizeClientInput(name)}_${clientMode}`,clientType:clientMode,huddleTemplate:clientMode==='HUDDLE'?template:null});await refreshClients(undefined,false);}} /> : <div className="app-content">
         <section className="panel">
           <div className="panel-project-root">
             <div className="project-switcher">
@@ -2307,6 +2303,8 @@ export default function App() {
                 </>
               )}
             </div>
+            {(["collecting","inventorying","filing"].includes(ingestProgress?.phase||""))&&ingestProgress?.project_root===projectRoot&&<button type="button" className="ingest-progress-entry" onClick={()=>setIngestOpen(true)}><LoaderCircle size={14} className="spin"/> {ingestProgress.phase==="inventorying"?"Finding media":ingestProgress.phase==="filing"?`Organising ${ingestProgress.completed}/${ingestProgress.total}`:`Copying ${ingestProgress.completed}/${ingestProgress.total}`} · View import</button>}
+            <button type="button" className="media-import-entry" aria-label="Import media" title="Import media" disabled={!projectRoot} onClick={()=>setIngestOpen(true)}><FolderInput size={17}/></button>
           </div>
           {advancedMode && (
             <div className="advanced-stats" aria-label="Project process statistics">
@@ -2900,12 +2898,7 @@ export default function App() {
                         <span className="client-expand-icon" aria-hidden="true">
                           {expanded ? <ChevronDown size={16} /> : <ChevronRight size={16} />}
                         </span>
-                        <span className="client-name">{expanded ? label.name : label.name.toUpperCase()}</span>
-                        {label.type && (
-                          <span className={`client-tag ${label.type.toLowerCase()}`}>
-                            {label.type}
-                          </span>
-                        )}
+                        <ClientLabel name={client.name}/>
                       </div>
                     </div>
                     <div className={`client-statuses ${clientIsCached ? "" : !client.exportStatusLoading ? "client-status-enter" : ""}`}>
@@ -3217,9 +3210,9 @@ export default function App() {
             </div>
           )}
         </section>
-      </div>
+      </div>}
 
-      <footer className="status">
+      {!ingestOpen && <footer className="status">
         <div>
           <span className="mode-label">Auto routing</span>
           {busy && progress
@@ -3232,7 +3225,7 @@ export default function App() {
           {advancedMode && <button className="ghost" onClick={handleLogOpen} disabled={!projectRoot}>View log</button>}
           {advancedMode && <button className="ghost" onClick={() => refreshClients()} disabled={!projectRoot}>Refresh</button>}
         </div>
-      </footer>
+      </footer>}
 
       {showFrameIoConfig && (
         <div className="modal-backdrop" onClick={() => setShowFrameIoConfig(false)}>
