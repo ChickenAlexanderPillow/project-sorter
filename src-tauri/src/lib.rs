@@ -16,6 +16,7 @@ use walkdir::WalkDir;
 mod frameio;
 mod ingest;
 mod media_browser;
+mod client_files;
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 struct ClientInfo {
@@ -2208,6 +2209,18 @@ fn create_client_sync(
     Ok(())
 }
 
+// Explorer treats forward slashes as switches and does not accept verbatim
+// filesystem paths, even though both forms are valid for Rust's file APIs.
+#[cfg(target_os = "windows")]
+fn explorer_folder_path(path: &str) -> String {
+    let normalized = path.replace('/', "\\");
+    if let Some(unc) = normalized.strip_prefix(r"\\?\UNC\") {
+        format!(r"\\{unc}")
+    } else {
+        normalized.strip_prefix(r"\\?\").unwrap_or(&normalized).to_owned()
+    }
+}
+
 #[tauri::command]
 fn open_folder(path: String) -> Result<(), String> {
     let target = PathBuf::from(&path);
@@ -2221,7 +2234,7 @@ fn open_folder(path: String) -> Result<(), String> {
     #[cfg(target_os = "windows")]
     {
         Command::new("explorer")
-            .arg(&path)
+            .arg(explorer_folder_path(&path))
             .spawn()
             .map_err(|e| format!("Failed to launch Explorer for {}: {}", target.display(), e))?;
         return Ok(());
@@ -2707,6 +2720,8 @@ pub fn run() {
             media_browser::media_browse_folder,
             media_browser::media_resolve_files,
             media_browser::media_prepare_preview,
+            client_files::client_files_list,
+            client_files::client_files_open_project,
             ingest::ingest_progress,
             ingest::ingest_collect,
             ingest::ingest_save,
@@ -2754,6 +2769,15 @@ pub fn run() {
 mod tests {
     use super::*;
     use std::fs;
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn explorer_paths_preserve_drives_and_network_shares() {
+        assert_eq!(explorer_folder_path(r"Z:\The Huddle\Client\01_MEDIA/030_AUDIO_CLEAN"), r"Z:\The Huddle\Client\01_MEDIA\030_AUDIO_CLEAN");
+        assert_eq!(explorer_folder_path(r"\\NASPLUS\Vault/Client"), r"\\NASPLUS\Vault\Client");
+        assert_eq!(explorer_folder_path(r"\\?\Z:\The Huddle/Client"), r"Z:\The Huddle\Client");
+        assert_eq!(explorer_folder_path(r"\\?\UNC\NASPLUS\Vault/Client"), r"\\NASPLUS\Vault\Client");
+    }
 
     fn test_dir(label: &str) -> PathBuf {
         let path = std::env::temp_dir().join(format!(

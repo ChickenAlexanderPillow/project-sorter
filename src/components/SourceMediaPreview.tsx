@@ -5,7 +5,7 @@ import { InlineVideoPlayer } from "./InlineVideoPlayer";
 import { InlineAudioPlayer } from "./InlineAudioPlayer";
 import { mediaKind } from "./MediaTypes";
 
-export function SourceMediaPreview({path,name,showHeading=true}:{path:string|null;name?:string;showHeading?:boolean}) {
+export function SourceMediaPreview({path,name,showHeading=true,quietLoading=false}:{path:string|null;name?:string;showHeading?:boolean;quietLoading?:boolean}) {
   const [ready,setReady] = useState<string|null>(null), [failed,setFailed] = useState<string|null>(null);
   useEffect(() => {
     if (!path) return;
@@ -18,6 +18,6 @@ export function SourceMediaPreview({path,name,showHeading=true}:{path:string|nul
   const Icon = kind === 'audio' ? Headphones : kind === 'image' ? ImageIcon : FileVideo;
   return <>
     {showHeading&&<header className="ig-inspector-heading"><span><Icon size={15}/><strong title={name}>{name || path.split(/[\\/]/).pop()}</strong></span></header>}
-    <div className="ig-preview-media">{failed === path ? <div className="ig-preview-placeholder"><FileVideo size={25}/><span>This format can't be previewed here.</span></div> : ready !== path ? <div className="ig-preview-placeholder"><LoaderCircle className="ig-spin" size={22}/><span>Opening preview…</span></div> : kind === 'video' ? <InlineVideoPlayer compact key={path} src={convertFileSrc(path)} onError={() => setFailed(path)}/> : kind === 'audio' ? <InlineAudioPlayer key={path} src={convertFileSrc(path)} onError={() => setFailed(path)}/> : <img key={path} alt={name || 'Selected image'} src={convertFileSrc(path)} onError={() => setFailed(path)}/>}</div>
+    <div className="ig-preview-media">{failed === path ? <div className="ig-preview-placeholder"><FileVideo size={25}/><span>This format can't be previewed here.</span></div> : ready !== path ? quietLoading?<div className="ig-preview-placeholder" role="status" aria-label="Opening preview"/>:<div className="ig-preview-placeholder"><LoaderCircle className="ig-spin" size={22}/><span>Opening preview…</span></div> : kind === 'video' ? <InlineVideoPlayer compact key={path} src={convertFileSrc(path)} onError={() => setFailed(path)}/> : kind === 'audio' ? <InlineAudioPlayer key={path} src={convertFileSrc(path)} onError={() => setFailed(path)}/> : <img key={path} alt={name || 'Selected image'} src={convertFileSrc(path)} onError={() => setFailed(path)}/>}</div>
   </>;
 }

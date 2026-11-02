@@ -10,8 +10,9 @@ import { writeText } from "@tauri-apps/plugin-clipboard-manager";
 import { openPath } from "@tauri-apps/plugin-opener";
 import { check, type Update } from "@tauri-apps/plugin-updater";
 import { InlineVideoPlayer } from "./components/InlineVideoPlayer";
-import { ArrowDown, ArrowUp, ArrowUpDown, Bell, Check, ChevronDown, ChevronRight, ChevronsUpDown, Clapperboard, CloudUpload, Copy, FolderInput, FolderKanban, FolderOpen, Link2, LoaderCircle, Minus, Plus, RefreshCw, Search, Settings2, Square, Trash2, Wrench, X } from "lucide-react";
+import { ArrowDown, ArrowUp, ArrowUpDown, Bell, Check, ChevronDown, ChevronRight, ChevronsUpDown, Clapperboard, CloudUpload, Copy, FolderInput, FolderKanban, Link2, LoaderCircle, Minus, Plus, RefreshCw, Search, Settings2, Square, Trash2, Wrench, X } from "lucide-react";
 import { IngestWorkspace } from "./components/IngestWorkspace";
+import { ClientWorkspace } from "./components/ClientWorkspace";
 import { ClientLabel, parseClientLabel } from "./components/ClientLabel";
 import pepperIcon from "../src-tauri/icons/128x128.png";
 import "./App.css";
@@ -2891,7 +2892,7 @@ export default function App() {
                       type="button"
                       className="client-row-disclosure"
                       aria-expanded={expanded}
-                      aria-label={`${expanded ? "Collapse" : "Expand"} ${label.name} export versions`}
+                      aria-label={`${expanded ? "Collapse" : "Expand"} ${label.name} client workspace`}
                     />
                     <div>
                       <div className="client-title">
@@ -2954,14 +2955,7 @@ export default function App() {
                           {manuallyPublished ? "Clear override" : "Mark published"}
                         </button>
                       )}
-                      <button
-                        className="ghost icon-button"
-                        onClick={() => handleOpenFolder(client.path)}
-                        aria-label="Open folder"
-                        title="Open folder"
-                      >
-                        <FolderOpen size={17} strokeWidth={1.8} aria-hidden="true" />
-                      </button>
+
                       {client.status !== "Not a client" && exports.latest_filename && !exports.issue && (!published || publishFailed) && (
                         <button
                           type="button"
@@ -3005,10 +2999,11 @@ export default function App() {
                 </div>
                 {expanded && !client.exportStatusLoading && (
                   <div className="client-details">
+                    <ClientWorkspace key={client.path} clientPath={client.path} onContextMenu={openPepperContextMenu} reviewDefault={sortedApprovalVersions.length>0||published} hasApprovals={sortedApprovalVersions.length>0} finalPath={published&&exports.final_filename?`${client.path.replace(/[\\/]+$/, "")}\\04_FINAL\\${exports.final_filename}`:null}>
                     {sortedApprovalVersions.length === 0 ? (
                       pendingApprovalEntry
                         ? <div className="version-list" role="group" aria-label={`${label.name} approval versions`}>{pendingApprovalEntry}</div>
-                        : <div className="versions-empty">No finalized watermarked approval copies found.</div>
+                        : <div className="versions-empty">No approval copies available.</div>
                     ) : selectedApprovalVersion && selectedApprovalPath && (
                       <div className="version-browser">
                         <article className="export-preview">
@@ -3171,6 +3166,7 @@ export default function App() {
                         </div>
                       </div>
                     )}
+                    </ClientWorkspace>
                   </div>
                 )}
                 </Fragment>
