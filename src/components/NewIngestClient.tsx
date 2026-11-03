@@ -8,7 +8,7 @@ export function NewIngestClient({projectRoot,disabled,onCreate}:{projectRoot:str
   const [template,setTemplate]=useState('PHYSICAL'),[creating,setCreating]=useState(false),[error,setError]=useState('');
   const needsSeason = mode==='MARIYAMEETS' && projectRoot.split(/[\\/]/).filter(Boolean).pop()?.toLowerCase()==='8_mariya meets';
   const seasons = useMariyaSeasons(projectRoot,open&&needsSeason);
-  const seasonPending = needsSeason && (seasons.loading || !seasons.season);
+  const seasonPending = needsSeason && (seasons.loading || seasons.creating || !seasons.season);
   const submit=async(event:React.FormEvent)=>{
     event.preventDefault();if(!name.trim()||!mode||creating||seasonPending)return;
     const clean=name.trim();

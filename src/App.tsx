@@ -1782,7 +1782,7 @@ export default function App() {
       return;
     }
     const baseName = newClientName.trim();
-    if (!baseName || (needsMariyaSeason && !mariyaSeasons.season)) return;
+    if (!baseName || (needsMariyaSeason && (mariyaSeasons.loading || mariyaSeasons.creating || !mariyaSeasons.season))) return;
     const customType = normalizeClientInput(customClientType).toUpperCase();
     if (newClientType === "CUSTOM" && !customType) {
       setError("Enter a custom mode name.");
@@ -2596,7 +2596,7 @@ export default function App() {
                     CUSTOM
                   </button>
                 </div>
-                <div className={`client-extra ${newClientType === "CUSTOM" || newClientType === "HUDDLE" || needsMariyaSeason ? "has-options" : ""}`}>
+                <div className={`client-extra ${needsMariyaSeason ? "has-season" : ""} ${newClientType === "CUSTOM" || newClientType === "HUDDLE" || needsMariyaSeason ? "has-options" : ""}`}>
                 {needsMariyaSeason && <MariyaSeasonSelect selection={mariyaSeasons} />}
                 {newClientType === "CUSTOM" && (
                   <input
@@ -2641,7 +2641,7 @@ export default function App() {
                     className="primary icon-button inline-action-button"
                     aria-label="Create client"
                     title="Create client"
-                    disabled={needsMariyaSeason && (mariyaSeasons.loading || !mariyaSeasons.season)}
+                    disabled={needsMariyaSeason && (mariyaSeasons.loading || mariyaSeasons.creating || !mariyaSeasons.season)}
                     onClick={handleAddClient}
                   >
                     <Check size={18} strokeWidth={2.2} aria-hidden="true" />

@@ -22,7 +22,6 @@ export function ClientFiles({clientPath,onContextMenu}:{clientPath:string;onCont
   const [selectedPath,setSelectedPath]=useState<string|null>(null),[query,setQuery]=useState(''),[searchOpen,setSearchOpen]=useState(false);
   const [revision,setRevision]=useState(0),[opening,setOpening]=useState(false);
   const request=useRef(0);
-  const cache=useRef(new Map<string,{revision:number;listing:Listing}>());
   const selection=useRef(new Map<Section,string>());
   const [selectedPaths,setSelectedPaths]=useState<string[]>([]);
   const anchor=useRef<string|null>(null);
@@ -33,14 +32,13 @@ export function ClientFiles({clientPath,onContextMenu}:{clientPath:string;onCont
   const [hasStills,setHasStills]=useState(false);
   useEffect(()=>{
     let active=true;
-    void invoke<Listing>('client_files_list',{clientPath,category:'stills'}).then(next=>{if(active){cache.current.set(`${clientPath}/stills`,{revision,listing:next});setHasStills(next.files.length>0);if(!next.files.length)setSection(current=>current==='stills'?'edit':current);}}).catch(()=>{});
+    void invoke<Listing>('client_files_list',{clientPath,category:'stills'}).then(next=>{if(active){setHasStills(next.files.length>0);if(!next.files.length)setSection(current=>current==='stills'?'edit':current);}}).catch(()=>{});
     return()=>{active=false;};
   },[clientPath,revision]);
   useEffect(()=>{
     const id=++request.current;let active=true;setError('');
     const accept=(next:Listing)=>{
       if(!active||id!==request.current)return;
-      cache.current.set(`${clientPath}/${section}`,{revision,listing:next});
       setListing(next);setDisplaySection(section);
       const previous=selection.current.get(section);
       const first=section==='audio'?next.files.find(file=>file.variant==='Clean')||next.files[0]:next.files[0];
@@ -50,8 +48,6 @@ export function ClientFiles({clientPath,onContextMenu}:{clientPath:string;onCont
       setSelectedPath(next.files.some(file=>file.path===previous)?previous!:first?.path||null);
       setLoading(false);
     };
-    const cached=cache.current.get(`${clientPath}/${section}`);
-    if(cached?.revision===revision){accept(cached.listing);return()=>{active=false;};}
     setLoading(true);
     void invoke<Listing>('client_files_list',{clientPath,category:section}).then(accept).catch(error=>{
       if(active&&id===request.current){setError(String(error));setLoading(false);}

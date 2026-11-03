@@ -1737,22 +1737,38 @@ button.accent {
   height: 42px;
 }
 
-.mariya-season-select {
-  display: flex;
-  align-items: center;
-  flex-wrap: wrap;
-  gap: 8px;
-  font-size: 12px;
+.client-extra.has-options.has-season {
+  height: auto;
+  min-height: 36px;
+  overflow: visible;
 }
 
-.mariya-season-select select {
-  padding: 5px 8px;
-  border: 1px solid var(--pepper-line, #414141);
-  border-radius: 6px;
-  background: var(--pepper-surface-raised, #232323);
-  color: inherit;
-  font: inherit;
-}
+.mariya-season-picker { min-width: 0; width: 100%; font-size: 11px; }
+.mariya-season-row { display: flex; align-items: flex-start; gap: 10px; }
+.mariya-season-label { flex: 0 0 auto; padding-top: 7px; color: var(--pepper-muted, #999); font-size: 10px; }
+.mariya-season-choices { display: flex; flex-wrap: wrap; align-items: center; gap: 5px; min-width: 0; }
+.mariya-season-choices .mariya-season-choice { position: relative; display: inline-flex; margin: 0; cursor: pointer; }
+.mariya-season-choice input { position: absolute; inset: 0; width: 100%; height: 100%; margin: 0; opacity: 0; cursor: pointer; }
+.mariya-season-choice > span { display: inline-flex; align-items: center; gap: 7px; min-height: 29px; padding: 5px 9px; border: 1px solid #464646; border-radius: 4px; background: #272727; color: #aaa; font-size: 11px; line-height: 17px; }
+.mariya-season-choice small { color: #888; font-size: 9px; font-weight: 400; }
+.mariya-season-choice:hover > span { border-color: #707070; color: #ddd; }
+.mariya-season-choice input:checked + span { background: #404040; border-color: #858585; color: #eee; }
+.mariya-season-choice input:checked + span small { color: #bbb; }
+.mariya-season-choice input:focus-visible + span { outline: 2px solid #ddd; outline-offset: 2px; }
+.mariya-season-choice:has(input:disabled) { opacity: .5; cursor: default; }
+.mariya-season-choice input:disabled { cursor: default; }
+.mariya-season-choices .mariya-season-new,
+.mariya-season-error button { display: inline-flex; align-items: center; justify-content: center; gap: 4px; min-height: 29px; padding: 5px 7px; background: transparent; border: 1px solid transparent; border-radius: 4px; color: #aaa; font: inherit; font-size: 10px; box-shadow: none; white-space: nowrap; }
+.mariya-season-choices .mariya-season-new:hover:not(:disabled),
+.mariya-season-error button:hover:not(:disabled) { background: #333; border-color: #555; color: #eee; }
+.mariya-season-choices .mariya-season-new:focus-visible,
+.mariya-season-error button:focus-visible { border-color: #ddd; }
+.mariya-season-status { display: inline-flex; align-items: center; gap: 6px; min-height: 29px; color: #999; font-size: 10px; }
+.mariya-season-error { display: flex; align-items: center; flex-wrap: wrap; gap: 6px; margin-top: 6px; color: #d6aaa2; font-size: 10px; overflow-wrap: anywhere; }
+.mariya-season-error > span { flex: 1; min-width: 120px; }
+.mariya-season-picker .mariya-season-hint { margin: 5px 0 0; color: #999; font-size: 10px; }
+.ig-new-client-card .mariya-season-row { flex-direction: column; gap: 5px; }
+.ig-new-client-card .mariya-season-label { padding-top: 0; }
 
 .inline-types {
   display: flex;
