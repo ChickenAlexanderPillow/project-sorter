@@ -10,7 +10,7 @@ import { writeText } from "@tauri-apps/plugin-clipboard-manager";
 import { openPath } from "@tauri-apps/plugin-opener";
 import { check, type Update } from "@tauri-apps/plugin-updater";
 import { InlineVideoPlayer } from "./components/InlineVideoPlayer";
-import { ArrowDown, ArrowUp, ArrowUpDown, Bell, Check, ChevronDown, ChevronRight, ChevronsUpDown, Clapperboard, CloudUpload, Copy, FolderInput, FolderKanban, Link2, LoaderCircle, Minus, Plus, RefreshCw, Search, Settings2, Square, Trash2, Wrench, X } from "lucide-react";
+import { ArrowDown, ArrowUp, ArrowUpDown, Bell, Check, ChevronDown, ChevronRight, ChevronsUpDown, Clapperboard, CloudUpload, Copy, FolderInput, FolderKanban, Link2, LoaderCircle, Minus, Plus, RefreshCw, Search, Settings, Settings2, Square, Trash2, Wrench, X } from "lucide-react";
 import { MariyaSeasonSelect, useMariyaSeasons } from "./components/MariyaSeasonSelect";
 import { IngestWorkspace } from "./components/IngestWorkspace";
 import { isNativeFileDragActive } from "./components/nativeFileDrag";
@@ -2190,6 +2190,20 @@ export default function App() {
           <button
             type="button"
             className="window-control"
+            aria-label="Settings"
+            aria-expanded={showAdvancedMenu}
+            aria-controls="pepper-settings"
+            title="Settings"
+            onClick={() => {
+              setShowNotificationMenu(false);
+              setShowAdvancedMenu((current) => !current);
+            }}
+          >
+            <Settings size={17} aria-hidden="true" />
+          </button>
+          <button
+            type="button"
+            className="window-control"
             aria-label="Minimize Pepper"
             title="Minimize"
             onClick={() => void getCurrentWindow().minimize()}
@@ -2216,6 +2230,108 @@ export default function App() {
           </button>
         </div>
       </header>
+          {showAdvancedMenu && (
+            <div className="advanced-overlay" onClick={() => setShowAdvancedMenu(false)}>
+              <div
+                className="advanced-popover fixed"
+                id="pepper-settings"
+                role="dialog"
+                aria-label="Settings"
+                onClick={(event) => event.stopPropagation()}
+              >
+                <label className="toggle compact">
+                  <input
+                    type="checkbox"
+                    checked={advancedMode || advancedModeRequested}
+                    onChange={(event) => {
+                      if (!event.target.checked) {
+                        setAdvancedMode(false);
+                        setAdvancedModeRequested(false);
+                        setAdvancedPassword("");
+                        setAdvancedPasswordError("");
+                      } else {
+                        setAdvancedModeRequested(true);
+                        setAdvancedPasswordError("");
+                      }
+                    }}
+                  />
+                  Advanced mode
+                </label>
+                {advancedModeRequested && !advancedMode && (
+                  <form className="advanced-password-form" onSubmit={(event) => {
+                    event.preventDefault();
+                    if (advancedPassword === "fidelio") {
+                      setAdvancedMode(true);
+                      setAdvancedModeRequested(false);
+                      setAdvancedPassword("");
+                      setAdvancedPasswordError("");
+                    } else setAdvancedPasswordError("Incorrect password");
+                  }}>
+                    <input type="password" autoComplete="current-password" value={advancedPassword} onChange={(event) => setAdvancedPassword(event.target.value)} placeholder="Advanced mode password" aria-label="Advanced mode password" />
+                    <button type="submit" className="ghost" disabled={!advancedPassword}>Confirm</button>
+                    {advancedPasswordError && <small role="alert">{advancedPasswordError}</small>}
+                  </form>
+                )}
+                {advancedMode && <>
+                <label className="toggle compact">
+                  <input
+                    type="checkbox"
+                    checked={alwaysOnTop}
+                    onChange={(event) => {
+                      const checked = event.target.checked;
+                      setAlwaysOnTop(checked);
+                      saveConfigValue("alwaysOnTop", checked);
+                      getCurrentWindow()
+                        .setAlwaysOnTop(checked)
+                        .catch(() => undefined);
+                    }}
+                  />
+                  Float on top
+                </label>
+                <label className="toggle compact">
+                  <input
+                    type="checkbox"
+                    checked={showNonClients}
+                    onChange={(event) => {
+                      const checked = event.target.checked;
+                      setShowNonClients(checked);
+                      saveConfigValue("showNonClients", checked);
+                    }}
+                  />
+                  Show non-client folders
+                </label>
+                </>}
+                <div className="advanced-utility-row">
+                  <button
+                    type="button"
+                    className="ghost advanced-utility-button"
+                    aria-label="Frame.io settings"
+                    title={frameIoConfigured ? "Frame.io settings — destination configured" : "Frame.io settings — setup required"}
+                    onClick={() => {
+                      setShowAdvancedMenu(false);
+                      openFrameIoSettings();
+                    }}
+                  >
+                    <Settings2 size={16} aria-hidden="true" />
+                  </button>
+                  <button
+                    type="button"
+                    className="ghost advanced-utility-button"
+                    aria-label="Check for updates"
+                    title={checkingForUpdates ? "Checking for updates" : "Check for updates"}
+                    disabled={checkingForUpdates}
+                    onClick={() => void checkForUpdates()}
+                  >
+                    <RefreshCw size={15} className={checkingForUpdates ? "spinning" : ""} aria-hidden="true" />
+                  </button>
+                </div>
+                <div className="advanced-actions">
+                  {advancedMode && <button type="button" className="ghost" onClick={() => setShowUndoConfirm(true)} disabled={!lastBatch.length}>Undo last</button>}
+                  {advancedMode && <button type="button" className="ghost" onClick={() => void handleLogOpen()} disabled={!projectRoot}>View log</button>}
+                </div>
+              </div>
+            </div>
+          )}
       {error && <div className="banner error">{error}</div>}
       {(processingToast ?? toast) && (
         <div className={`toast ${(processingToast ?? toast)!.tone}`}>
@@ -2446,122 +2562,10 @@ export default function App() {
                 >
                   <Plus size={16} aria-hidden="true" />
                 </button>
-                <div className="advanced-menu">
-                <button
-                  type="button"
-                  className="ghost icon-button"
-                  aria-label="More options"
-                  title="More options"
-                  onClick={(event) => {
-                    event.stopPropagation();
-                    setShowAdvancedMenu((current) => !current);
-                  }}
-                >
-                  <span className="more-options-ellipsis" aria-hidden="true">...</span>
-                </button>
-              </div>
+
             </div>
           </div>
           </div>
-          {showAdvancedMenu && (
-            <div className="advanced-overlay" onClick={() => setShowAdvancedMenu(false)}>
-              <div
-                className="advanced-popover fixed"
-                onClick={(event) => event.stopPropagation()}
-              >
-                <label className="toggle compact">
-                  <input
-                    type="checkbox"
-                    checked={advancedMode || advancedModeRequested}
-                    onChange={(event) => {
-                      if (!event.target.checked) {
-                        setAdvancedMode(false);
-                        setAdvancedModeRequested(false);
-                        setAdvancedPassword("");
-                        setAdvancedPasswordError("");
-                      } else {
-                        setAdvancedModeRequested(true);
-                        setAdvancedPasswordError("");
-                      }
-                    }}
-                  />
-                  Advanced mode
-                </label>
-                {advancedModeRequested && !advancedMode && (
-                  <form className="advanced-password-form" onSubmit={(event) => {
-                    event.preventDefault();
-                    if (advancedPassword === "fidelio") {
-                      setAdvancedMode(true);
-                      setAdvancedModeRequested(false);
-                      setAdvancedPassword("");
-                      setAdvancedPasswordError("");
-                    } else setAdvancedPasswordError("Incorrect password");
-                  }}>
-                    <input type="password" autoComplete="current-password" value={advancedPassword} onChange={(event) => setAdvancedPassword(event.target.value)} placeholder="Advanced mode password" aria-label="Advanced mode password" />
-                    <button type="submit" className="ghost" disabled={!advancedPassword}>Confirm</button>
-                    {advancedPasswordError && <small role="alert">{advancedPasswordError}</small>}
-                  </form>
-                )}
-                {advancedMode && <>
-                <label className="toggle compact">
-                  <input
-                    type="checkbox"
-                    checked={alwaysOnTop}
-                    onChange={(event) => {
-                      const checked = event.target.checked;
-                      setAlwaysOnTop(checked);
-                      saveConfigValue("alwaysOnTop", checked);
-                      getCurrentWindow()
-                        .setAlwaysOnTop(checked)
-                        .catch(() => undefined);
-                    }}
-                  />
-                  Float on top
-                </label>
-                <label className="toggle compact">
-                  <input
-                    type="checkbox"
-                    checked={showNonClients}
-                    onChange={(event) => {
-                      const checked = event.target.checked;
-                      setShowNonClients(checked);
-                      saveConfigValue("showNonClients", checked);
-                    }}
-                  />
-                  Show non-client folders
-                </label>
-                </>}
-                <div className="advanced-utility-row">
-                  <button
-                    type="button"
-                    className="ghost advanced-utility-button"
-                    aria-label="Frame.io settings"
-                    title={frameIoConfigured ? "Frame.io settings — destination configured" : "Frame.io settings — setup required"}
-                    onClick={() => {
-                      setShowAdvancedMenu(false);
-                      openFrameIoSettings();
-                    }}
-                  >
-                    <Settings2 size={16} aria-hidden="true" />
-                  </button>
-                  <button
-                    type="button"
-                    className="ghost advanced-utility-button"
-                    aria-label="Check for updates"
-                    title={checkingForUpdates ? "Checking for updates" : "Check for updates"}
-                    disabled={checkingForUpdates}
-                    onClick={() => void checkForUpdates()}
-                  >
-                    <RefreshCw size={15} className={checkingForUpdates ? "spinning" : ""} aria-hidden="true" />
-                  </button>
-                </div>
-                <div className="advanced-actions">
-                  {advancedMode && <button type="button" className="ghost" onClick={() => setShowUndoConfirm(true)} disabled={!lastBatch.length}>Undo last</button>}
-                  {advancedMode && <button type="button" className="ghost" onClick={() => void handleLogOpen()} disabled={!projectRoot}>View log</button>}
-                </div>
-              </div>
-            </div>
-          )}
           <div
             className={`table-scroll ${busy ? "busy" : ""}`}
             onDragOver={screen === "sort" ? handleSortDragOver : undefined}
@@ -2670,7 +2674,7 @@ export default function App() {
                   Status {sortIcon("status")}
                 </button>
               </div>
-              <div>Actions</div>
+              <div><span className="column-label">Actions</span></div>
             </div>
             {loading && visibleClients.length === 0 && clients.length > 0 && (
               <div className="table-row">Loading…</div>
@@ -2747,6 +2751,9 @@ export default function App() {
                 const publishedDividerStarts = search.trim()
                   ? computedPublishedDividerStarts
                   : client.cachePublishedDividerBefore ?? computedPublishedDividerStarts;
+                const unpublishedDividerStarts = !published && (!previousClient
+                  || (isMariyaMeetsRoot && previousClient.season !== client.season)
+                  || previousPublished);
                 const publishFailed = exports.publish_failed || publishFailedClientPaths.has(client.path);
                 const cleanExportInProgress = exports.approval_in_progress
                   && exports.approval_progress_phase?.toLowerCase() === "waiting for export to stabilize";
@@ -2851,6 +2858,9 @@ export default function App() {
                   )}
                   {publishedDividerStarts && (
                     <div className="published-divider" role="heading" aria-level={2}>Published</div>
+                  )}
+                  {unpublishedDividerStarts && (
+                    <div className="published-divider" role="heading" aria-level={2}>Unpublished</div>
                   )}
                   <div
                     className={`table-row client-row ${clientIsCached ? "cached-client-row" : ""} ${droppable ? "droppable-row" : ""} ${

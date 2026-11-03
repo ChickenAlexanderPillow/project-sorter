@@ -1,6 +1,6 @@
 .ig-group-layout{display:grid;grid-template-columns:minmax(0,1fr) minmax(260px,32%);gap:24px;align-items:start}
 .ig-group-main{min-width:0;display:grid;grid-template-columns:minmax(0,1fr) minmax(220px,.9fr);gap:0 18px;align-items:start}
-.ig-group-main>.ig-unassigned,.ig-group-main>.ig-client-destinations{max-height:calc(100vh - 335px);min-height:250px;overflow:auto;scrollbar-width:thin;scrollbar-color:#555 transparent;padding:0 4px 6px}
+.ig-group-main>.ig-unassigned,.ig-group-main>.ig-client-destinations{max-height:calc(100vh - 335px);min-height:250px;overflow:auto;scrollbar-width:thin;padding:0 4px 6px}
 .ig-group-main>.ig-unassigned{border-bottom:0;border-right:1px solid #414141;margin:0;padding-right:16px}
 .ig-group-main>.ig-client-destinations>.ig-group-section-title,.ig-unassigned>.ig-group-section-title{position:sticky;top:0;z-index:2;box-sizing:border-box;height:32px;min-height:32px;margin:0 0 0;padding:0 0 4px;background:#202020}
 .ig-group-section-title{display:flex;gap:12px;align-items:center;margin-bottom:12px;min-height:28px}

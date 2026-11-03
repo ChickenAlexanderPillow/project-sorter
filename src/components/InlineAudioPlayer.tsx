@@ -1,3 +1,4 @@
+import { useEffect } from 'react';
 import { Audio, AudioPlayer, NeutralAudioSkin } from '@videojs/react/audio';
 import '@videojs/react/audio/neutral-skin.css';
 import { MediaTransition } from './MediaTransition';
@@ -9,5 +10,7 @@ export function InlineAudioPlayer(props:AudioProps) {
   return <MediaTransition source={props.src} onError={props.onError} render={(src,onReady,onError)=><AudioSurface src={src} onReady={onReady} onError={onError}/>}/>;
 }
 function AudioSurface({src,onError,onReady}:AudioProps) {
-  return <div className="pepper-audio-preview"><div className="pepper-audio-art"><AudioLines size={32}/></div><AudioPlayer><NeutralAudioSkin className="pepper-audio-compact"><Audio src={src} preload="metadata" onLoadedData={onReady} onError={onError}/></NeutralAudioSkin></AudioPlayer></div>;
+  // Artwork is ready immediately; metadata and playable audio load independently.
+  useEffect(()=>{onReady?.();},[src]);
+  return <div className="pepper-audio-preview"><div className="pepper-audio-art pepper-media-visual"><AudioLines size={32}/></div><AudioPlayer><NeutralAudioSkin className="pepper-audio-compact"><Audio src={src} preload="metadata" onError={onError}/></NeutralAudioSkin></AudioPlayer></div>;
 }

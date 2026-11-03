@@ -36,7 +36,7 @@
 .ig-preview-media,.ig-preview-media img,.ig-preview-media video,.ig-preview-media .pepper-video-skin{border-radius:0!important}
 
 /* This variant is opt-in; production retains its controls and speed button. */
-.pepper-preview-player{padding-bottom:50px;background:#222}
+.pepper-preview-player{padding-bottom:50px;background:var(--pepper-preview-bg,#232323)}
 .pepper-video-skin.pepper-video-compact{--media-control-size:26px;--media-control-radius:2px;--media-controls-radius:0px;--media-icon-size:15px;--media-spacing:3px;border-radius:0!important;overflow:visible!important}
 .pepper-video-compact video{border-radius:0!important}
 .pepper-video-skin.pepper-video-compact .video-controls-content{inset-inline:0!important;bottom:-50px!important;min-height:50px;padding:2px 6px!important;gap:0!important;flex-wrap:wrap!important;background:#242424!important;border-radius:0!important}
@@ -66,7 +66,7 @@
 .ig-group-layout:has(>.ig-preview-rail.collapsed) .ig-group-main{grid-template-columns:minmax(0,1fr) minmax(260px,1fr)}
 
 /* Audio uses the Video.js audio preset with the same compact control language. */
-.pepper-audio-art{min-height:100px;display:grid;place-items:center;color:#777;background:#171717}
+.pepper-audio-art{min-height:100px;display:grid;place-items:center;color:#777;background:var(--pepper-preview-bg,#232323)}
 .pepper-audio-compact{width:100%;--media-control-size:26px;--media-icon-size:15px;--media-spacing:3px;--media-control-radius:2px;--media-controls-radius:0px;--media-slider-height:18px}
 .pepper-audio-compact .audio-controls-content{display:flex!important;flex-wrap:wrap!important;gap:2px!important;padding:5px 8px!important;border:0!important;border-radius:0!important;background:#242424!important}
 .pepper-audio-compact .audio-time-slider-group{order:-1;flex:0 0 100%!important;display:flex!important;flex-direction:row!important;gap:6px!important;padding:0!important;min-height:20px}

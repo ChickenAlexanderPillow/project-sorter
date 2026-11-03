@@ -2162,6 +2162,7 @@ body,
   --pepper-focus: #b5b5b5;
   --pepper-selection: #3a3a3a;
   --pepper-info: #c0c0c0;
+  --pepper-preview-bg: #232323;
   --pepper-radius-control: 5px;
   --pepper-radius-card: 6px;
   --pepper-radius-dialog: 8px;
@@ -2190,7 +2191,7 @@ button {
   min-height: 32px;
   padding: 6px 11px;
   border: 1px solid var(--pepper-line);
-  border-radius: 5px;
+  border-radius: var(--pepper-radius-control);
   background: #363636;
   color: var(--pepper-text);
   font: inherit;
@@ -2646,8 +2647,11 @@ button.ghost,
 }
 
 .advanced-popover.fixed {
-  top: 106px;
-  right: 18px;
+  top: 42px;
+  right: 120px;
+  max-width: calc(100vw - 24px);
+  max-height: calc(100vh - 54px);
+  overflow-y: auto;
   border: 1px solid var(--pepper-line);
   border-radius: 6px;
   background: var(--pepper-surface-raised);
@@ -2656,28 +2660,6 @@ button.ghost,
 
 .table-scroll {
   padding: 0;
-  scrollbar-color: #686868 #292929;
-  scrollbar-width: auto;
-}
-
-.table-scroll::-webkit-scrollbar {
-  width: 14px;
-  height: 14px;
-}
-
-.table-scroll::-webkit-scrollbar-track {
-  background: #292929;
-}
-
-.table-scroll::-webkit-scrollbar-thumb {
-  min-height: 36px;
-  border: 4px solid #292929;
-  border-radius: 999px;
-  background: #686868;
-}
-
-.table-scroll::-webkit-scrollbar-thumb:hover {
-  background: #858585;
 }
 
 .table,
@@ -2774,8 +2756,8 @@ button.ghost,
 }
 
 .table-row.table-head {
-  min-height: 30px;
-  padding: 5px 12px;
+  min-height: 40px;
+  padding: 0 12px;
   border-bottom-color: var(--pepper-line);
   color: var(--pepper-muted);
   font-size: 10px;
@@ -2785,8 +2767,57 @@ button.ghost,
   user-select: none;
 }
 
-.table-row.table-head > div:first-child {
+.table-row.table-head > div {
+  display: flex;
+  align-items: stretch;
+  align-self: stretch;
+  min-width: 0;
+  border-radius: 0;
+  transition: background-color 100ms ease;
+}
+
+.table-head .column-sort,
+.table-head .column-label {
+  box-sizing: border-box;
+  display: flex;
+  align-items: center;
+  justify-content: flex-start;
+  gap: 7px;
+  width: 100%;
+  min-height: 40px;
+  padding: 0 10px;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  letter-spacing: inherit;
+  text-transform: inherit;
+  text-align: left;
+  box-shadow: none;
+}
+
+.table-row.table-head > div:first-child .column-sort {
   padding-left: 36px;
+}
+
+.table-row.table-head > div:hover {
+  background: var(--pepper-hover);
+  color: var(--pepper-text);
+}
+
+.table-head .column-sort.active {
+  color: var(--pepper-text);
+}
+
+.table-head .column-sort:hover:not(:disabled) {
+  background: transparent;
+  color: var(--pepper-text);
+}
+
+.table-head .column-sort:focus-visible {
+  outline: 2px solid var(--pepper-focus);
+  outline-offset: -2px;
 }
 
 .client-row,
@@ -3996,4 +4027,13 @@ input[type="radio"] {
 }
 .media-skin .media-time-group,.media-skin .media-time,.media-skin .media-time-toggle,.media-skin .media-time-display{
   border-radius:0!important;
+}
+
+
+
+/* Let WebView draw thin, native scrollbars throughout the dark UI. */
+:root { color-scheme: dark; --pepper-scrollbar-thumb: #555; }
+* { scrollbar-width: thin; scrollbar-color: var(--pepper-scrollbar-thumb) transparent; }
+@media (forced-colors: active) {
+  * { scrollbar-color: auto; }
 }

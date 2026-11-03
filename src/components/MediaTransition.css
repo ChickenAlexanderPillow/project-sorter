@@ -1,6 +1,18 @@
-.pepper-media-transition{display:grid;position:relative;min-width:0;width:100%;background:#171717;isolation:isolate}
-.pepper-media-layer{grid-area:1/1;min-width:0;min-height:0;width:100%;height:100%;opacity:0;transition:opacity .5s ease;background:#171717}
+.pepper-media-transition{display:grid;position:relative;min-width:0;width:100%;aspect-ratio:16/9;background:var(--pepper-preview-bg,#232323);isolation:isolate;overflow:hidden}
+.pepper-media-layer{position:absolute;inset:0;min-width:0;min-height:0;width:100%;height:100%;opacity:0;background:transparent}
 .pepper-media-layer.ready{opacity:1}
 .pepper-media-layer[inert]{pointer-events:none}
+/* Controls switch in place. Only video, image, artwork or the error surface fades. */
+.pepper-media-layer:not(.controls-current) :is(.video-controls-content,.audio-controls-content,.pepper-speed-button){visibility:hidden}
+.pepper-media-transition .pepper-media-layer :is(.pepper-video-skin,.pepper-preview-player,.pepper-player-surface,.media-container){background:transparent}
+.pepper-media-transition .pepper-media-layer .pepper-media-visual{background:var(--pepper-preview-bg,#232323)}
 .ig-preview-media>.pepper-media-transition{height:100%}
-@media(prefers-reduced-motion:reduce){.pepper-media-layer{transition:none}}
+.ig-preview-media .pepper-preview-player{height:100%;box-sizing:border-box}
+.ig-preview-media .pepper-video-compact{height:100%;aspect-ratio:auto!important}
+.ig-preview-media .pepper-audio-preview{height:100%;display:flex;flex-direction:column}
+.ig-preview-media .pepper-audio-art{flex:1;min-height:0}
+.ig-preview-media .pepper-audio-compact{flex-shrink:0}
+.ig-preview-media .audio-controls-content{box-sizing:border-box;height:50px;min-height:50px;padding:2px 8px!important;gap:0!important}
+.ig-preview-media .pepper-media-layer>img{width:100%;height:100%;max-height:none;object-fit:contain}
+
+.pepper-media-transition .media-poster{transition:none}

@@ -147,7 +147,8 @@ export function IngestWorkspace({projectRoot, projectTitle, clients, onBack, onC
     }
   };
   const summary = step===1 ? (staged.length ? `${staged.length} files ready to copy` : manifest.files.length ? `${manifest.files.length} files copied - ${bytes(manifest.files.reduce((n,f)=>n+f.size,0))}` : "Your original media stays untouched") : `${manifest.files.length-unassigned} ${manifest.files.length-unassigned===1?"file":"files"} assigned to clients${unassigned?` - ${unassigned} awaiting a client`:''}`;
-  const sourceSelector = <button className="ig-button" disabled={readOnly} onClick={()=>setSourceBrowser(true)}><Plus size={15}/> Add media</button>;
+  const hasMedia = staged.length > 0 || manifest.files.some(file => mediaKind(file.name));
+  const sourceSelector = step !== 1 || hasMedia ? <button className="ig-button" disabled={readOnly} onClick={()=>setSourceBrowser(true)}><Plus size={15}/> Add media</button> : null;
 
   return <main className="ig-workspace">
     <header className="ig-heading"><button className="ig-text-button" disabled={saveState !== "saved"} onClick={onBack}><ArrowLeft size={15}/> Production</button><span className="ig-heading-divider"/><span className="ig-project">{projectTitle}<small title="Import media"><FolderInput size={15} aria-label="Import media"/></small></span><span className={`ig-save ${saveState}`} role="status">{saveState === "saving" ? <><LoaderCircle size={12} className="ig-spin"/> Saving</> : saveState === "failed" ? <button className="ig-text-button" onClick={() => persist(manifestRef.current)}>Retry save</button> : <><Check size={12}/> Saved</>}</span></header>
