@@ -3098,6 +3098,8 @@ dependencies = [
  "uuid",
  "walkdir",
  "whoami",
+ "windows",
+ "windows-core 0.61.2",
 ]
 
 [[package]]

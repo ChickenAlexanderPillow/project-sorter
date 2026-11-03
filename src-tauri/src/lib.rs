@@ -17,6 +17,7 @@ mod frameio;
 mod ingest;
 mod media_browser;
 mod client_files;
+mod file_drag;
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 struct ClientInfo {
@@ -2722,6 +2723,7 @@ pub fn run() {
             media_browser::media_prepare_preview,
             client_files::client_files_list,
             client_files::client_files_open_project,
+            file_drag::client_files_start_drag,
             ingest::ingest_progress,
             ingest::ingest_collect,
             ingest::ingest_save,

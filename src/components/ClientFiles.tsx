@@ -1,6 +1,8 @@
-import { useEffect, useRef, useState, type MouseEvent } from 'react';
+import { useEffect, useRef, useState, type MouseEvent, type PointerEvent } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { ArrowUpRight, CircleAlert, FileVideo, Headphones, Image, LoaderCircle, RefreshCw, Search, SquarePen } from 'lucide-react';
+import { selectFilePaths } from './fileSelection';
+import { startNativeFileDrag } from './nativeFileDrag';
 import { mediaRoleIcon } from './MediaTypes';
 import { SourceMediaPreview } from './SourceMediaPreview';
 
@@ -22,6 +24,11 @@ export function ClientFiles({clientPath,onContextMenu}:{clientPath:string;onCont
   const request=useRef(0);
   const cache=useRef(new Map<string,{revision:number;listing:Listing}>());
   const selection=useRef(new Map<Section,string>());
+  const [selectedPaths,setSelectedPaths]=useState<string[]>([]);
+  const anchor=useRef<string|null>(null);
+  const selections=useRef(new Map<Section,string[]>());
+  const pointer=useRef<{id:number;x:number;y:number;paths:string[]}|null>(null);
+  const dragged=useRef(false),nativeBusy=useRef(false);
   const [displaySection,setDisplaySection]=useState<Section>('edit');
   const [hasStills,setHasStills]=useState(false);
   useEffect(()=>{
@@ -37,6 +44,9 @@ export function ClientFiles({clientPath,onContextMenu}:{clientPath:string;onCont
       setListing(next);setDisplaySection(section);
       const previous=selection.current.get(section);
       const first=section==='audio'?next.files.find(file=>file.variant==='Clean')||next.files[0]:next.files[0];
+      const saved=(selections.current.get(section)||[]).filter(path=>next.files.some(file=>file.path===path));
+      setSelectedPaths(saved.length?saved:first?[first.path]:[]);
+      anchor.current=null;
       setSelectedPath(next.files.some(file=>file.path===previous)?previous!:first?.path||null);
       setLoading(false);
     };
@@ -53,6 +63,32 @@ export function ClientFiles({clientPath,onContextMenu}:{clientPath:string;onCont
   const selected=visible.find(file=>file.path===selectedPath)||visible[0]||null;
   const variantOrder=displaySection==='video'?['Raw','Proxy']:displaySection==='audio'?['Clean','Raw','Music']:displaySection==='stills'?['Stills','Graphics']:['Edit'];
   const groups=variantOrder.map(variant=>({variant,files:visible.filter(file=>file.variant===variant)})).filter(group=>group.files.length>0);
+  const ordered=groups.flatMap(group=>group.files.map(file=>file.path));
+  const visibleSelection=selectedPaths.filter(path=>ordered.includes(path));
+  const choose=(file:Asset,extend=false,toggle=false)=>{
+    const next=selectFilePaths(selectedPaths,ordered,file.path,anchor.current,extend,toggle);
+    setSelectedPaths(next);selections.current.set(displaySection,next);
+    selection.current.set(displaySection,file.path);setSelectedPath(file.path);
+    if(!extend)anchor.current=file.path;
+    return next;
+  };
+  const pointerDown=(event:PointerEvent<HTMLButtonElement>,file:Asset)=>{
+    if(event.button!==0||nativeBusy.current)return;
+    dragged.current=false;
+    const modifier=event.ctrlKey||event.metaKey;
+    const paths=!event.shiftKey&&!modifier&&visibleSelection.includes(file.path)?visibleSelection:choose(file,event.shiftKey,modifier);
+    pointer.current={id:event.pointerId,x:event.clientX,y:event.clientY,paths};
+    event.currentTarget.setPointerCapture(event.pointerId);
+  };
+  const pointerMove=(event:PointerEvent<HTMLButtonElement>)=>{
+    const pending=pointer.current;
+    if(!pending||pending.id!==event.pointerId||Math.hypot(event.clientX-pending.x,event.clientY-pending.y)<6)return;
+    pointer.current=null;dragged.current=true;
+    if(event.currentTarget.hasPointerCapture(event.pointerId))event.currentTarget.releasePointerCapture(event.pointerId);
+    if(!pending.paths.length)return;
+    nativeBusy.current=true;setError('');
+    void startNativeFileDrag(clientPath,pending.paths).catch(error=>setError(String(error))).finally(()=>{nativeBusy.current=false;});
+  };
   const nameCounts=new Map<string,number>();
   for(const file of listing?.files||[])nameCounts.set(`${file.variant}/${file.name.toLowerCase()}`,(nameCounts.get(`${file.variant}/${file.name.toLowerCase()}`)||0)+1);
   const openFolder=async(path:string)=>{try{await invoke('open_folder',{path});setError('');}catch(error){setError(String(error));}};
@@ -74,8 +110,14 @@ export function ClientFiles({clientPath,onContextMenu}:{clientPath:string;onCont
     {error&&<div className="cf-error" role="alert"><CircleAlert size={15}/><span>{error}</span></div>}
     {loading&&!listing?<div className="cf-loading" role="status"><LoaderCircle size={19} className="cf-spin"/><span>Opening {category.name.toLowerCase()}…</span></div>:!listing?null:!listing.files.length?<div className="cf-empty"><category.Icon size={29}/><strong>No {displaySection==='edit'?'editing projects':category.name.toLowerCase()} yet</strong></div>:<div className="cf-layout">
       <div className="cf-list-pane" aria-busy={loading}><div className="cf-list-summary"><span>{query?`${visible.length} of ${listing.files.length}`:listing.files.length} {listing.files.length===1?'file':'files'}</span>{listing.truncated&&<span title="Open the folder to see the full collection">First 2,000 shown</span>}</div>
-        <div className="cf-list" aria-label={`${category.name} files`}>
-          {groups.map(({variant,files})=>{const Icon=mediaRoleIcon(files[0].path,variant);return <section className="cf-variant" key={variant} aria-label={variant}>{displaySection!=='edit'&&<h3><Icon size={13} aria-hidden="true"/>{variant}</h3>}{files.map(file=>{const Icon=file.kind==='project'?SquarePen:file.kind==='audio'?Headphones:file.kind==='image'?Image:FileVideo;const duplicate=(nameCounts.get(`${file.variant}/${file.name.toLowerCase()}`)||0)>1;const parent=duplicate?file.relative_path.replace(/[\\/][^\\/]*$/,''):'';const detail=parent&&parent!==file.name?parent:'';return <button type="button" className={`cf-file ${selected?.path===file.path?'selected':''}`} key={file.path} aria-pressed={selected?.path===file.path} title={file.kind==='project'?`${file.relative_path} · Double-click to open`:file.relative_path} onContextMenu={event=>{selection.current.set(displaySection,file.path);setSelectedPath(file.path);onContextMenu(event,file.name,[...(file.kind==='project'?[{label:projectAction(file.name),action:()=>void openProject(file)}]:[]),{label:'Open file location',action:()=>void openFolder(file.path.replace(/[\\/][^\\/]*$/,''))}]);}} onClick={()=>{selection.current.set(displaySection,file.path);setSelectedPath(file.path);}} onDoubleClick={()=>{if(file.kind==='project')void openProject(file);}}><Icon size={15}/><span>{file.name}</span>{detail&&<small>{detail}</small>}</button>;})}</section>;})}
+        <div className="cf-list" tabIndex={0} onKeyDown={event=>{
+          if((event.ctrlKey||event.metaKey)&&event.key.toLowerCase()==='a'){event.preventDefault();setSelectedPaths(ordered);selections.current.set(displaySection,ordered);}
+          if(event.key==='Escape'){pointer.current=null;setSelectedPaths([]);selections.current.set(displaySection,[]);}
+        }} aria-label={`${category.name} files`}>
+          {groups.map(({variant,files})=>{const Icon=mediaRoleIcon(files[0].path,variant);return <section className="cf-variant" key={variant} aria-label={variant}>{displaySection!=='edit'&&<h3><Icon size={13} aria-hidden="true"/>{variant}</h3>}{files.map(file=>{const Icon=file.kind==='project'?SquarePen:file.kind==='audio'?Headphones:file.kind==='image'?Image:FileVideo;const duplicate=(nameCounts.get(`${file.variant}/${file.name.toLowerCase()}`)||0)>1;const parent=duplicate?file.relative_path.replace(/[\\/][^\\/]*$/,''):'';const detail=parent&&parent!==file.name?parent:'';return <button type="button" className={`cf-file ${visibleSelection.includes(file.path)?'selected':''}`} key={file.path} aria-pressed={visibleSelection.includes(file.path)} title={file.kind==='project'?`${file.relative_path} · Double-click to open`:file.relative_path} onContextMenu={event=>{if(!visibleSelection.includes(file.path))choose(file);onContextMenu(event,file.name,[...(file.kind==='project'?[{label:projectAction(file.name),action:()=>void openProject(file)}]:[]),{label:'Open file location',action:()=>void openFolder(file.path.replace(/[\\/][^\\/]*$/,''))}]);}} onPointerDown={event=>pointerDown(event,file)} onPointerMove={pointerMove} onPointerUp={()=>{pointer.current=null;}} onPointerCancel={()=>{pointer.current=null;}} onDragStart={event=>event.preventDefault()} onClick={event=>{
+              if(dragged.current){dragged.current=false;return;}
+              if(event.detail===0||(!event.shiftKey&&!event.ctrlKey&&!event.metaKey))choose(file,event.shiftKey,event.ctrlKey||event.metaKey);
+            }} onDoubleClick={()=>{if(!dragged.current&&file.kind==='project')void openProject(file);}}><Icon size={15}/><span>{file.name}</span>{detail&&<small>{detail}</small>}</button>;})}</section>;})}
           {!visible.length&&<div className="cf-no-results">No matching files</div>}
         </div>
       </div>

@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { ArrowLeft, ArrowRight, Check, CheckCheck, CircleAlert, Copy, FileAudio, Folder, FolderInput, LoaderCircle, Network, Plus, ShieldCheck, X } from "lucide-react";
 import type { CreateIngestClient } from "./NewIngestClient";
+import { RetainedView } from "./RetainedView";
 import { GroupWorkspace } from "./GroupWorkspace";
 import "./IngestWorkspace.css";
 import { ClientLabel, parseClientLabel } from "./ClientLabel";
@@ -155,13 +156,13 @@ export function IngestWorkspace({projectRoot, projectTitle, clients, onBack, onC
     {error && !confirmationOpen && <div className="ig-alert" role="alert"><CircleAlert size={16}/><span>{error}</span><button className="ig-icon-button" aria-label="Dismiss error" onClick={() => setError("")}><X size={14}/></button></div>}
     {lease.locked && !busy && <div className="ig-alert"><ShieldCheck size={16}/><span>Someone else is working on this import. You can look around while they finish.<details><summary>Session details</summary><pre>{lease.owner}</pre>{lease.stale && <button className="ig-button" onClick={async () => { try { await invoke("ingest_recover_stale_lease", {projectRoot}); setLease({locked:false, owner:null, stale:false}); await load(); } catch(e) { setError(String(e)); } }}>Recover inactive session</button>}</details></span></div>}
     {!loaded ? <div className="ig-loading"><LoaderCircle className="ig-spin" size={20}/> Opening your media…</div> : <>
-    {step === 1 && <>
+    <RetainedView active={step===1}>
       {resolvingSources && <p className="ig-quiet-note"><LoaderCircle className="ig-spin" size={15}/> Finding media files...</p>}
       <MediaSources staged={staged} copied={manifest.files.filter(file=>mediaKind(file.name)).map(file=>({id:file.id,path:file.inbox_path,name:file.name,kind:mediaKind(file.name)!,role:file.role,size:file.size,status:file.status,source_name:file.source_name||basename(file.source)}))} disabled={readOnly} onBrowse={()=>setSourceBrowser(true)} onRemove={path=>setStaged(current=>current.filter(item=>item.path!==path))} onType={setSourceTypes}/>
       {videosNeedType > 0 && <p className="ig-quiet-note"><CircleAlert size={14}/> {videosNeedType} video{videosNeedType===1?' needs':'s need'} a type.</p>}
-    </>}
+    </RetainedView>
 
-    {step===2&&<>{filedNotice&&<div className="ig-success ig-group-filed-notice"><CheckCheck size={17}/><span><strong>Media organised</strong><small>The selected media is in its client folders. Add late media whenever it arrives.</small></span></div>}<GroupWorkspace files={manifest.files} clients={clientOptions} disabled={readOnly} onAssign={assignFiles} onCreateClient={onCreateClient}/></>}
+    <RetainedView active={step===2}>{filedNotice&&<div className="ig-success ig-group-filed-notice"><CheckCheck size={17}/><span><strong>Media organised</strong><small>The selected media is in its client folders. Add late media whenever it arrives.</small></span></div>}<GroupWorkspace files={manifest.files} clients={clientOptions} disabled={readOnly} onAssign={assignFiles} onCreateClient={onCreateClient}/></RetainedView>
     </>}
     </div>
     {sourceBrowser && <MediaSourceBrowser projectRoot={projectRoot} onAdd={addSources} onClose={() => setSourceBrowser(false)}/>}

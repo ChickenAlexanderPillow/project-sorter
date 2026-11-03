@@ -12,6 +12,7 @@ import { check, type Update } from "@tauri-apps/plugin-updater";
 import { InlineVideoPlayer } from "./components/InlineVideoPlayer";
 import { ArrowDown, ArrowUp, ArrowUpDown, Bell, Check, ChevronDown, ChevronRight, ChevronsUpDown, Clapperboard, CloudUpload, Copy, FolderInput, FolderKanban, Link2, LoaderCircle, Minus, Plus, RefreshCw, Search, Settings2, Square, Trash2, Wrench, X } from "lucide-react";
 import { IngestWorkspace } from "./components/IngestWorkspace";
+import { isNativeFileDragActive } from "./components/nativeFileDrag";
 import { ClientWorkspace } from "./components/ClientWorkspace";
 import { ClientLabel, parseClientLabel } from "./components/ClientLabel";
 import pepperIcon from "../src-tauri/icons/128x128.png";
@@ -1229,6 +1230,7 @@ export default function App() {
     const attach = async () => {
       const appWindow = getCurrentWindow();
       const unlistenFn = await appWindow.onDragDropEvent(async (event) => {
+        if(isNativeFileDragActive())return;
         const payload = event.payload as DragDropEvent;
         if(ingestOpenRef.current){
           if(payload.type==="drop"&&payload.paths.length)window.dispatchEvent(new CustomEvent("pepper-ingest-drop",{detail:payload.paths}));
@@ -3017,7 +3019,6 @@ export default function App() {
                             </time>
                           </div>
                           <InlineVideoPlayer
-                            key={selectedApprovalPath}
                             className="approval-video-player"
                             src={convertFileSrc(selectedApprovalPath)}
                             onContextMenu={(event) => {

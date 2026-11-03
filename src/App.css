@@ -21,6 +21,7 @@
 :focus,
 :focus-visible {
   outline: none !important;
+  box-shadow: none !important;
 }
 
 body {
@@ -1621,13 +1622,6 @@ button.accent {
 }
 
 .promotion-preview { margin: 12px 0; }
-.video-fade-in {
-  opacity: 0;
-  transition: opacity 0.5s ease;
-}
-
-.video-fade-in.video-loaded { opacity: 1; }
-
 .promotion-preview .pepper-video-skin { max-height: 420px; }
 .promotion-clean-label,
 .promotion-preview-empty { color: var(--pepper-muted); font-size: 11px; }
@@ -3954,3 +3948,19 @@ input[type="radio"] {
 .ingest-error{padding:8px 10px;font-size:12px}
 @media(max-width:1050px){.ingest-workspace{padding:16px 16px 10px}.ingest-content{margin-top:14px}.ingest-file{flex-wrap:wrap}.ingest-file-name{flex-basis:55%}.ingest-preview{position:static;width:auto;max-width:none;margin:12px 4px}.ingest-group-toggle{align-items:flex-start;flex-direction:column;gap:4px}}
 @media(max-width:700px){.ingest-heading{flex-wrap:wrap}.ingest-save-state{margin-left:auto}.ingest-steps{overflow:auto}.ingest-steps button{flex:0 0 auto}.ingest-footer{align-items:flex-start;gap:10px;flex-direction:column}.ingest-footer>div{width:100%;justify-content:flex-end}}
+
+/* View changes retain state without leaving hidden players interactive. */
+.pepper-retained-view[hidden]{display:none!important}
+
+/* Neutral skins define their own white ring; cover audio, video and fullscreen. */
+.media-skin,.media-container,.pepper-video-skin,.pepper-audio-compact{
+  --media-ring:transparent!important;
+  --media-focus-ring-color:transparent!important;
+}
+.media-skin:focus,.media-skin:focus-visible,.media-container:focus,.media-container:focus-visible,
+.media-skin :focus,.media-skin :focus-visible,video:focus,video:focus-visible,audio:focus,audio:focus-visible{
+  outline:0!important;outline-offset:0!important;box-shadow:none!important;
+}
+.media-skin .media-time-group,.media-skin .media-time,.media-skin .media-time-toggle,.media-skin .media-time-display{
+  border-radius:0!important;
+}

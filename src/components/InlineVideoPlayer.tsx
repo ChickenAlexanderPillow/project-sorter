@@ -1,6 +1,8 @@
 import { NeutralVideoSkin, Video, VideoPlayer, usePlayer } from "@videojs/react/video";
 import "@videojs/react/video/neutral-skin.css";
-import { useState, type MouseEvent } from "react";
+import { type MouseEvent } from "react";
+
+import { MediaTransition } from './MediaTransition';
 
 type InlineVideoPlayerProps = {
   src: string;
@@ -8,6 +10,7 @@ type InlineVideoPlayerProps = {
   onContextMenu?: (event: MouseEvent<HTMLDivElement>) => void;
   onError?: () => void;
   compact?: boolean;
+  onReady?:()=>void;
 };
 
 const PLAYBACK_RATES = [1, 2, 4];
@@ -33,21 +36,19 @@ function PlaybackSpeedButton() {
   );
 }
 
-export function InlineVideoPlayer({ src, className, onContextMenu, onError, compact = false }: InlineVideoPlayerProps) {
-  const [loadedSrc,setLoadedSrc]=useState<string|null>(null);
+export function InlineVideoPlayer(props: InlineVideoPlayerProps) {
+  // SourceMediaPreview owns the cross-media transition; standalone Review and
+  // promotion players use this same transition around their video surface.
+  if(props.onReady)return <VideoSurface {...props}/>;
+  return <MediaTransition source={props.src} onError={props.onError} render={(src,onReady,onError)=><VideoSurface {...props} src={src} onReady={onReady} onError={onError}/>}/>;
+}
+
+function VideoSurface({ src, className, onContextMenu, onError, onReady, compact = false }: InlineVideoPlayerProps) {
   return (
     <VideoPlayer>
-      <div className={compact ? `pepper-preview-player${loadedSrc===src?" media-preview-loaded":""}` : undefined} onContextMenu={onContextMenu}>
-        <NeutralVideoSkin className={`pepper-video-skin ${compact ? "pepper-video-compact" : ""} ${className ?? ""}`} style={{ width: "100%", aspectRatio: "16 / 9" }}>
-          <Video
-            key={src}
-            className="video-fade-in"
-            src={src}
-            playsInline
-            preload="metadata"
-            onError={onError}
-            onLoadedData={(event) => {event.currentTarget.classList.add("video-loaded");setLoadedSrc(src);}}
-          />
+      <div className={compact ? 'pepper-preview-player' : 'pepper-player-surface'} onContextMenu={onContextMenu}>
+        <NeutralVideoSkin className={`pepper-video-skin ${compact ? 'pepper-video-compact' : ''} ${className ?? ''}`} style={{ width: '100%', aspectRatio: '16 / 9' }}>
+          <Video key={src} src={src} playsInline preload="metadata" onError={onError} onLoadedData={onReady}/>
           {!compact && <PlaybackSpeedButton />}
         </NeutralVideoSkin>
       </div>
