@@ -1737,6 +1737,23 @@ button.accent {
   height: 42px;
 }
 
+.mariya-season-select {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  font-size: 12px;
+}
+
+.mariya-season-select select {
+  padding: 5px 8px;
+  border: 1px solid var(--pepper-line, #414141);
+  border-radius: 6px;
+  background: var(--pepper-surface-raised, #232323);
+  color: inherit;
+  font: inherit;
+}
+
 .inline-types {
   display: flex;
   flex-wrap: wrap;

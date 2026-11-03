@@ -162,7 +162,7 @@ export function IngestWorkspace({projectRoot, projectTitle, clients, onBack, onC
       {videosNeedType > 0 && <p className="ig-quiet-note"><CircleAlert size={14}/> {videosNeedType} video{videosNeedType===1?' needs':'s need'} a type.</p>}
     </RetainedView>
 
-    <RetainedView active={step===2}>{filedNotice&&<div className="ig-success ig-group-filed-notice"><CheckCheck size={17}/><span><strong>Media organised</strong><small>The selected media is in its client folders. Add late media whenever it arrives.</small></span></div>}<GroupWorkspace files={manifest.files} clients={clientOptions} disabled={readOnly} onAssign={assignFiles} onCreateClient={onCreateClient}/></RetainedView>
+    <RetainedView active={step===2}>{filedNotice&&<div className="ig-success ig-group-filed-notice"><CheckCheck size={17}/><span><strong>Media organised</strong><small>The selected media is in its client folders. Add late media whenever it arrives.</small></span></div>}<GroupWorkspace projectRoot={projectRoot} files={manifest.files} clients={clientOptions} disabled={readOnly} onAssign={assignFiles} onCreateClient={onCreateClient}/></RetainedView>
     </>}
     </div>
     {sourceBrowser && <MediaSourceBrowser projectRoot={projectRoot} onAdd={addSources} onClose={() => setSourceBrowser(false)}/>}

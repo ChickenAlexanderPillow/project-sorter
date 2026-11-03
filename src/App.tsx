@@ -11,6 +11,7 @@ import { openPath } from "@tauri-apps/plugin-opener";
 import { check, type Update } from "@tauri-apps/plugin-updater";
 import { InlineVideoPlayer } from "./components/InlineVideoPlayer";
 import { ArrowDown, ArrowUp, ArrowUpDown, Bell, Check, ChevronDown, ChevronRight, ChevronsUpDown, Clapperboard, CloudUpload, Copy, FolderInput, FolderKanban, Link2, LoaderCircle, Minus, Plus, RefreshCw, Search, Settings2, Square, Trash2, Wrench, X } from "lucide-react";
+import { MariyaSeasonSelect, useMariyaSeasons } from "./components/MariyaSeasonSelect";
 import { IngestWorkspace } from "./components/IngestWorkspace";
 import { isNativeFileDragActive } from "./components/nativeFileDrag";
 import { ClientWorkspace } from "./components/ClientWorkspace";
@@ -1137,6 +1138,8 @@ export default function App() {
     && (!loading || clientListRevealedRoot === projectRoot || clients.length > 0 || scanProgress?.phase !== "clients");
 
   const isMariyaMeetsRoot = projectRoot.split(/[\\/]/).pop()?.toLowerCase() === "8_mariya meets";
+  const needsMariyaSeason = isMariyaMeetsRoot && newClientType === "MARIYAMEETS";
+  const mariyaSeasons = useMariyaSeasons(projectRoot, showNewClientForm && needsMariyaSeason, createdMariyaSeason);
 
   const advancedStats = useMemo(() => {
     const clientsWithExports = clients.filter((client) =>
@@ -1779,7 +1782,7 @@ export default function App() {
       return;
     }
     const baseName = newClientName.trim();
-    if (!baseName) return;
+    if (!baseName || (needsMariyaSeason && !mariyaSeasons.season)) return;
     const customType = normalizeClientInput(customClientType).toUpperCase();
     if (newClientType === "CUSTOM" && !customType) {
       setError("Enter a custom mode name.");
@@ -1800,6 +1803,7 @@ export default function App() {
         projectRoot,
         clientName: normalized,
         clientType: newClientType,
+        season: needsMariyaSeason ? mariyaSeasons.season : null,
         huddleTemplate: newClientType === "HUDDLE" ? huddleTemplate : null,
       });
       setNewClientName("");
@@ -2219,7 +2223,7 @@ export default function App() {
         </div>
       )}
 
-      {ingestOpen ? <IngestWorkspace projectRoot={projectRoot} projectTitle={formatProjectName(projectRoot.split(/[\\/]/).filter(Boolean).slice(-1)[0] || "Import media")} clients={clients} onBack={()=>setIngestOpen(false)} onCreateClient={async(name,clientMode,template)=>{await invoke("create_client",{projectRoot,clientName:`${normalizeClientInput(name)}_${clientMode}`,clientType:clientMode,huddleTemplate:clientMode==='HUDDLE'?template:null});await refreshClients(undefined,false);}} /> : <div className="app-content">
+      {ingestOpen ? <IngestWorkspace projectRoot={projectRoot} projectTitle={formatProjectName(projectRoot.split(/[\\/]/).filter(Boolean).slice(-1)[0] || "Import media")} clients={clients} onBack={()=>setIngestOpen(false)} onCreateClient={async(name,clientMode,template,season)=>{await invoke("create_client",{projectRoot,clientName:`${normalizeClientInput(name)}_${clientMode}`,clientType:clientMode,season:season||null,huddleTemplate:clientMode==='HUDDLE'?template:null});await refreshClients(undefined,false);}} /> : <div className="app-content">
         <section className="panel">
           <div className="panel-project-root">
             <div className="project-switcher">
@@ -2592,7 +2596,8 @@ export default function App() {
                     CUSTOM
                   </button>
                 </div>
-                <div className={`client-extra ${newClientType === "CUSTOM" || newClientType === "HUDDLE" ? "has-options" : ""}`}>
+                <div className={`client-extra ${newClientType === "CUSTOM" || newClientType === "HUDDLE" || needsMariyaSeason ? "has-options" : ""}`}>
+                {needsMariyaSeason && <MariyaSeasonSelect selection={mariyaSeasons} />}
                 {newClientType === "CUSTOM" && (
                   <input
                     className="inline-input custom-mode-input"
@@ -2636,6 +2641,7 @@ export default function App() {
                     className="primary icon-button inline-action-button"
                     aria-label="Create client"
                     title="Create client"
+                    disabled={needsMariyaSeason && (mariyaSeasons.loading || !mariyaSeasons.season)}
                     onClick={handleAddClient}
                   >
                     <Check size={18} strokeWidth={2.2} aria-hidden="true" />

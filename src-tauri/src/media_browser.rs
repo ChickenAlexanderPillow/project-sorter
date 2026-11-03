@@ -395,11 +395,11 @@ mod tests {
     fn inline_client_creation_builds_a_valid_destination_without_replacing_existing_clients() {
         let temp=tempfile::tempdir().unwrap();let root=temp.path().to_string_lossy().into_owned();
         let name="Bright_Start_SOCIAL".to_string();
-        crate::create_client_sync(root.clone(),name.clone(),"SOCIAL".into(),None).unwrap();
+        crate::create_client_sync(root.clone(),name.clone(),"SOCIAL".into(),None,None).unwrap();
         let client=temp.path().join(&name).to_string_lossy().into_owned();
         assert_eq!(valid_client_paths(vec![client.clone()]),vec![client.clone()]);
         fs::write(Path::new(&client).join("keep.txt"),b"existing material").unwrap();
-        assert!(crate::create_client_sync(root,name,"SOCIAL".into(),None).is_err());
+        assert!(crate::create_client_sync(root,name,"SOCIAL".into(),None,None).is_err());
         assert_eq!(fs::read(Path::new(&client).join("keep.txt")).unwrap(),b"existing material");
     }
 

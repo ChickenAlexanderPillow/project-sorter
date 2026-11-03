@@ -1860,6 +1860,30 @@ fn season_number(name: &str) -> u32 {
     name.get(6..).and_then(|value| value.trim().parse().ok()).unwrap_or(0)
 }
 
+fn mariya_meets_seasons(root: &Path) -> Result<Vec<String>, String> {
+    let mut seasons = Vec::new();
+    for entry in fs::read_dir(root).map_err(|error| error.to_string())? {
+        let entry = entry.map_err(|error| error.to_string())?;
+        let name = entry.file_name().to_string_lossy().to_string();
+        if entry.file_type().map_err(|error| error.to_string())?.is_dir()
+            && name.to_ascii_uppercase().starts_with("SEASON ") && season_number(&name) > 0 {
+            seasons.push(name);
+        }
+    }
+    seasons.sort_by(|left, right| season_number(right).cmp(&season_number(left)).then_with(|| right.cmp(left)));
+    Ok(seasons)
+}
+
+#[tauri::command]
+fn list_mariya_meets_seasons(project_root: String) -> Result<Vec<String>, String> {
+    let root = PathBuf::from(project_root);
+    if !root.file_name().and_then(|name| name.to_str())
+        .map(|name| name.eq_ignore_ascii_case("8_Mariya Meets")).unwrap_or(false) {
+        return Err("Seasons are only available in 8_Mariya Meets".to_string());
+    }
+    mariya_meets_seasons(&root)
+}
+
 #[tauri::command]
 fn create_mariya_meets_season(project_root: String) -> Result<String, String> {
     let root = PathBuf::from(project_root);
@@ -2146,32 +2170,30 @@ fn set_watch_root(
 }
 
 #[tauri::command]
-async fn create_client(project_root:String,client_name:String,client_type:String,huddle_template:Option<String>)->Result<(),String>{
-    tauri::async_runtime::spawn_blocking(move||create_client_sync(project_root,client_name,client_type,huddle_template)).await.map_err(|error|error.to_string())?
+async fn create_client(project_root:String,client_name:String,client_type:String,huddle_template:Option<String>,season:Option<String>)->Result<(),String>{
+    tauri::async_runtime::spawn_blocking(move||create_client_sync(project_root,client_name,client_type,huddle_template,season)).await.map_err(|error|error.to_string())?
 }
 fn create_client_sync(
     project_root: String,
     client_name: String,
     client_type: String,
     huddle_template: Option<String>,
+    season: Option<String>,
 ) -> Result<(), String> {
     let project_root = PathBuf::from(project_root);
     let is_mariya_meets = project_root.file_name().and_then(|value| value.to_str())
         .map(|value| value.eq_ignore_ascii_case("8_Mariya Meets")).unwrap_or(false);
+    if season.is_some() && (!is_mariya_meets || client_type != "MARIYAMEETS") {
+        return Err("Season selection is only available for Mariya Meets clients in 8_Mariya Meets".to_string());
+    }
     let client_parent = if is_mariya_meets {
-        let mut latest: Option<(u32, PathBuf)> = None;
-        for entry in fs::read_dir(&project_root).map_err(|error| error.to_string())? {
-            let entry = entry.map_err(|error| error.to_string())?;
-            let name = entry.file_name().to_string_lossy().to_string();
-            if entry.file_type().map(|kind| kind.is_dir()).unwrap_or(false)
-                && name.to_ascii_uppercase().starts_with("SEASON ") {
-                let number = season_number(&name);
-                if latest.as_ref().map(|current| number > current.0).unwrap_or(true) {
-                    latest = Some((number, entry.path()));
-                }
-            }
-        }
-        latest.map(|(_, path)| path).ok_or_else(|| "Create a season before adding a Mariya Meets project".to_string())?
+        let seasons = mariya_meets_seasons(&project_root)?;
+        let selected = match season {
+            Some(selected) if seasons.contains(&selected) => selected,
+            Some(_) => return Err("Selected season no longer exists. Choose an existing season.".to_string()),
+            None => seasons.into_iter().next().ok_or_else(|| "Create a season before adding a Mariya Meets project".to_string())?,
+        };
+        project_root.join(selected)
     } else { project_root };
     let client_root = client_parent.join(&client_name);
     if client_root.exists() {
@@ -2736,6 +2758,7 @@ pub fn run() {
             get_project_show_catalog,
             create_project_folder,
             create_mariya_meets_season,
+            list_mariya_meets_seasons,
             scan_project_root,
             scan_approval_progress,
             promote_latest_export,
@@ -2771,6 +2794,30 @@ pub fn run() {
 mod tests {
     use super::*;
     use std::fs;
+
+    #[test]
+    fn mariya_clients_use_selected_season_and_default_to_latest() {
+        let temp = test_dir("mariya-seasons");
+        let root = temp.join("8_Mariya Meets");
+        for name in ["SEASON 1", "SEASON 2", "SEASON 10", "XX ASSETS"] {
+            fs::create_dir_all(root.join(name)).unwrap();
+        }
+        fs::write(root.join("SEASON 99"), b"not a directory").unwrap();
+        let root_string = root.to_string_lossy().to_string();
+        assert_eq!(list_mariya_meets_seasons(root_string.clone()).unwrap(), vec!["SEASON 10", "SEASON 2", "SEASON 1"]);
+        create_client_sync(root_string.clone(), "Guest_MARIYAMEETS".into(), "MARIYAMEETS".into(), None, Some("SEASON 1".into())).unwrap();
+        assert!(root.join("SEASON 1/Guest_MARIYAMEETS/02_EDIT").is_dir());
+        assert!(!root.join("SEASON 10/Guest_MARIYAMEETS").exists());
+        create_client_sync(root_string.clone(), "Latest_MARIYAMEETS".into(), "MARIYAMEETS".into(), None, None).unwrap();
+        assert!(root.join("SEASON 10/Latest_MARIYAMEETS").is_dir());
+        for invalid in ["SEASON 3", "../SEASON 1", "XX ASSETS"] {
+            assert!(create_client_sync(root_string.clone(), "Invalid_MARIYAMEETS".into(), "MARIYAMEETS".into(), None, Some(invalid.into())).is_err());
+        }
+        assert!(!root.join("SEASON 3").exists());
+        assert!(create_client_sync(root_string, "Other_SOCIAL".into(), "SOCIAL".into(), None, Some("SEASON 1".into())).is_err());
+        assert!(list_mariya_meets_seasons(temp.to_string_lossy().to_string()).is_err());
+        fs::remove_dir_all(temp).unwrap();
+    }
 
     #[cfg(target_os = "windows")]
     #[test]
