@@ -2835,13 +2835,12 @@ export default function App() {
                     ].filter((detail): detail is string => Boolean(detail));
                 const lastApprovalVersion = sortedApprovalVersions[0];
                 const pendingVersion = exports.approval_progress_version;
-                const workingApprovalVersion = exports.approval_in_progress && pendingVersion !== null
-                  ? sortedApprovalVersions.find((approval) => approval.version < pendingVersion)
-                  : undefined;
-                const selectedApprovalVersion = exports.approval_in_progress
-                  ? workingApprovalVersion
-                  : sortedApprovalVersions.find((item) => item.relative_path === selectedVersionByClient[client.name])
-                    ?? lastApprovalVersion;
+                const playableApprovalVersions = sortedApprovalVersions.filter((approval) =>
+                  !exports.approval_in_progress || approval.version !== pendingVersion,
+                );
+                const selectedApprovalVersion = playableApprovalVersions.find(
+                  (item) => item.relative_path === selectedVersionByClient[client.name],
+                ) ?? playableApprovalVersions[0];
                 const selectedApprovalPath = selectedApprovalVersion
                   ? `${client.path.replace(/[\\/]+$/, "")}\\03_EXPORTS\\${selectedApprovalVersion.relative_path.replace(/[\\/]+/g, "\\")}`
                   : null;
