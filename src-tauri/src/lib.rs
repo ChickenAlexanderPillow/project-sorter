@@ -214,6 +214,18 @@ fn has_adobe_export_intermediate(exports_dir: &Path) -> bool {
     })
 }
 
+fn next_approval_version(status: &ExportStatus, pending_filename: Option<&str>) -> u32 {
+    status.approval_versions.iter()
+        .chain(status.versions.iter().filter(|export| {
+            Some(export.filename.as_str()) != pending_filename
+        }))
+        .map(|export| export.version)
+        .chain(status.final_version)
+        .max()
+        .unwrap_or(0)
+        .saturating_add(1)
+}
+
 fn approval_progress_for_client(client_name: &str, client_path: &Path) -> Option<ApprovalProgressStatus> {
     let progress_dir = client_path.join("03_EXPORTS/APPROVAL/JSON/.staging");
     let mut active: Vec<(std::time::SystemTime, PathBuf)> = fs::read_dir(&progress_dir)
@@ -317,13 +329,7 @@ fn approval_progress_for_client(client_name: &str, client_path: &Path) -> Option
         .and_then(|stem| stem.to_str())
         .and_then(|stem| versioned_stem(stem).ok())
         .and_then(|(_, version)| version)
-        .or_else(|| {
-            if status.latest_filename.as_deref() == Some(filename.as_str()) {
-                status.latest_version
-            } else {
-                status.latest_version.map(|version| version.saturating_add(1)).or(Some(1))
-            }
-        });
+        .or_else(|| Some(next_approval_version(&status, Some(&filename))));
     Some(ApprovalProgressStatus {
         client_name: client_name.to_string(),
         phase: Some("Waiting for export to stabilize".to_string()),
@@ -930,7 +936,10 @@ fn scan_export_status(client_path: &Path) -> ExportStatus {
         })
     };
     let approval_progress_version = if clean_export_in_progress {
-        Some(latest.map_or(1, |export| export.version.saturating_add(1)))
+        Some(display_versions.iter().chain(&approval_versions)
+            .map(|export| export.version)
+            .chain(promotion_record.as_ref().map(|record| record.version))
+            .max().unwrap_or(0).saturating_add(1))
     } else {
         approval_in_progress
             .then(|| latest.map(|export| export.version))
@@ -2964,9 +2973,21 @@ mod tests {
         assert_eq!(progress.pending_version, Some(5));
         assert_eq!(progress.phase.as_deref(), Some("Waiting for export to stabilize"));
 
+        // The approval history remains authoritative if the clean source has
+        // moved away, or its scan fails during the export handoff.
+        fs::remove_file(pending.join("LT_GAME_PRODUCT_V4.mp4")).unwrap();
+        assert_eq!(scan_export_status(&client).approval_progress_version, Some(5));
+        assert_eq!(approval_progress_for_client("LT_GAME_PRODUCT", &client).unwrap().pending_version, Some(5));
+
         fs::remove_file(intermediate).unwrap();
         assert!(!scan_export_status(&client).approval_in_progress);
         assert!(approval_progress_for_client("LT_GAME_PRODUCT", &client).is_none());
+        // After Adobe muxes the temporary streams into an unnumbered MP4,
+        // that source must stay V5 rather than resetting to V1.
+        let raw_export = exports.join("Product Spotlight.mp4");
+        fs::write(&raw_export, b"new export").unwrap();
+        assert_eq!(approval_progress_for_client("LT_GAME_PRODUCT", &client).unwrap().pending_version, Some(5));
+        fs::remove_file(raw_export).unwrap();
         // Genuine standalone M4V deliverables must still be accepted.
         fs::write(exports.join("Product Spotlight.m4v"), b"standalone").unwrap();
         assert_eq!(scan_video_versions_in(&exports, &exports).unwrap().len(), 1);

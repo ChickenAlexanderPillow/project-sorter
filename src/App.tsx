@@ -2795,10 +2795,10 @@ export default function App() {
                   : latestApprovalVersion?.version ?? version;
                 const exportStatusSummary = exportDisplayVersion !== null && exportLabel !== "FINAL"
                   ? (
-                    <>
+                    <span className="export-status-summary">
                       <span className="version-label export-status-version">V{exportDisplayVersion}</span>
                       <span className="export-status-label">{exportLabel}</span>
-                    </>
+                    </span>
                   )
                   : <span className="export-status-label">{exportLabel}</span>;
                 const tooltipVersionNumbers = Array.from(new Set([

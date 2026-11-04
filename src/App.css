@@ -4127,6 +4127,16 @@ input[type="radio"] {
   max-width: 100%;
   white-space: nowrap;
 }
+.export-status-summary {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  max-width: 100%;
+}
+.export-status-summary > .export-status-version {
+  flex: 0 0 auto;
+}
 .client-list .export-status-label {
   display: block;
   min-width: 0;
