@@ -14,3 +14,5 @@
 .ig-extra-clients{font-size:10px;color:#999}
 .ig-destination>summary>.pepper-client-label{flex:1}
 .ig-destination .pepper-client-label-name{font-size:12px;font-weight:500}
+
+.pepper-client-label .season-tag{margin-left:-4px;color:#aaa;background:#292929;font-weight:500;letter-spacing:.2px}

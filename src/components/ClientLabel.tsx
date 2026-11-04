@@ -1,3 +1,4 @@
+import { clientTypeLabel } from "./clientTypes";
 import "./ClientLabel.css";
 /** Presentation only: the stored client token and its casing are never changed. */
 export function parseClientLabel(raw:string) {
@@ -8,7 +9,8 @@ export function parseClientLabel(raw:string) {
   return {name:(type ? parts.slice(0, -1) : parts).join(" "), type, normalized};
 }
 
-export function ClientLabel({name}:{name:string}) {
+export function ClientLabel({name,season}:{name:string;season?:string|null}) {
   const label = parseClientLabel(name);
-  return <span className="pepper-client-label"><span className="pepper-client-label-name">{label.name}</span>{label.type && <span className={`client-tag ${label.type.toLowerCase()}`}>{label.type}</span>}</span>;
+  const seasonNumber = season?.match(/^SEASON\s+(\d+)$/i)?.[1];
+  return <span className="pepper-client-label"><span className="pepper-client-label-name">{label.name}</span>{label.type && <span className={`client-tag ${label.type.toLowerCase()}`}>{clientTypeLabel(label.type)}</span>}{seasonNumber && <span className="client-tag season-tag" title={`Season ${seasonNumber}`} aria-label={`Season ${seasonNumber}`}>S{seasonNumber}</span>}</span>;
 }

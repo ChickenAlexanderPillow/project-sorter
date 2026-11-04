@@ -192,6 +192,28 @@ fn approval_version_from_progress_filename(filename: &str) -> Option<u32> {
         .map(|(_, version)| version.unwrap_or(1))
 }
 
+fn is_adobe_export_intermediate(path: &Path) -> bool {
+    if !path.extension().is_some_and(|ext| ext.eq_ignore_ascii_case("m4v")) {
+        return false;
+    }
+    let Some(stem) = path.file_stem().and_then(|stem| stem.to_str()) else {
+        return false;
+    };
+    let mut parts = stem.rsplitn(3, '.');
+    let numeric = |part: Option<&str>| part.is_some_and(|part| {
+        !part.is_empty() && part.bytes().all(|byte| byte.is_ascii_digit())
+    });
+    numeric(parts.next()) && numeric(parts.next())
+        && parts.next().is_some_and(|base| !base.is_empty())
+}
+
+fn has_adobe_export_intermediate(exports_dir: &Path) -> bool {
+    fs::read_dir(exports_dir).ok().into_iter().flatten().flatten().any(|entry| {
+        entry.file_type().is_ok_and(|kind| kind.is_file())
+            && is_adobe_export_intermediate(&entry.path())
+    })
+}
+
 fn approval_progress_for_client(client_name: &str, client_path: &Path) -> Option<ApprovalProgressStatus> {
     let progress_dir = client_path.join("03_EXPORTS/APPROVAL/JSON/.staging");
     let mut active: Vec<(std::time::SystemTime, PathBuf)> = fs::read_dir(&progress_dir)
@@ -254,6 +276,16 @@ fn approval_progress_for_client(client_name: &str, client_path: &Path) -> Option
     // Show the pending version while an unnumbered source waits for the
     // watcher's stability check, before it creates its approval marker.
     let exports_dir = client_path.join("03_EXPORTS");
+    // Adobe keeps its numbered elementary stream until muxing finishes, even
+    // when rendering is paused. Its presence is stronger evidence than age.
+    if has_adobe_export_intermediate(&exports_dir) {
+        let status = scan_export_status(client_path);
+        return Some(ApprovalProgressStatus {
+            client_name: client_name.to_string(),
+            phase: Some("Waiting for export to stabilize".to_string()),
+            pending_version: status.approval_progress_version,
+        });
+    }
     let mut candidates: Vec<(std::time::SystemTime, String)> = fs::read_dir(&exports_dir)
         .ok()?
         .flatten()
@@ -667,7 +699,8 @@ fn scan_video_versions_in(root: &Path, directory: &Path) -> Result<Vec<ExportVer
             .unwrap_or_default();
         // Approval renders and NLE intermediates are never promotion sources.
         let upper = stem.to_ascii_uppercase();
-        if upper.contains("_APPROVAL") || upper.contains(".PART-") {
+        if upper.contains("_APPROVAL") || upper.contains(".PART-")
+            || is_adobe_export_intermediate(&path) {
             continue;
         }
         let (_, version) = versioned_stem(stem)?;
@@ -876,7 +909,8 @@ fn scan_export_status(client_path: &Path) -> ExportStatus {
         let expected = format!("{source_stem}_APPROVAL_1080p_WM_TC.mp4");
         exports_dir.join("APPROVAL").join(expected).is_file()
     });
-    let approval_in_progress = latest.is_some_and(|export| {
+    let clean_export_in_progress = has_adobe_export_intermediate(&exports_dir);
+    let approval_in_progress = clean_export_in_progress || latest.is_some_and(|export| {
         let source_stem = Path::new(&export.filename)
             .file_stem()
             .and_then(|value| value.to_str())
@@ -885,15 +919,23 @@ fn scan_export_status(client_path: &Path) -> ExportStatus {
         let marker = exports_dir.join("APPROVAL/JSON/.staging").join(review_name);
         approval_progress_marker_is_active(&marker)
     });
-    let approval_progress_phase = latest.and_then(|export| {
-        let source_stem = Path::new(&export.filename).file_stem()?.to_str()?;
-        let review_name = format!("{source_stem}_APPROVAL_1080p_WM_TC.mp4.progress.json");
-        let marker = exports_dir.join("APPROVAL/JSON/.staging").join(review_name);
-        approval_progress_phase(&marker)
-    });
-    let approval_progress_version = approval_in_progress
-        .then(|| latest.map(|export| export.version))
-        .flatten();
+    let approval_progress_phase = if clean_export_in_progress {
+        Some("Waiting for export to stabilize".to_string())
+    } else {
+        latest.and_then(|export| {
+            let source_stem = Path::new(&export.filename).file_stem()?.to_str()?;
+            let review_name = format!("{source_stem}_APPROVAL_1080p_WM_TC.mp4.progress.json");
+            let marker = exports_dir.join("APPROVAL/JSON/.staging").join(review_name);
+            approval_progress_phase(&marker)
+        })
+    };
+    let approval_progress_version = if clean_export_in_progress {
+        Some(latest.map_or(1, |export| export.version.saturating_add(1)))
+    } else {
+        approval_in_progress
+            .then(|| latest.map(|export| export.version))
+            .flatten()
+    };
     let recorded_current = latest.is_some_and(|export| {
         promotion_record.as_ref().is_some_and(|record| {
             record.source_filename == export.filename
@@ -2893,6 +2935,42 @@ mod tests {
             "THE_BIG_SHOW.prproj"
         );
         assert_eq!(client_project_filename("DIGITAIN"), "DIGITAIN.prproj");
+    }
+
+    #[test]
+    fn adobe_intermediate_keeps_next_version_pending_without_export_conflict() {
+        let client = test_dir("adobe-export");
+        let exports = client.join("03_EXPORTS");
+        let pending = exports.join("APPROVAL/PENDING");
+        fs::create_dir_all(&pending).unwrap();
+        fs::write(pending.join("LT_GAME_PRODUCT_V4.mp4"), b"clean v4").unwrap();
+        fs::write(exports.join("APPROVAL/LT_GAME_PRODUCT_V4_APPROVAL_1080p_WM_TC.mp4"), b"review v4").unwrap();
+        let intermediate = exports.join("Product Spotlight.5596.28796.m4v");
+        fs::write(&intermediate, b"unfinished video").unwrap();
+        fs::write(exports.join("Product Spotlight.5596.28796.aac"), b"audio").unwrap();
+        // Paused Adobe exports can leave unchanged intermediates beyond the
+        // ordinary ten-minute source candidate window.
+        fs::OpenOptions::new().write(true).open(&intermediate).unwrap().set_modified(
+            std::time::SystemTime::now() - Duration::from_secs(1800)
+        ).unwrap();
+
+        let status = scan_export_status(&client);
+        assert!(status.issue.is_none(), "{:?}", status.issue);
+        assert_eq!(status.latest_version, Some(4));
+        assert_eq!(status.versions.len(), 1);
+        assert!(status.approval_in_progress);
+        assert_eq!(status.approval_progress_version, Some(5));
+        let progress = approval_progress_for_client("LT_GAME_PRODUCT", &client).unwrap();
+        assert_eq!(progress.pending_version, Some(5));
+        assert_eq!(progress.phase.as_deref(), Some("Waiting for export to stabilize"));
+
+        fs::remove_file(intermediate).unwrap();
+        assert!(!scan_export_status(&client).approval_in_progress);
+        assert!(approval_progress_for_client("LT_GAME_PRODUCT", &client).is_none());
+        // Genuine standalone M4V deliverables must still be accepted.
+        fs::write(exports.join("Product Spotlight.m4v"), b"standalone").unwrap();
+        assert_eq!(scan_video_versions_in(&exports, &exports).unwrap().len(), 1);
+        fs::remove_dir_all(client).unwrap();
     }
 
     #[test]

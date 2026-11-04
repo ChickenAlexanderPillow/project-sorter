@@ -1,3 +1,5 @@
+import { availableClientTypes, clientTypeLabel, isMariyaProject, type ClientType } from "./components/clientTypes";
+import { InterviewTypeSelect, type HuddleTemplate } from "./components/InterviewTypeSelect";
 import { Fragment, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import type { DragEvent, MouseEvent, ReactNode } from "react";
 import { createPortal } from "react-dom";
@@ -10,7 +12,7 @@ import { writeText } from "@tauri-apps/plugin-clipboard-manager";
 import { openPath } from "@tauri-apps/plugin-opener";
 import { check, type Update } from "@tauri-apps/plugin-updater";
 import { InlineVideoPlayer } from "./components/InlineVideoPlayer";
-import { ArrowDown, ArrowUp, ArrowUpDown, Bell, Check, ChevronDown, ChevronRight, ChevronsUpDown, Clapperboard, CloudUpload, Copy, FolderInput, FolderKanban, Link2, LoaderCircle, Minus, Plus, RefreshCw, Search, Settings, Settings2, Square, Trash2, Wrench, X } from "lucide-react";
+import { ArrowUpDown, Bell, Check, ChevronDown, ChevronRight, ChevronsUpDown, Clapperboard, CloudUpload, Copy, FolderInput, FolderKanban, Link2, LoaderCircle, Minus, Plus, RefreshCw, Search, Settings, Settings2, Square, Trash2, Wrench, X } from "lucide-react";
 import { MariyaSeasonSelect, useMariyaSeasons } from "./components/MariyaSeasonSelect";
 import { IngestWorkspace } from "./components/IngestWorkspace";
 import { isNativeFileDragActive } from "./components/nativeFileDrag";
@@ -321,9 +323,8 @@ const getExtension = (path: string) => {
 };
 
 
-const CLIENT_TYPES = ["EXHIBITOR", "HUDDLE", "PRODUCT", "MARIYAMEETS", "SOCIAL"] as const;
-type ClientType = (typeof CLIENT_TYPES)[number] | "CUSTOM";
-type HuddleTemplate = "PHYSICAL" | "VIDEO_CALL";
+
+
 
 const normalizeClientInput = (value: string) =>
   value.trim().replace(/\s+/g, "_");
@@ -469,12 +470,13 @@ export default function App() {
   const [advancedPassword, setAdvancedPassword] = useState("");
   const [advancedPasswordError, setAdvancedPasswordError] = useState("");
   const [manualPublishedPaths, setManualPublishedPaths] = useState<Record<string, boolean>>({});
+  const [suppressedStatusPaths, setSuppressedStatusPaths] = useState<Record<string, boolean>>({});
   const [newClientName, setNewClientName] = useState("");
   const [showNewClientForm, setShowNewClientForm] = useState(false);
-  const [createdMariyaSeason, setCreatedMariyaSeason] = useState<string | null>(null);
   const [newClientType, setNewClientType] = useState<ClientType>("EXHIBITOR");
   const [customClientType, setCustomClientType] = useState("");
-  const [huddleTemplate, setHuddleTemplate] = useState<HuddleTemplate>("PHYSICAL");
+  const [creatingClient, setCreatingClient] = useState(false);
+  const [huddleTemplate, setHuddleTemplate] = useState<HuddleTemplate>("VIDEO_CALL");
   const projectRootRef = useRef(projectRoot);
   const tableScrollRef = useRef<HTMLDivElement | null>(null);
   useEffect(() => {
@@ -632,6 +634,8 @@ export default function App() {
       const savedFrameIo = await CONFIG_STORE.get<typeof frameIoConfig>("frameIoConfig");
       const savedManualPublished = await CONFIG_STORE.get<Record<string, boolean>>("manualPublishedClients");
       if (savedManualPublished && typeof savedManualPublished === "object") setManualPublishedPaths(savedManualPublished);
+      const savedSuppressedStatus = await CONFIG_STORE.get<Record<string, boolean>>("suppressedClientStatusWarnings");
+      if (savedSuppressedStatus && typeof savedSuppressedStatus === "object") setSuppressedStatusPaths(savedSuppressedStatus);
       if (savedFrameIo) setFrameIoConfig({
         clientId: savedFrameIo.clientId ?? import.meta.env.VITE_FRAMEIO_CLIENT_ID ?? "",
         scopes: savedFrameIo.scopes ?? import.meta.env.VITE_FRAMEIO_SCOPES ?? "",
@@ -1137,9 +1141,26 @@ export default function App() {
   const clientListReady = clientCacheLoadedRoot === projectRoot
     && (!loading || clientListRevealedRoot === projectRoot || clients.length > 0 || scanProgress?.phase !== "clients");
 
-  const isMariyaMeetsRoot = projectRoot.split(/[\\/]/).pop()?.toLowerCase() === "8_mariya meets";
+  const isMariyaMeetsRoot = isMariyaProject(projectRoot);
+  const clientSections = useMemo(() => {
+    const sections: { season: string | null; start: number; clients: ClientInfo[] }[] = [];
+    visibleClients.forEach((client, index) => {
+      const season = isMariyaMeetsRoot ? client.season ?? null : null;
+      const last = sections[sections.length - 1];
+      if (last && last.season === season) last.clients.push(client);
+      else sections.push({ season, start: index, clients: [client] });
+    });
+    return sections;
+  }, [visibleClients, isMariyaMeetsRoot]);
+  useEffect(() => {
+    setShowNewClientForm(false);
+    setNewClientName("");
+    setNewClientType(isMariyaMeetsRoot ? "MARIYAMEETS" : "EXHIBITOR");
+    setCustomClientType("");
+    setHuddleTemplate("VIDEO_CALL");
+  }, [projectRoot, isMariyaMeetsRoot]);
   const needsMariyaSeason = isMariyaMeetsRoot && newClientType === "MARIYAMEETS";
-  const mariyaSeasons = useMariyaSeasons(projectRoot, showNewClientForm && needsMariyaSeason, createdMariyaSeason);
+  const mariyaSeasons = useMariyaSeasons(projectRoot, showNewClientForm && needsMariyaSeason);
 
   const advancedStats = useMemo(() => {
     const clientsWithExports = clients.filter((client) =>
@@ -1193,9 +1214,7 @@ export default function App() {
   };
 
   const sortIcon = (column: ClientSort["column"]) => {
-    const Icon = clientSort.column !== column ? ArrowUpDown
-      : clientSort.direction === "asc" ? ArrowUp : ArrowDown;
-    return <Icon size={14} strokeWidth={1.8} aria-hidden="true" />;
+    return <ArrowUpDown size={14} strokeWidth={1.8} aria-hidden="true" data-direction={clientSort.column === column ? clientSort.direction : undefined} />;
   };
 
   const sortableClients = useMemo(
@@ -1777,6 +1796,7 @@ export default function App() {
   };
 
   const handleAddClient = async () => {
+    if (creatingClient) return;
     if (!projectRoot) {
       setError("Choose a Project Root first.");
       return;
@@ -1798,6 +1818,8 @@ export default function App() {
       return;
     }
 
+    setCreatingClient(true);
+    setError(null);
     try {
       await invoke("create_client", {
         projectRoot,
@@ -1807,28 +1829,15 @@ export default function App() {
         huddleTemplate: newClientType === "HUDDLE" ? huddleTemplate : null,
       });
       setNewClientName("");
-      setNewClientType("EXHIBITOR");
+      setNewClientType(isMariyaMeetsRoot ? "MARIYAMEETS" : "EXHIBITOR");
       setCustomClientType("");
-      setHuddleTemplate("PHYSICAL");
+      setHuddleTemplate("VIDEO_CALL");
       setShowNewClientForm(false);
-      setCreatedMariyaSeason(null);
-      await refreshClients(undefined, false);
+        await refreshClients(undefined, false);
     } catch (err) {
       setError(String(err));
-    }
-  };
-
-  const handleCreateMariyaMeetsSeason = async () => {
-    if (!projectRoot || !isMariyaMeetsRoot) return;
-    try {
-      const season = await invoke<string>("create_mariya_meets_season", { projectRoot });
-      setCreatedMariyaSeason(season);
-      setShowNewClientForm(true);
-      setNewClientType("MARIYAMEETS");
-      await refreshClients(projectRoot, true);
-      setError(null);
-    } catch (err) {
-      setError(String(err));
+    } finally {
+      setCreatingClient(false);
     }
   };
 
@@ -1886,8 +1895,22 @@ export default function App() {
     const next = { ...manualPublishedPaths };
     if (next[client.path]) delete next[client.path];
     else next[client.path] = true;
-    setManualPublishedPaths(next);
-    await saveConfigValue("manualPublishedClients", next);
+    try {
+      await saveConfigValue("manualPublishedClients", next);
+      setManualPublishedPaths(next);
+      showToast(next[client.path] ? "Client marked as published" : "Published override removed", "success");
+    } catch (error) { setError(`Could not save published status: ${String(error)}`); }
+  };
+
+  const toggleStatusWarnings = async (client: ClientInfo) => {
+    const next = { ...suppressedStatusPaths };
+    if (next[client.path]) delete next[client.path];
+    else next[client.path] = true;
+    try {
+      await saveConfigValue("suppressedClientStatusWarnings", next);
+      setSuppressedStatusPaths(next);
+      showToast(next[client.path] ? "Status warnings and Fix action hidden" : "Status warnings restored", "success");
+    } catch (error) { setError(`Could not save warning preference: ${String(error)}`); }
   };
 
   const buildUndoBatch = (entries: SortEntry[]): UndoEntry[] => {
@@ -2540,7 +2563,6 @@ export default function App() {
                       ? "Cached · refresh failed"
                     : `${visibleClients.length} ${visibleClients.length === 1 ? "client" : "clients"}`}
                 </span>
-                {isMariyaMeetsRoot && <button type="button" className="ghost new-season-button" onClick={() => void handleCreateMariyaMeetsSeason()} title="Create the next Mariya Meets season">New season</button>}
                 {advancedMode && <button
                   type="button"
                   className="ghost icon-button refresh-button"
@@ -2571,102 +2593,102 @@ export default function App() {
             onDragOver={screen === "sort" ? handleSortDragOver : undefined}
             ref={tableScrollRef}
           >
-            <div className="table">
-              {showNewClientForm && <div className="table-row add-client-inline">
+            <div className={`table client-list ${advancedMode ? "client-list-advanced" : ""}`}>
+              {showNewClientForm && <form className="table-row add-client-inline" aria-label="Create client" aria-busy={creatingClient} onSubmit={(event) => { event.preventDefault(); void handleAddClient(); }}>
+                <label className="new-client-name">Client name
                 <input
                   className="inline-input"
-                  placeholder="Client name (e.g. Digitain)"
+                  autoFocus
+                  placeholder="e.g. Digitain"
+                  disabled={creatingClient}
                   value={newClientName}
                   onChange={(event) => setNewClientName(event.target.value)}
                 />
+                </label>
+                <fieldset className="new-client-types" disabled={creatingClient}><legend>Client type</legend>
                 <div className="inline-types">
-                  {CLIENT_TYPES.map((type) => (
+                  {availableClientTypes(projectRoot).map((type) => (
                     <button
                       key={type}
                       type="button"
                       className={`type-chip ${
                         newClientType === type ? "selected" : ""
                       } ${type.toLowerCase()}`}
+                      aria-pressed={newClientType === type}
                       onClick={() => setNewClientType(type)}
                     >
-                      {type}
+                      {clientTypeLabel(type)}
                     </button>
                   ))}
-                  <button
+                  {!isMariyaMeetsRoot && <button
                     type="button"
                     className={`type-chip custom ${newClientType === "CUSTOM" ? "selected" : ""}`}
+                    aria-pressed={newClientType === "CUSTOM"}
                     onClick={() => setNewClientType("CUSTOM")}
                   >
                     CUSTOM
-                  </button>
+                  </button>}
                 </div>
+                </fieldset>
                 <div className={`client-extra ${needsMariyaSeason ? "has-season" : ""} ${newClientType === "CUSTOM" || newClientType === "HUDDLE" || needsMariyaSeason ? "has-options" : ""}`}>
                 {needsMariyaSeason && <MariyaSeasonSelect selection={mariyaSeasons} />}
                 {newClientType === "CUSTOM" && (
                   <input
                     className="inline-input custom-mode-input"
                     placeholder="Custom mode (e.g. WORKSHOP)"
+                    aria-label="Custom client type"
+                    disabled={creatingClient}
                     value={customClientType}
                     onChange={(event) => setCustomClientType(event.target.value)}
                   />
                 )}
                 {newClientType === "HUDDLE" && (
-                  <div className="huddle-options">
-                    <span className="huddle-label">Interview type</span>
-                    <label>
-                      <input type="radio" name="huddle-template" checked={huddleTemplate === "PHYSICAL"} onChange={() => setHuddleTemplate("PHYSICAL")} />
-                      In-person interview
-                    </label>
-                    <label>
-                      <input type="radio" name="huddle-template" checked={huddleTemplate === "VIDEO_CALL"} onChange={() => setHuddleTemplate("VIDEO_CALL")} />
-                      Video call · scene switching
-                    </label>
-                  </div>
+                  <InterviewTypeSelect value={huddleTemplate} onChange={setHuddleTemplate} disabled={creatingClient} />
                 )}
                 </div>
                 <div className="inline-actions">
                   <button
                     type="button"
-                    className="ghost icon-button inline-action-button"
+                    className="ghost new-client-cancel"
+                    disabled={creatingClient}
                     aria-label="Cancel adding client"
                     title="Cancel"
                     onClick={() => {
                       setNewClientName("");
-                      setNewClientType("EXHIBITOR");
+                      setNewClientType(isMariyaMeetsRoot ? "MARIYAMEETS" : "EXHIBITOR");
                       setCustomClientType("");
-                      setHuddleTemplate("PHYSICAL");
+                      setHuddleTemplate("VIDEO_CALL");
                       setShowNewClientForm(false);
                     }}
                   >
-                    <X size={18} strokeWidth={2.2} aria-hidden="true" />
+                    Cancel
                   </button>
                   <button
-                    type="button"
-                    className="primary icon-button inline-action-button"
+                    type="submit"
+                    className="primary new-client-submit"
                     aria-label="Create client"
                     title="Create client"
-                    disabled={needsMariyaSeason && (mariyaSeasons.loading || mariyaSeasons.creating || !mariyaSeasons.season)}
-                    onClick={handleAddClient}
+                    disabled={creatingClient || !newClientName.trim() || (newClientType === "CUSTOM" && !customClientType.trim()) || (needsMariyaSeason && (mariyaSeasons.loading || mariyaSeasons.creating || !mariyaSeasons.season))}
                   >
-                    <Check size={18} strokeWidth={2.2} aria-hidden="true" />
+                    {creatingClient ? <LoaderCircle size={14} className="spin" aria-hidden="true" /> : <Plus size={14} aria-hidden="true" />} {creatingClient ? "Creating?" : "Create client"}
                   </button>
                 </div>
-              </div>}
+              </form>}
             <div className="table-row table-head">
-              <div>
+              <div className="client-column-heading">
                 <button
                   type="button"
-                  className={`column-sort ${clientSort.column === "name" ? "active" : ""}`}
+                  className="column-sort"
                   onClick={() => toggleClientSort("name")}
                   aria-label={clientSort.column === "name" && clientSort.direction === "asc" ? "Client name: A to Z. Click to sort Z to A" : "Sort client names A to Z"}
                 >
                   Client {sortIcon("name")}
                 </button>
               </div>
-              <div>
+              <div className="status-column-heading">
                 <button
                   type="button"
-                  className={`column-sort ${clientSort.column === "status" ? "active" : ""}`}
+                  className="column-sort"
                   onClick={() => toggleClientSort("status")}
                   aria-label={clientSort.column === "status" && clientSort.direction === "asc" ? "Status: unfinished first. Click to show finalised first" : "Sort status: unfinished first"}
                   title={clientSort.column === "status" && clientSort.direction === "asc" ? "Show finalised projects first" : "Show unfinished projects first"}
@@ -2674,7 +2696,7 @@ export default function App() {
                   Status {sortIcon("status")}
                 </button>
               </div>
-              <div><span className="column-label">Actions</span></div>
+              <div className="actions-column-heading"><span className="column-label">Actions</span></div>
             </div>
             {loading && visibleClients.length === 0 && clients.length > 0 && (
               <div className="table-row">Loading…</div>
@@ -2684,10 +2706,10 @@ export default function App() {
                 {projectRoot ? "No clients found." : "Select a numbered project to view clients."}
               </div>
             )}
-            {isMariyaMeetsRoot && visibleClients.length === 0 && createdMariyaSeason && (
-              <div className="season-divider" role="heading" aria-level={2}>{createdMariyaSeason}</div>
-            )}
-            {clientListReady && visibleClients.map((client, index) => {
+            {clientListReady && clientSections.map(section => (
+              <section key={section.clients[0].path} className={`client-section ${isMariyaMeetsRoot ? "client-season-group" : ""}`} aria-label={section.season?.replace(/^SEASON\s+/i, "Season ") || "Clients"}>
+              {section.clients.map((client, sectionIndex) => {
+                const index = section.start + sectionIndex;
                 const label = parseClientLabel(client.name);
                 const clientIsCached = cachedClientNames.has(client.name);
                 const droppable = screen === "sort" && client.status !== "Not a client" && !clientIsCached;
@@ -2740,20 +2762,8 @@ export default function App() {
                   && (latestFrameIoState === "ready" || Boolean(latestFrameIoShareUrl));
                 const expanded = expandedClients.has(client.name);
                 const manuallyPublished = Boolean(manualPublishedPaths[client.path]);
+                const warningsSuppressed = Boolean(suppressedStatusPaths[client.path]);
                 const published = manuallyPublished || isFinalised(client);
-                const previousClient = visibleClients[index - 1];
-                const previousPublished = previousClient
-                  ? Boolean(manualPublishedPaths[previousClient.path]) || isFinalised(previousClient)
-                  : false;
-                const computedPublishedDividerStarts = published && (!previousClient
-                  || (isMariyaMeetsRoot && previousClient.season !== client.season)
-                  || !previousPublished);
-                const publishedDividerStarts = search.trim()
-                  ? computedPublishedDividerStarts
-                  : client.cachePublishedDividerBefore ?? computedPublishedDividerStarts;
-                const unpublishedDividerStarts = !published && (!previousClient
-                  || (isMariyaMeetsRoot && previousClient.season !== client.season)
-                  || previousPublished);
                 const publishFailed = exports.publish_failed || publishFailedClientPaths.has(client.path);
                 const cleanExportInProgress = exports.approval_in_progress
                   && exports.approval_progress_phase?.toLowerCase() === "waiting for export to stabilize";
@@ -2776,7 +2786,7 @@ export default function App() {
                           ? "FINAL outdated" : "FINAL unverified"
                         : latestApprovalShared ? "Shared"
                           : exports.approval_ready ? "Approval ready" : "Export ready"
-                      : "No exports";
+                      : "Awaiting export";
                 const exportNeedsAttention = Boolean(
                   exports.issue || exportLabel === "FINAL outdated" || exportLabel === "FINAL unverified"
                 );
@@ -2787,10 +2797,10 @@ export default function App() {
                   ? (
                     <>
                       <span className="version-label export-status-version">V{exportDisplayVersion}</span>
-                      <span>{exportLabel}</span>
+                      <span className="export-status-label">{exportLabel}</span>
                     </>
                   )
-                  : exportLabel;
+                  : <span className="export-status-label">{exportLabel}</span>;
                 const tooltipVersionNumbers = Array.from(new Set([
                   ...sortedApprovalVersions.map((approval) => approval.version),
                   ...(creatingApprovalVersion && exports.approval_progress_version !== null
@@ -2853,15 +2863,6 @@ export default function App() {
                   : null;
                 return (
                   <Fragment key={client.path}>
-                  {isMariyaMeetsRoot && client.season && client.season !== visibleClients[index - 1]?.season && (
-                    <div className="season-divider" role="heading" aria-level={2}>{client.season}</div>
-                  )}
-                  {publishedDividerStarts && (
-                    <div className="published-divider" role="heading" aria-level={2}>Published</div>
-                  )}
-                  {unpublishedDividerStarts && (
-                    <div className="published-divider" role="heading" aria-level={2}>Unpublished</div>
-                  )}
                   <div
                     className={`table-row client-row ${clientIsCached ? "cached-client-row" : ""} ${droppable ? "droppable-row" : ""} ${
                       dragTarget === client.name ? "drag-over" : ""
@@ -2874,6 +2875,10 @@ export default function App() {
                       { label: "Open client folder", action: () => void handleOpenFolder(client.path) },
                       { label: "Copy client name", action: () => copyFromContextMenu(client.name, "Client name") },
                       { label: "Refresh project", action: () => void refreshClients(projectRoot, true, true, true) },
+                      ...(advancedMode && client.status !== "Not a client" ? [
+                        { label: manuallyPublished ? "Remove published override" : "Mark as published", action: () => void toggleManualPublished(client), separatorBefore: true, disabled: !manuallyPublished && isFinalised(client) },
+                        { label: warningsSuppressed ? "Show status warnings and Fix action" : "Hide status warnings and Fix action", action: () => void toggleStatusWarnings(client) },
+                      ] : []),
                     ])}
                     onDragOver={
                       droppable
@@ -2917,11 +2922,11 @@ export default function App() {
                         <span className="client-expand-icon" aria-hidden="true">
                           {expanded ? <ChevronDown size={16} /> : <ChevronRight size={16} />}
                         </span>
-                        <ClientLabel name={client.name}/>
+                        <ClientLabel name={client.name} season={isMariyaMeetsRoot ? client.season : undefined}/>
                       </div>
                     </div>
                     <div className={`client-statuses ${clientIsCached ? "" : !client.exportStatusLoading ? "client-status-enter" : ""}`}>
-                      {!clientIsCached && client.status !== "OK" && (
+                      {!clientIsCached && client.status !== "OK" && (!warningsSuppressed || client.status === "Not a client") && (
                       <span
                         className={`badge ${client.status
                           .toLowerCase()
@@ -2930,12 +2935,12 @@ export default function App() {
                         {client.status}
                       </span>
                       )}
-                      {!clientIsCached && client.status !== "Not a client" && (
+                      {!clientIsCached && client.status !== "Not a client" && !(warningsSuppressed && exportNeedsAttention && exportLabel !== "FINAL" && !exports.approval_in_progress) && (
                         <>
                           {client.exportStatusLoading ? (
                             <span className="client-status-space" aria-hidden="true" />
                           ) : (
-                            <span className="client-export-status">
+                            <span className="client-export-status" title={exportLabel}>
                               <ExportStatusTooltip
                                 id={`export-versions-tooltip-${index}`}
                                 details={exportTooltipDetails}
@@ -2946,7 +2951,7 @@ export default function App() {
                                     <LoaderCircle className="approval-progress-spinner" size={13} aria-hidden="true" />
                                     {exportStatusSummary}
                                   </span>
-                                ) : exportNeedsAttention ? (
+                                ) : exportNeedsAttention && !warningsSuppressed ? (
                                   <span className="badge export-warning">{exportStatusSummary}</span>
                                 ) : exportLabel === "FINAL" ? (
                                   <span className="status-text final-state" aria-label="Published">
@@ -2956,8 +2961,8 @@ export default function App() {
                                   <span className="status-text shared-state">
                                     <Link2 size={14} aria-hidden="true" /> {exportStatusSummary}
                                   </span>
-                                ) : exportLabel === "No exports" ? (
-                                  <span className="status-text empty-state">No exports</span>
+                                ) : exportLabel === "Awaiting export" ? (
+                                  <span className="status-text empty-state"><Clapperboard size={13} aria-hidden="true" />Awaiting export</span>
                                 ) : (
                                   <span className="status-text">{exportStatusSummary}</span>
                                 )}
@@ -2968,12 +2973,6 @@ export default function App() {
                       )}
                     </div>
                     <div className="actions" onClick={(event) => event.stopPropagation()}>
-                      {advancedMode && client.status !== "Not a client" && (manuallyPublished || !isFinalised(client)) && (
-                        <button type="button" className="ghost promote-button" onClick={() => void toggleManualPublished(client)} title={manuallyPublished ? "Remove manual published override" : "Mark this client as published manually"}>
-                          {manuallyPublished ? "Clear override" : "Mark published"}
-                        </button>
-                      )}
-
                       {client.status !== "Not a client" && exports.latest_filename && !exports.issue && (!published || publishFailed) && (
                         <button
                           type="button"
@@ -2992,7 +2991,7 @@ export default function App() {
                           ) : publishFailed ? "Failed" : "Publish"}
                         </button>
                       )}
-                      {client.status === "Missing folders" && (
+                      {client.status === "Missing folders" && !warningsSuppressed && (
                         <button
                           className="ghost icon-button"
                           onClick={() => handleFixClient(client)}
@@ -3188,7 +3187,9 @@ export default function App() {
                 )}
                 </Fragment>
               );
-            })}
+              })}
+              </section>
+            ))}
             </div>
           </div>
           {projectRoot && clientRefreshFailedRoot === projectRoot && (

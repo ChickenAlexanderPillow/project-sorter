@@ -1,4 +1,5 @@
 import { useEffect, useId, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import { invoke } from "@tauri-apps/api/core";
 import { LoaderCircle, Plus, RefreshCw } from "lucide-react";
 
@@ -13,6 +14,14 @@ export function useMariyaSeasons(projectRoot: string, active: boolean, refreshKe
   const lastCreated = useRef<string | null | undefined>(undefined);
   const requestedSeason = useRef<string | null>(null);
   const operation = useRef(0);
+  useEffect(() => {
+    remembered.current.clear();
+    requestedSeason.current = null;
+    lastCreated.current = undefined;
+    setSeason("");
+    setSeasons([]);
+    setError("");
+  }, [projectRoot]);
   const selectSeason = (value: string) => {
     remembered.current.set(projectRoot, value);
     setSeason(value);
@@ -42,6 +51,7 @@ export function useMariyaSeasons(projectRoot: string, active: boolean, refreshKe
       if (id !== operation.current) return;
       requestedSeason.current = created;
       setRevision(value => value + 1);
+      return created;
     } catch (error) {
       if (id === operation.current) { setError(String(error)); setCreating(false); }
     }
@@ -53,6 +63,7 @@ const seasonLabel = (value: string) => value.replace(/^SEASON\s+/i, "Season ");
 
 export function MariyaSeasonSelect({ selection }: { selection: ReturnType<typeof useMariyaSeasons> }) {
   const id = useId();
+  const [confirming, setConfirming] = useState(false);
   const busy = selection.loading || selection.creating;
   return <div className="mariya-season-picker" aria-busy={busy}>
     <div className="mariya-season-row">
@@ -63,13 +74,44 @@ export function MariyaSeasonSelect({ selection }: { selection: ReturnType<typeof
           <span>{seasonLabel(season)}{index === 0 && <small>Latest</small>}</span>
         </label>)}
         {selection.loading && !selection.seasons.length && <span className="mariya-season-status" role="status"><LoaderCircle size={13} className="spinning" />Loading seasons?</span>}
-        <button type="button" className="mariya-season-new" disabled={busy} onClick={() => void selection.createSeason()} title="Create the next season and select it">
+        <button type="button" className="mariya-season-new" disabled={busy} onClick={() => setConfirming(true)} title="Create the next season and select it">
           {selection.creating ? <LoaderCircle size={13} className="spinning" /> : <Plus size={13} />}
           {selection.creating ? "Creating?" : "New season"}
         </button>
       </div>
     </div>
+    {confirming && <SeasonConfirmation selection={selection} onClose={() => setConfirming(false)} />}
     {selection.error ? <div className="mariya-season-error" role="alert"><span>{selection.error}</span><button type="button" disabled={busy} onClick={selection.retry}><RefreshCw size={12} />Retry</button></div>
       : !busy && !selection.seasons.length && <p className="mariya-season-hint">Create the first season to add this client.</p>}
   </div>;
+}
+
+
+function SeasonConfirmation({ selection, onClose }: {
+  selection: ReturnType<typeof useMariyaSeasons>;
+  onClose: () => void;
+}) {
+  const dialog = useRef<HTMLDialogElement>(null);
+  const id = useId();
+  useEffect(() => { dialog.current?.showModal(); }, []);
+  const nextNumber = Math.max(0, ...selection.seasons.map(value => Number(value.match(/^SEASON\s+(\d+)$/i)?.[1]) || 0)) + 1;
+  const busy = selection.loading || selection.creating;
+  const confirm = async () => {
+    const created = await selection.createSeason();
+    if (created) onClose();
+  };
+  return createPortal(<dialog ref={dialog} className="season-confirm-dialog" aria-labelledby={`${id}-title`}
+    onCancel={event => { event.preventDefault(); if (!selection.creating) onClose(); }}>
+    <div className="season-confirm-heading"><h2 id={`${id}-title`}>Create a new season?</h2></div>
+    <div className="season-confirm-preview"><span>New season</span><strong>{selection.loading ? "Loading?" : `Season ${nextNumber}`}</strong><small>8_Mariya Meets / {selection.loading ? "?" : `SEASON ${nextNumber}`}</small></div>
+    {selection.error && <p className="season-confirm-error" role="alert">{selection.error}</p>}
+    <div className="season-confirm-actions">
+      <button type="button" className="ghost" autoFocus disabled={selection.creating} onClick={onClose}>Cancel</button>
+      {selection.error && <button type="button" className="ghost" disabled={busy} onClick={selection.retry}>Retry</button>}
+      <button type="button" className="primary" disabled={busy || !!selection.error} onClick={() => void confirm()}>
+        {selection.creating && <LoaderCircle size={14} className="season-spin" />}
+        {selection.creating ? "Creating?" : `Create Season ${nextNumber}`}
+      </button>
+    </div>
+  </dialog>, document.body);
 }
