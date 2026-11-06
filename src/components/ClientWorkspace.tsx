@@ -18,7 +18,7 @@ export function ClientWorkspace({clientPath,reviewDefault,hasApprovals,finalPath
     </nav>
     <div className="cw-panels">
       <RetainedView active={tab==='files'} id={`${id}-files-panel`} labelledBy={`${id}-files`}><ClientFiles clientPath={clientPath} onContextMenu={onContextMenu}/></RetainedView>
-      <RetainedView active={tab==='review'} id={`${id}-review-panel`} labelledBy={`${id}-review`}>{!hasApprovals&&finalPath?<div className="cw-final-preview" onContextMenu={event=>onContextMenu(event,'Published final',[{label:'Open file location',action:()=>{void invoke('open_folder',{path:finalPath.replace(/[\\/][^\\/]*$/,'')}).catch(error=>setError(String(error)));}}])}><header><span>Published final</span></header><SourceMediaPreview path={finalPath} name={finalPath.split(/[\\/]/).pop()}/>{error&&<div className="cf-error" role="alert">{error}</div>}</div>:children}</RetainedView>
+      <RetainedView active={tab==='review'} id={`${id}-review-panel`} labelledBy={`${id}-review`}>{!hasApprovals&&finalPath?<div className="cw-final-preview" onContextMenu={event=>onContextMenu(event,'Published final',[{label:'Open file location',action:()=>{void invoke('open_file_location',{path:finalPath}).catch(error=>setError(String(error)));}}])}><header><span>Published final</span></header><SourceMediaPreview path={finalPath} name={finalPath.split(/[\\/]/).pop()}/>{error&&<div className="cf-error" role="alert">{error}</div>}</div>:children}</RetainedView>
     </div>
   </section>;
 }

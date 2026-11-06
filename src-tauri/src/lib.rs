@@ -6,7 +6,6 @@ use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::io::{self, Read, Write};
 use std::path::{Path, PathBuf};
-use std::process::Command;
 use std::sync::{mpsc, Mutex, OnceLock};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
@@ -17,7 +16,9 @@ mod frameio;
 mod ingest;
 mod media_browser;
 mod client_files;
+mod premiere_health;
 mod file_drag;
+mod file_locations;
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 struct ClientInfo {
@@ -2283,56 +2284,6 @@ fn create_client_sync(
     Ok(())
 }
 
-// Explorer treats forward slashes as switches and does not accept verbatim
-// filesystem paths, even though both forms are valid for Rust's file APIs.
-#[cfg(target_os = "windows")]
-fn explorer_folder_path(path: &str) -> String {
-    let normalized = path.replace('/', "\\");
-    if let Some(unc) = normalized.strip_prefix(r"\\?\UNC\") {
-        format!(r"\\{unc}")
-    } else {
-        normalized.strip_prefix(r"\\?\").unwrap_or(&normalized).to_owned()
-    }
-}
-
-#[tauri::command]
-fn open_folder(path: String) -> Result<(), String> {
-    let target = PathBuf::from(&path);
-    if !target.exists() {
-        return Err(format!("Path does not exist: {}", target.display()));
-    }
-    if !target.is_dir() {
-        return Err(format!("Path is not a folder: {}", target.display()));
-    }
-
-    #[cfg(target_os = "windows")]
-    {
-        Command::new("explorer")
-            .arg(explorer_folder_path(&path))
-            .spawn()
-            .map_err(|e| format!("Failed to launch Explorer for {}: {}", target.display(), e))?;
-        return Ok(());
-    }
-
-    #[cfg(target_os = "macos")]
-    {
-        Command::new("open")
-            .arg(&path)
-            .spawn()
-            .map_err(|e| format!("Failed to open folder {}: {}", target.display(), e))?;
-        return Ok(());
-    }
-
-    #[cfg(all(unix, not(target_os = "macos")))]
-    {
-        Command::new("xdg-open")
-            .arg(&path)
-            .spawn()
-            .map_err(|e| format!("Failed to open folder {}: {}", target.display(), e))?;
-        return Ok(());
-    }
-}
-
 #[tauri::command]
 fn project_has_sort_logs(project_root: String) -> Result<bool, String> {
     let project = Path::new(&project_root);
@@ -2796,6 +2747,7 @@ pub fn run() {
             media_browser::media_prepare_preview,
             client_files::client_files_list,
             client_files::client_files_open_project,
+            premiere_health::premiere_project_health_scan,
             file_drag::client_files_start_drag,
             ingest::ingest_progress,
             ingest::ingest_collect,
@@ -2816,7 +2768,8 @@ pub fn run() {
             migrate_project_finals,
             set_watch_root,
             create_client,
-            open_folder,
+            file_locations::open_folder,
+            file_locations::open_file_location,
             project_has_sort_logs,
             fix_client,
             sort_files,
@@ -2873,10 +2826,10 @@ mod tests {
     #[cfg(target_os = "windows")]
     #[test]
     fn explorer_paths_preserve_drives_and_network_shares() {
-        assert_eq!(explorer_folder_path(r"Z:\The Huddle\Client\01_MEDIA/030_AUDIO_CLEAN"), r"Z:\The Huddle\Client\01_MEDIA\030_AUDIO_CLEAN");
-        assert_eq!(explorer_folder_path(r"\\NASPLUS\Vault/Client"), r"\\NASPLUS\Vault\Client");
-        assert_eq!(explorer_folder_path(r"\\?\Z:\The Huddle/Client"), r"Z:\The Huddle\Client");
-        assert_eq!(explorer_folder_path(r"\\?\UNC\NASPLUS\Vault/Client"), r"\\NASPLUS\Vault\Client");
+        assert_eq!(file_locations::shell_folder_path(Path::new(r"Z:\The Huddle\Client\01_MEDIA/030_AUDIO_CLEAN")), r"Z:\The Huddle\Client\01_MEDIA\030_AUDIO_CLEAN");
+        assert_eq!(file_locations::shell_folder_path(Path::new(r"\\NASPLUS\Vault/Client")), r"\\NASPLUS\Vault\Client");
+        assert_eq!(file_locations::shell_folder_path(Path::new(r"\\?\Z:\The Huddle/Client")), r"Z:\The Huddle\Client");
+        assert_eq!(file_locations::shell_folder_path(Path::new(r"\\?\UNC\NASPLUS\Vault/Client")), r"\\NASPLUS\Vault\Client");
     }
 
     fn test_dir(label: &str) -> PathBuf {

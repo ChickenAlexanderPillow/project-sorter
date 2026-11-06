@@ -2,7 +2,7 @@ import {useEffect,useLayoutEffect,useReducer,useRef,type ReactNode} from 'react'
 import {previewLayers} from './previewLayers';
 import './MediaTransition.css';
 
-const FADE_MS=90;
+const FADE_MS=150;
 
 /** Keep the painted frame until its replacement is ready, including type changes. */
 export function MediaTransition({source,render,onError}:{source:string;render:(source:string,onReady:()=>void,onError:()=>void)=>ReactNode;onError?:()=>void}) {
@@ -48,7 +48,7 @@ export function MediaTransition({source,render,onError}:{source:string;render:(s
     const incoming=root.current?.querySelector<HTMLElement>(`[data-preview-layer="${id}"]`);
     if(!incoming)return;
     const outgoing=Array.from(root.current!.querySelectorAll<HTMLElement>('.pepper-media-layer.ready'));
-    const duration=outgoing.length&&!matchMedia('(prefers-reduced-motion: reduce)').matches?FADE_MS:0;
+    const duration=matchMedia('(prefers-reduced-motion: reduce)').matches?0:FADE_MS;
     // A failed load renders its replacement after dispatch, so animate its
     // wrapper instead of the media element that is about to be removed.
     const incomingVisuals=failed?[incoming]:Array.from(incoming.querySelectorAll<HTMLElement>('.pepper-media-visual'));

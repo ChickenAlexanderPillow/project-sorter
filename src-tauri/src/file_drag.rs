@@ -62,7 +62,7 @@ fn validate_paths(client: &Path, paths: Vec<String>) -> Result<Vec<String>, Stri
         // Canonical paths are for validation only. Preserve mapped drives and
         // original UNC spelling in Premiere's reference.
         #[cfg(windows)]
-        let original = crate::explorer_folder_path(&original);
+        let original = crate::file_locations::shell_folder_path(Path::new(&original));
         if seen.insert(original.to_lowercase()) {
             result.push(original);
         }

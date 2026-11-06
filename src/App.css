@@ -2672,7 +2672,7 @@ button.ghost,
   border-radius: 0;
   transform: none !important;
   cursor: pointer;
-  transition: background-color 100ms ease, color 100ms ease, border-color 100ms ease;
+  transition: background-color 100ms ease, color 100ms ease, border-color 100ms ease, opacity 150ms ease;
 }
 
 .table-row.client-row > .client-row-disclosure,
@@ -2715,12 +2715,16 @@ button.ghost,
   border-color: var(--pepper-line);
   background: transparent;
   color: var(--pepper-text);
-  opacity: 1;
+  opacity: 0.8;
   filter: none;
 }
 
 .table-row.client-row.published-row:hover {
   background: var(--pepper-hover);
+}
+
+.table-row.client-row.published-row:is(:hover, :focus-within, .expanded-row) {
+  opacity: 1;
 }
 
 .table-row.client-row.expanded-row,
@@ -2904,9 +2908,12 @@ button.ghost,
 
 .actions .promote-button {
   min-height: 32px;
+  gap: 5px;
   padding: 5px 10px;
   border-radius: 5px;
 }
+
+.actions .promote-button > svg { flex-shrink: 0; }
 
 .add-client-inline {
   grid-template-columns: minmax(150px, 0.7fr) minmax(0, 2fr) 76px;
@@ -2959,7 +2966,7 @@ button.ghost,
 
 .version-browser {
   display: grid;
-  grid-template-columns: minmax(0, 5fr) minmax(180px, 0.85fr);
+  grid-template-columns: minmax(0, 5fr) minmax(190px, 0.85fr);
   gap: 12px;
   align-items: start;
 }
@@ -3078,7 +3085,7 @@ button.ghost,
   overflow: hidden;
 }
 
-.version-browser .export-preview .pepper-video-skin { max-height: none; }
+.version-browser .export-preview .pepper-video-skin { max-height: none; border-radius: 0; }
 
 .pepper-video-skin {
   --media-ring: transparent;
@@ -3232,16 +3239,17 @@ button.ghost,
 
 .frameio-inline-row {
   display: flex;
+  grid-column: 2;
+  grid-row: 1;
+  align-self: center;
   min-width: 0;
   flex-wrap: wrap;
   align-items: center;
-  gap: 6px;
-  padding: 5px 9px;
-  border-top: 1px solid #3c3c3c;
-  background: rgba(255, 255, 255, .025);
+  gap: 0;
+  width: 56px;
+  justify-content: flex-end;
 }
 
-.frameio-inline-label { flex: 1; color: var(--pepper-muted); font-size: 11px; }
 .frameio-upload-progress {
   display: block;
   flex: 0 0 100%;
@@ -3279,76 +3287,67 @@ button.ghost,
 .frameio-icon-button.linked { color: #d2d2d2; }
 .frameio-icon-button.copy { color: var(--pepper-muted); }
 .frameio-icon-button:focus-visible,
-.frameio-open-link:focus-visible,
 .version-option:focus-visible { outline: 2px solid var(--pepper-focus); outline-offset: -2px; }
 
-.frameio-open-link {
-  display: inline-flex;
-  flex: 1 1 0;
-  align-items: center;
-  gap: 6px;
-  min-width: 0;
-  min-height: 28px;
-  padding: 2px 6px;
-  border: 0;
-  border-radius: 4px;
-  overflow: hidden;
-  background: transparent;
-  color: #c9c9c9;
-  font-size: 11px;
-  font-weight: 400;
-  text-align: left;
-  cursor: pointer;
-}
-
-.frameio-open-link span {
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.frameio-open-link:hover { background: #383838; color: #f0f2f5; }
-.frameio-inline-message { flex-basis: 100%; min-width: 0; padding: 0 0 4px; overflow-wrap: anywhere; color: #e4c576; font-size: 10px; }
-
 .version-list {
-  display: grid;
-  align-content: start;
-  gap: 7px;
   max-height: 440px;
   overflow-y: auto;
+  overscroll-behavior-y: auto;
+  padding: 0;
+  border-left: 1px solid #383838;
 }
 
+.version-list[data-scrollable="true"] { overscroll-behavior-y: contain; }
+.version-history-content { display: flex; flex-direction: column; }
+
 .version-entry {
+  position: relative;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  flex-shrink: 0;
   min-width: 0;
   overflow: hidden;
-  border: 1px solid var(--pepper-line);
-  border-radius: 5px;
-  background: var(--pepper-surface);
+  padding: 3px 4px 3px 2px;
+  border: 0;
+  border-bottom: 1px solid #ffffff0a;
+  border-radius: 0;
+  background: transparent;
 }
 
 .version-entry.selected {
-  border-color: #686868;
   background: var(--pepper-selection);
+  box-shadow: inset 2px 0 #aaa;
 }
+.version-entry:hover:not(.version-pending) { background: var(--pepper-hover); }
+.version-entry.selected:hover { background: #353535; }
+.version-entry.latest-version {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  border-bottom-color: #4b4b4b;
+  background: #292929;
+}
+.version-entry.latest-version.selected { background: #343434; }
+.version-entry.latest-version:hover { background: #353535; }
+.version-entry.latest-version .version-option { padding-block: 12px; }
+.version-entry.latest-version .version-label { background: #383838; border-color: #777; color: #eee; }
+.version-entry.latest-version .version-latest { color: #e4e4e4; font-size: 11px; font-weight: 600; }
+.version-entry.latest-version .version-option time { color: #aaa; }
+.version-entry.latest-version .version-state { color: #aaa; }
+.version-entry.latest-version .frameio-icon-button { color: #ccc; }
 
 .version-pending {
   opacity: 0.86;
 }
 
-.version-pending-label {
-  margin-left: auto;
-  color: var(--pepper-muted);
-  font-size: 11px;
-}
-
 .version-option {
   display: grid;
   grid-template-columns: minmax(0, 1fr);
-  gap: 7px;
+  align-content: center;
+  gap: 4px;
   width: 100%;
-  min-height: 50px;
-  padding: 11px 12px;
+  min-height: 48px;
+  padding: 7px 8px;
   border: 0;
   border-radius: 0;
   background: transparent;
@@ -3356,7 +3355,7 @@ button.ghost,
 }
 
 .version-option:hover:not(:disabled) {
-  background: var(--pepper-hover);
+  background: transparent;
 }
 
 .version-option-heading {
@@ -3366,8 +3365,14 @@ button.ghost,
   gap: 7px;
 }
 
-.version-option-heading time { margin-left: auto; white-space: nowrap; font-weight: 400; }
-.version-latest { color: #c9c9c9; font-size: 10px; font-weight: 400; }
+.version-option time { white-space: nowrap; font-weight: 400; font-size: 10px; color: #858585; }
+.version-entry.selected .version-option-number { color: #eee; }
+.version-latest { color: #999; font-size: 9px; font-weight: 400; }
+.version-state { color: #929292; font-size: 9px; font-weight: 400; line-height: 1.4; }
+.version-state.failed { color: #d7a19a; }
+.version-delivery-message { grid-column: 1 / -1; padding: 0 8px 6px; font-size: 9px; color: #c59c95; overflow-wrap: anywhere; }
+.version-pending .version-option { opacity: 1; cursor: default; }
+.version-pending .version-option-number { color: #aaa; }
 
 .latest-label {
   border-color: #595959;

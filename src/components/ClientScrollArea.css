@@ -1,0 +1,51 @@
+.client-scroll-area {
+  position: relative;
+  display: flex;
+  flex: 1;
+  min-height: 0;
+  min-width: 0;
+}
+
+.client-scroll-area.busy { opacity: .7; pointer-events: none; }
+
+.client-scroll-area > .table-scroll {
+  min-width: 0;
+  padding-inline: 10px;
+  scrollbar-gutter: auto;
+  scrollbar-width: auto;
+  scrollbar-color: auto;
+}
+
+/* Only the vertical thumb is drawn separately; list scrolling stays native. */
+.client-scroll-area > .table-scroll::-webkit-scrollbar { width: 0; height: 6px; }
+.client-scroll-area > .table-scroll::-webkit-scrollbar-thumb {
+  border-radius: 4px;
+  background: var(--pepper-scrollbar-thumb, #555);
+}
+
+.client-scrollbar-rail {
+  position: absolute;
+  top: 0;
+  right: 0;
+  width: 10px;
+  touch-action: none;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 240ms ease;
+}
+
+.client-scrollbar-rail[data-visible="true"] { opacity: 1; pointer-events: auto; }
+.client-scrollbar-rail > div {
+  position: absolute;
+  top: 0;
+  right: 2px;
+  width: 5px;
+  border-radius: 4px;
+  background: var(--pepper-scrollbar-thumb, #555);
+  will-change: transform;
+}
+.client-scrollbar-rail > div:focus-visible { outline: 1px solid #bbb; outline-offset: 1px; }
+
+@media (prefers-reduced-motion: reduce) {
+  .client-scrollbar-rail { transition: none; }
+}

@@ -1,0 +1,26 @@
+.frameio-icon-button.review-copy-button {
+  position: relative;
+}
+
+.frameio-icon-button.review-copy-button:disabled {
+  opacity: 1;
+}
+
+.review-copy-button .copy-feedback-icon {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  pointer-events: none;
+  will-change: opacity;
+  transition: opacity 240ms cubic-bezier(.4, 0, .2, 1);
+}
+
+.review-copy-button .copy-feedback-copy { opacity: 1; }
+.review-copy-button .copy-feedback-check { opacity: 0; }
+.review-copy-button.copied .copy-feedback-copy { opacity: 0; }
+.review-copy-button.copied .copy-feedback-check { opacity: 1; }
+
+@media (prefers-reduced-motion: reduce) {
+  .review-copy-button .copy-feedback-icon { transition: none; }
+}

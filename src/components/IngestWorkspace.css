@@ -95,7 +95,8 @@
 .ig-inspector-heading>span{min-width:0;display:flex;align-items:center;gap:7px;color:#999}
 .ig-inspector-heading strong{font-size:11px;font-weight:500;color:#ccc;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .ig-preview-media{background:var(--pepper-preview-bg,#232323);overflow:hidden}
-.ig-preview-media img{display:block;max-width:100%;max-height:280px;margin:auto;object-fit:contain}
+/* Only standalone stills use this limit; player posters must cover the video. */
+.ig-preview-media>img{display:block;max-width:100%;max-height:280px;margin:auto;object-fit:contain}
 .ig-preview-placeholder,.ig-audio-preview{display:flex;flex-direction:column;align-items:center;justify-content:center;gap:20px;min-height:170px;color:#777;font-size:11px;padding:20px}
 .ig-audio-preview audio{width:100%;height:32px;color-scheme:dark}
 .ig-inspector-empty{min-height:300px;display:flex;flex-direction:column;align-items:center;justify-content:center;padding:30px;text-align:center;color:#737373}

@@ -1,10 +1,12 @@
-import { AudioLines, FileVideo, Headphones, Image, Mic, MonitorPlay, Music2, ScanLine, SquarePen } from "lucide-react";
+import { AudioLines, Clapperboard, FileVideo, Headphones, Image, Layers, Mic, MonitorPlay, Music2, ScanLine, SquarePen } from "lucide-react";
 
 export const MEDIA_ROLE_ICONS = {
   'Proxy video': MonitorPlay,
   'Full-resolution video': ScanLine,
   'Raw audio': Mic,
   'Clean audio': AudioLines,
+  'Premiere Pro': Clapperboard,
+  'After Effects': Layers,
 } as const;
 
 // Role icons belong to section subheaders; file rows keep their media-kind icons.

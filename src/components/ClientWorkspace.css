@@ -45,6 +45,8 @@
 .cf-file-meta{flex-shrink:0;display:flex;align-items:center;justify-content:space-between;gap:10px;padding:10px 11px;border-top:1px solid #363636;color:#888;font-size:10px}
 .cf-project{display:flex;flex-direction:column;align-items:center;justify-content:center;gap:14px;flex:1;min-height:0;padding:24px;background:#202020;color:#777}
 .cf-project>span{font-size:11px;color:#999}
+.cf-health-action{display:flex;align-items:center;justify-content:center;gap:7px;min-height:32px;padding:7px 11px;border:1px solid #464646;border-radius:var(--pepper-radius-control);background:#303030;color:#d5d5d5;font-size:11px;font-weight:500}
+.cf-health-action:hover:not(:disabled){background:#393939;border-color:#5a5a5a;color:#fff}
 .cf-open-project{display:flex;align-items:center;justify-content:center;gap:7px;padding:8px 12px;min-height:33px;border:1px solid #666;border-radius:var(--pepper-radius-control);background:#3b3b3b;color:#eee;font-size:11px;font-weight:500}
 .cf-open-project:hover:not(:disabled){background:#484848;border-color:#888}
 .cf-loading,.cf-empty{display:flex;align-items:center;justify-content:center;gap:10px;flex:1;min-height:0;color:#777;font-size:11px}
@@ -57,5 +59,30 @@
 @keyframes cf-spin{to{transform:rotate(360deg)}}
 .cw-final-preview{max-width:780px;overflow:hidden;border:1px solid #3d3d3d;border-radius:var(--pepper-radius-card);background:#232323}
 .cw-final-preview>header{display:flex;align-items:center;justify-content:space-between;min-height:32px;padding:2px 5px 2px 12px;color:#999;font-size:10px;border-bottom:1px solid #363636}
+/* Keep a full 16:9 picture above the compact player's 50px control strip. */
+.cw-final-preview .pepper-media-transition{height:auto;aspect-ratio:auto;padding-top:calc(56.25% + 50px)}
 @media(max-width:1000px){.cf-layout{grid-template-columns:minmax(220px,.9fr) minmax(0,1.15fr);gap:12px}.cf-sections>button{padding:6px 7px}.cf-tools input{width:115px}}
 @media(max-width:760px){.cf-toolbar{flex-wrap:wrap;gap:8px}.cf-layout{grid-template-columns:minmax(140px,.8fr) minmax(0,1fr);gap:10px}.cf-preview{max-width:100%}.cf-sections>button{gap:4px;padding:6px}.cf-tools input{width:90px}}
+/* Project rows share the media list treatment, with actions alongside the filename. */
+.cf-edit .cf-body{height:auto}
+.cf-edit .cf-layout{display:grid;grid-template-columns:minmax(240px,1fr) minmax(0,1.2fr);flex:none;align-items:start;overflow:hidden}
+.cf-edit .cf-list-pane{height:auto;width:100%;max-height:390px}
+.cf-edit .cf-list{flex:1;min-height:0;max-height:364px}
+.cf-edit .cf-empty,.cf-edit .cf-loading{min-height:120px}
+.cf-project-row{display:flex;align-items:center;gap:4px;min-width:0;border-radius:var(--pepper-radius-control)}
+.cf-project-row:hover{background:#292929}
+.cf-project-row.selected,.cf-project-row.selected:hover{background:#343434}
+.cf-project-row>.cf-file{flex:1;min-width:0;width:auto}
+.cf-project-row>.cf-file,.cf-project-row>.cf-file:hover:not(:disabled),.cf-project-row>.cf-file.selected,.cf-project-row>.cf-file.selected:hover:not(:disabled){background:transparent}
+.cf-row-actions{display:flex;align-items:center;gap:2px;flex-shrink:0;padding-right:5px}
+.cf-row-actions>button{display:flex;align-items:center;justify-content:center;gap:4px;height:27px;min-height:27px;min-width:27px;padding:4px 6px;border:0;border-radius:var(--pepper-radius-control);background:transparent;color:#999;font-size:10px}
+.cf-row-actions>button:hover:not(:disabled){background:#414141;color:#eee}
+.cf-project-row.selected .cf-row-actions>button{color:#bbb}
+.cf-row-actions>button:focus-visible{outline:1px solid var(--pepper-focus);outline-offset:1px}
+@media(max-width:480px){.cf-row-actions{gap:0;padding-right:3px}.cf-row-actions>button{padding:4px;min-width:25px}.cf-row-actions>button>span{display:none}}
+
+.cf-project-sidebar{min-width:0;overflow:hidden;padding-left:18px;border-left:1px solid #343434;background:transparent}
+.cf-health-unsupported{padding:14px 12px}
+.cf-health-unsupported h3{margin:0 0 12px;color:#bbb;font-size:11px;font-weight:500}
+.cf-health-unsupported p{margin:0;color:#888;font-size:11px;line-height:1.6}
+@media(max-width:760px){.cf-edit .cf-layout{grid-template-columns:minmax(0,1fr)}.cf-edit .cf-list-pane{max-height:220px}.cf-edit .cf-list{max-height:194px}.cf-project-sidebar{padding:12px 0 0;border-left:0;border-top:1px solid #343434}}

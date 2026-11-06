@@ -12,11 +12,14 @@ import { writeText } from "@tauri-apps/plugin-clipboard-manager";
 import { openPath } from "@tauri-apps/plugin-opener";
 import { check, type Update } from "@tauri-apps/plugin-updater";
 import { InlineVideoPlayer } from "./components/InlineVideoPlayer";
-import { ArrowUpDown, Bell, Check, ChevronDown, ChevronRight, ChevronsUpDown, Clapperboard, CloudUpload, Copy, FolderInput, FolderKanban, Link2, LoaderCircle, Minus, Plus, RefreshCw, Search, Settings, Settings2, Square, Trash2, Wrench, X } from "lucide-react";
+import { ArrowUpDown, ArrowUpRight, Bell, Check, ChevronDown, ChevronRight, ChevronsUpDown, Clapperboard, CloudUpload, FolderInput, FolderKanban, Link2, LoaderCircle, Minus, Plus, RefreshCw, Search, Settings, Settings2, Square, Trash2, Wrench, X } from "lucide-react";
 import { MariyaSeasonSelect, useMariyaSeasons } from "./components/MariyaSeasonSelect";
 import { IngestWorkspace } from "./components/IngestWorkspace";
 import { isNativeFileDragActive } from "./components/nativeFileDrag";
 import { ClientWorkspace } from "./components/ClientWorkspace";
+import { ClientScrollArea } from "./components/ClientScrollArea";
+import { CopyReviewLinkButton } from "./components/CopyReviewLinkButton";
+import { VersionHistory } from "./components/VersionHistory";
 import { ClientLabel, parseClientLabel } from "./components/ClientLabel";
 import pepperIcon from "../src-tauri/icons/128x128.png";
 import "./App.css";
@@ -31,11 +34,13 @@ function ExportStatusTooltip({
   id,
   details,
   versions,
+  enabled = true,
   children,
 }: {
   id: string;
   details: string[];
   versions: number[];
+  enabled?: boolean;
   children: ReactNode;
 }) {
   const anchorRef = useRef<HTMLSpanElement | null>(null);
@@ -88,6 +93,8 @@ function ExportStatusTooltip({
   useEffect(() => () => {
     if (timerRef.current) clearTimeout(timerRef.current);
   }, []);
+
+  if (!enabled) return <>{children}</>;
 
   return (
     <span
@@ -991,9 +998,10 @@ export default function App() {
   const copyFrameIoShareLink = async (url: string) => {
     try {
       await writeText(url);
-      showToast("Frame.io share link copied to clipboard.", "success");
+      return true;
     } catch (err) {
       showToast(`Could not copy Frame.io share link: ${String(err)}`, "error", 7000);
+      return false;
     }
   };
 
@@ -2037,6 +2045,14 @@ export default function App() {
     }
   };
 
+  const handleOpenFileLocation = async (path: string) => {
+    try {
+      await invoke("open_file_location", { path });
+    } catch (err) {
+      setError(formatOpenError(path, err));
+    }
+  };
+
   const handleOpenFinal = async (client: ClientInfo) => {
     const filename = client.export_status.final_filename;
     if (!filename) return;
@@ -2588,10 +2604,10 @@ export default function App() {
             </div>
           </div>
           </div>
-          <div
-            className={`table-scroll ${busy ? "busy" : ""}`}
+          <ClientScrollArea
+            busy={busy}
             onDragOver={screen === "sort" ? handleSortDragOver : undefined}
-            ref={tableScrollRef}
+            scrollRef={tableScrollRef}
           >
             <div className={`table client-list ${advancedMode ? "client-list-advanced" : ""}`}>
               {showNewClientForm && <form className="table-row add-client-inline" aria-label="Create client" aria-busy={creatingClient} onSubmit={(event) => { event.preventDefault(); void handleAddClient(); }}>
@@ -2856,6 +2872,7 @@ export default function App() {
                           <span className="version-option-number version-label">V{exports.approval_progress_version}</span>
                           <LoaderCircle className="approval-progress-spinner" size={15} aria-hidden="true" />
                         </span>
+                        <span className="version-state">{cleanExportInProgress ? "Exporting" : "Rendering"}</span>
                       </div>
                     </div>
                   )
@@ -2939,11 +2956,12 @@ export default function App() {
                           {client.exportStatusLoading ? (
                             <span className="client-status-space" aria-hidden="true" />
                           ) : (
-                            <span className="client-export-status" title={exportLabel}>
+                            <span className="client-export-status">
                               <ExportStatusTooltip
                                 id={`export-versions-tooltip-${index}`}
                                 details={exportTooltipDetails}
                                 versions={tooltipVersionNumbers}
+                                enabled={exportLabel !== "Awaiting export"}
                               >
                                 {exports.approval_in_progress ? (
                                   <span className="badge export-ready export-progress">
@@ -2987,7 +3005,7 @@ export default function App() {
                                 <span className={`publish-progress-indicator ${publishingStage === "refreshing" ? "is-refreshing" : ""}`} />
                               </span>
                             </span>
-                          ) : publishFailed ? "Failed" : "Publish"}
+                          ) : publishFailed ? "Failed" : <><span>Publish</span><ArrowUpRight size={13} aria-hidden="true" /></>}
                         </button>
                       )}
                       {client.status === "Missing folders" && !warningsSuppressed && (
@@ -3018,20 +3036,11 @@ export default function App() {
                     <ClientWorkspace key={client.path} clientPath={client.path} onContextMenu={openPepperContextMenu} reviewDefault={sortedApprovalVersions.length>0||published} hasApprovals={sortedApprovalVersions.length>0} finalPath={published&&exports.final_filename?`${client.path.replace(/[\\/]+$/, "")}\\04_FINAL\\${exports.final_filename}`:null}>
                     {sortedApprovalVersions.length === 0 ? (
                       pendingApprovalEntry
-                        ? <div className="version-list" role="group" aria-label={`${label.name} approval versions`}>{pendingApprovalEntry}</div>
+                        ? <VersionHistory label={`${label.name} approval versions`}>{pendingApprovalEntry}</VersionHistory>
                         : <div className="versions-empty">No approval copies available.</div>
                     ) : selectedApprovalVersion && selectedApprovalPath && (
                       <div className="version-browser">
-                        <article className="export-preview">
-                          <div className="export-preview-heading">
-                            <div className="export-preview-title">
-                              <span className="version-label">V{selectedApprovalVersion.version}</span>
-                              <strong>{selectedApprovalVersion.filename}</strong>
-                            </div>
-                            <time dateTime={selectedApprovalVersion.added_at}>
-                              Added {formatUiDateTime(selectedApprovalVersion.added_at)}
-                            </time>
-                          </div>
+                        <article className="export-preview" aria-label={`V${selectedApprovalVersion.version} preview: ${selectedApprovalVersion.filename}`}>
                           <InlineVideoPlayer
                             className="approval-video-player"
                             src={convertFileSrc(selectedApprovalPath)}
@@ -3045,41 +3054,60 @@ export default function App() {
                               const seconds = wholeSeconds % 60;
                               const milliseconds = Math.floor((currentSeconds - wholeSeconds) * 1000);
                               const playbackTime = `${String(hours).padStart(2, "0")}:${String(minutes).padStart(2, "0")}:${String(seconds).padStart(2, "0")}.${String(milliseconds).padStart(3, "0")}`;
-                              const containingFolder = selectedApprovalPath.replace(/[\\/][^\\/]*$/, "");
                               openPepperContextMenu(event, `V${selectedApprovalVersion.version} video`, [
                                 { label: video?.paused ? "Play" : "Pause", action: () => video?.paused ? void video.play() : video?.pause() },
                                 { label: video?.muted ? "Unmute" : "Mute", action: () => { if (video) video.muted = !video.muted; } },
                                 { label: `Copy timecode  ${playbackTime}`, action: () => copyFromContextMenu(playbackTime, "Timecode"), separatorBefore: true },
+                                { label: "Copy file name", action: () => copyFromContextMenu(selectedApprovalVersion.filename, "File name") },
                                 { label: "Copy video path", action: () => copyFromContextMenu(selectedApprovalPath, "Video path") },
-                                { label: "Open containing folder", action: () => void handleOpenFolder(containingFolder) },
+                                { label: "Open containing folder", action: () => void handleOpenFileLocation(selectedApprovalPath) },
                               ]);
                             }}
                           />
                         </article>
-                        <div className="version-list" role="group" aria-label={`${label.name} approval versions`}>
+                        <VersionHistory label={`${label.name} approval versions`}>
                           {pendingApprovalEntry}
                           {sortedApprovalVersions.map((approvalVersion) => {
                             const approvalIsBeingRendered = exports.approval_in_progress
                               && approvalVersion.version === exports.approval_progress_version;
+                            const isLatest = approvalVersion.relative_path === lastApprovalVersion?.relative_path;
+                            const versionRecord = approvalVersion.frameio?.destination_account_id === frameIoConfig.accountId
+                              && approvalVersion.frameio?.destination_project_id === frameIoConfig.projectId
+                              ? approvalVersion.frameio : null;
+                            const versionShareUrl = approvalIsBeingRendered ? null : isLatest ? latestFrameIoShareUrl : versionRecord?.share_url;
+                            const versionBusy = isLatest && latestFrameIoBusy;
+                            const versionError = versionRecord?.last_error
+                              ?? (isLatest && /fail|error/.test(latestFrameIoState ?? "") ? latestFrameIoProgress?.message : null);
+                            const versionFailed = !approvalIsBeingRendered && !versionBusy && !versionShareUrl
+                              && Boolean(versionError || /fail|error/.test(versionRecord?.state ?? ""));
+                            const versionStatus = approvalIsBeingRendered ? cleanExportInProgress ? "Exporting" : "Rendering"
+                              : versionBusy ? frameIoUploadLabel
+                                : versionFailed ? "Failed"
+                                  : versionShareUrl ? "Shared"
+                                    : isLatest && latestFrameIoShareRetryAvailable ? "Link needed"
+                                      : isLatest && latestFrameIoHasUnfinishedJob ? "Needs attention" : null;
                             const selected = !approvalIsBeingRendered
                               && approvalVersion.relative_path === selectedApprovalVersion?.relative_path;
                             return (
                               <div
-                                className={`version-entry ${selected ? "selected" : ""}`}
+                                className={`version-entry ${selected ? "selected" : ""} ${isLatest && !approvalIsBeingRendered ? "latest-version" : ""} ${approvalIsBeingRendered ? "version-pending" : ""}`}
                                 key={`${approvalVersion.version}-${approvalVersion.filename}`}
                                 onContextMenu={(event) => openPepperContextMenu(event, `V${approvalVersion.version}`, approvalIsBeingRendered ? [
                                   { label: "Creating approval copy", action: () => undefined, disabled: true },
                                 ] : [
                                   { label: "Select version", action: () => setSelectedVersionByClient((current) => ({ ...current, [client.name]: approvalVersion.relative_path })) },
                                   { label: "Copy version name", action: () => copyFromContextMenu(`V${approvalVersion.version}`, "Version name") },
+                                  { label: "Copy file name", action: () => copyFromContextMenu(approvalVersion.filename, "File name") },
                                   { label: "Copy file path", action: () => copyFromContextMenu(`${client.path.replace(/[\\/]+$/, "")}\\03_EXPORTS\\${approvalVersion.relative_path.replace(/[\\/]+/g, "\\")}`, "File path") },
-                                  { label: "Open file location", action: () => void handleOpenFolder(`${client.path.replace(/[\\/]+$/, "")}\\03_EXPORTS\\${approvalVersion.relative_path.replace(/[\\/]+/g, "\\")}`.replace(/[\\/][^\\/]*$/, "")) },
+                                  { label: "Open file location", action: () => void handleOpenFileLocation(`${client.path.replace(/[\\/]+$/, "")}\\03_EXPORTS\\${approvalVersion.relative_path.replace(/[\\/]+/g, "\\")}`) },
                                 ])}
                               >
                                 <button
                                   type="button"
                                   aria-pressed={selected}
+                                  aria-label={`Preview V${approvalVersion.version}${isLatest ? ", latest version" : ""}`}
                                   aria-disabled={approvalIsBeingRendered}
+                                  title={approvalVersion.filename}
                                   className={`version-option ${approvalIsBeingRendered ? "version-option-rendering" : ""}`}
                                   disabled={approvalIsBeingRendered}
                                   onClick={() => setSelectedVersionByClient((current) => ({
@@ -3094,36 +3122,27 @@ export default function App() {
                                         <LoaderCircle className="approval-progress-spinner" size={15} aria-hidden="true" />
                                       </span>
                                     ) : (
-                                      <>
-                                        {approvalVersion.relative_path === lastApprovalVersion?.relative_path && <span className="version-latest">Latest</span>}
-                                        <time dateTime={approvalVersion.added_at} title={formatUiDateTime(approvalVersion.added_at)}>
-                                          {new Date(approvalVersion.added_at).toLocaleString(undefined, { day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" })}
-                                        </time>
-                                      </>
+                                      isLatest && <span className="version-latest">Latest</span>
                                     )}
                                   </span>
+                                  {!approvalIsBeingRendered && <time dateTime={approvalVersion.added_at} title={formatUiDateTime(approvalVersion.added_at)}>
+                                    {new Date(approvalVersion.added_at).toLocaleString(undefined, { day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" })}
+                                  </time>}
+                                  {versionStatus && <span className={`version-state ${versionFailed ? "failed" : ""}`} title={versionError ?? undefined}>{versionStatus}</span>}
                                 </button>
-                                {approvalVersion.relative_path === lastApprovalVersion?.relative_path && latestApprovalPath && (
+                                {isLatest && latestApprovalPath && !approvalIsBeingRendered && (
                                   <div className="frameio-inline-row">
-                                    {!latestFrameIoShareUrl && (
-                                      <span className="frameio-inline-label">
-                                        {latestFrameIoBusy ? frameIoUploadLabel : "Frame.io review"}
-                                      </span>
-                                    )}
                                     {latestFrameIoShareUrl ? (
                                       <button
                                         type="button"
-                                        className="frameio-open-link"
-                                        title="Frame.io review link"
-                                        aria-label={`Open Frame.io review: ${latestFrameIoShareUrl}`}
+                                        className="frameio-icon-button"
+                                        title="Open review"
+                                        aria-label={`Open V${approvalVersion.version} review`}
                                         onClick={() => void invoke("frameio_open_external_url", { url: latestFrameIoShareUrl }).catch((err) => showToast(String(err), "error", 7000))}
                                       >
                                         <Link2 size={15} aria-hidden="true" />
-                                        <span>{latestFrameIoShareUrl.replace(/^https?:\/\//, "")}</span>
                                       </button>
-                                    ) : latestFrameIoHasUnfinishedJob ? (
-                                      <span className="frameio-inline-label">{latestFrameIoRecord?.last_error ?? "Frame.io upload needs reconciliation"}</span>
-                                    ) : !frameIoConfigured ? (
+                                    ) : latestFrameIoHasUnfinishedJob ? null : !frameIoConfigured ? (
                                       <button
                                         type="button"
                                         className="frameio-icon-button"
@@ -3152,17 +3171,7 @@ export default function App() {
                                       </button>
                                     )}
                                     {latestFrameIoShareUrl ? (
-                                      <button
-                                        type="button"
-                                        className="frameio-icon-button copy"
-                                        title="Copy to clipboard"
-                                        aria-label="Copy Frame.io share link"
-                                        onClick={() => void copyFrameIoShareLink(latestFrameIoShareUrl)}
-                                      >
-                                        <Copy size={14} aria-hidden="true" />
-                                      </button>
-                                    ) : latestFrameIoProgress?.message || (latestFrameIoRecordMatchesDestination && latestFrameIoRecord?.last_error) ? (
-                                      <span className="frameio-inline-message">{latestFrameIoProgress?.message ?? latestFrameIoRecord?.last_error}</span>
+                                      <CopyReviewLinkButton url={latestFrameIoShareUrl} version={approvalVersion.version} onCopy={copyFrameIoShareLink} />
                                     ) : null}
                                     {latestFrameIoBusy && latestFrameIoState === "uploading" && uploadPercent !== null && (
                                       <progress
@@ -3175,10 +3184,18 @@ export default function App() {
                                     )}
                                   </div>
                                 )}
+                                {!isLatest && versionShareUrl && <div className="frameio-inline-row">
+                                  <button type="button" className="frameio-icon-button" title="Open review" aria-label={`Open V${approvalVersion.version} review`}
+                                    onClick={() => void invoke("frameio_open_external_url", { url: versionShareUrl }).catch((err) => showToast(String(err), "error", 7000))}>
+                                    <Link2 size={15} aria-hidden="true" />
+                                  </button>
+                                  <CopyReviewLinkButton url={versionShareUrl} version={approvalVersion.version} onCopy={copyFrameIoShareLink} />
+                                </div>}
+                                {versionFailed && versionError && <span className="version-delivery-message" title={versionError}>{versionError}</span>}
                               </div>
                             );
                           })}
-                        </div>
+                        </VersionHistory>
                       </div>
                     )}
                     </ClientWorkspace>
@@ -3190,7 +3207,7 @@ export default function App() {
               </section>
             ))}
             </div>
-          </div>
+          </ClientScrollArea>
           {projectRoot && clientRefreshFailedRoot === projectRoot && (
             <div
               className="client-refresh-overlay"
