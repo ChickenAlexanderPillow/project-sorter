@@ -444,10 +444,11 @@ fn extract_media<R: Read>(reader: R) -> Result<(String, Vec<MediaFields>, u64), 
 
 #[tauri::command]
 pub async fn premiere_project_health_scan(
+    project_root: String,
     client_path: String,
     path: String,
 ) -> Result<PremiereHealthReport, String> {
-    tauri::async_runtime::spawn_blocking(move || scan_sync(client_path, path))
+    tauri::async_runtime::spawn_blocking(move || scan_sync(project_root, client_path, path))
         .await
         .map_err(|error| error.to_string())?
 }
@@ -561,10 +562,19 @@ fn write_availability_report(directory: &Path, file: &Path, record: &Availabilit
     result
 }
 
-fn scan_sync(client_path: String, path: String) -> Result<PremiereHealthReport, String> {
+fn scan_sync(project_root: String, client_path: String, path: String) -> Result<PremiereHealthReport, String> {
+    let project_root_path = PathBuf::from(&project_root);
+    let canonical_project_root = project_root_path.canonicalize()
+        .map_err(|error| format!("Project folder is unavailable: {error}"))?;
     let client_root = PathBuf::from(client_path)
         .canonicalize()
         .map_err(|error| format!("Client folder is unavailable: {error}"))?;
+    if !client_root.starts_with(&canonical_project_root) {
+        return Err("Choose a client folder inside the selected project".into());
+    }
+    let client_relative = client_root.strip_prefix(&canonical_project_root)
+        .map_err(|_| "Client folder is outside the selected project".to_string())?
+        .to_string_lossy().replace('\\', "/");
     let selected_path = PathBuf::from(&path)
         .canonicalize()
         .map_err(|error| format!("Premiere project is unavailable: {error}"))?;
@@ -636,6 +646,15 @@ fn scan_sync(client_path: String, path: String) -> Result<PremiereHealthReport, 
         .unwrap_or_else(|_| "unknown computer".into());
     let machine_key = sha256_text(&machine_name.trim().to_lowercase());
     let mut availability_note = None;
+    let copied_media = crate::ingest::filed_media_copies(&project_root_path, &client_relative);
+    for item in &mut items {
+        let source_path = absolute_reference(&item.original_path, &project_path);
+        let source_key = clean_project_path(&source_path).to_lowercase();
+        if let Some(destination) = copied_media.get(&source_key) {
+            item.resolved_path = Some(destination.to_string_lossy().into_owned());
+            item.status = "copied_to_nas".into();
+        }
+    }
     let availability_dir = (|| {
         let pepper = safe_child_dir(&client_root, ".pepper")?;
         let health = safe_child_dir(&pepper, "media-health")?;

@@ -2753,6 +2753,7 @@ pub fn run() {
             ingest::ingest_collect,
             ingest::ingest_save,
             ingest::ingest_file,
+            ingest::ingest_file_ids,
             ingest::ingest_lease_status,
             ingest::ingest_recover_stale_lease,
             ingest::ingest_source_availability,

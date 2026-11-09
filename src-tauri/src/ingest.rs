@@ -181,7 +181,54 @@ pub struct SourceAvailability{pub source:String,pub available:bool}
 pub fn ingest_source_availability(project_root:String)->Result<Vec<SourceAvailability>,String>{let root=PathBuf::from(project_root);let manifest=read_manifest(&root)?;let mut sources:Vec<String>=manifest.files.iter().map(|f|f.source.clone()).collect();sources.sort();sources.dedup();Ok(sources.into_iter().map(|source|SourceAvailability{available:Path::new(&source).exists(),source}).collect())}
 #[derive(Serialize)]
 pub struct FilingPreview{pub file_id:String,pub name:String,pub role:String,pub client:String,pub destination:String,pub collision:bool,pub issue:Option<String>}
-fn role_destination(role:&str)->Option<&'static str>{match role{"Proxy video"=>Some("01_MEDIA/010_VIDEO_PROXY"),"Full-resolution video"=>Some("01_MEDIA/020_VIDEO_RAW"),"Raw audio"=>Some("01_MEDIA/040_AUDIO_RAW"),"Clean audio"=>Some("01_MEDIA/030_AUDIO_CLEAN"),"Stills"=>Some("01_MEDIA/050_STILLS"),"Miscellaneous"=>Some("01_MEDIA/080_MISCELLANEOUS"),_=>None}}
+fn role_destination(role:&str)->Option<&'static str>{match role{"Proxy video"=>Some("01_MEDIA/010_VIDEO_PROXY"),"Full-resolution video"=>Some("01_MEDIA/020_VIDEO_RAW"),"Raw audio"=>Some("01_MEDIA/040_AUDIO_RAW"),"Clean audio"=>Some("01_MEDIA/030_AUDIO_CLEAN"),"Music"=>Some("01_MEDIA/060_MUSIC"),"Stills"=>Some("01_MEDIA/050_STILLS"),"Graphics"=>Some("01_MEDIA/070_GRAPHICS"),"Miscellaneous"=>Some("01_MEDIA/080_MISCELLANEOUS"),_=>None}}
+
+fn normalized_path(path: &Path) -> String {
+    let normalized = path.to_string_lossy().replace('/', "\\");
+    if let Some(unc) = normalized.strip_prefix(r"\\?\UNC\") {
+        format!(r"\\{unc}").to_lowercase()
+    } else {
+        normalized.strip_prefix(r"\\?\").unwrap_or(&normalized).to_lowercase()
+    }
+}
+
+/// Read-only lookup used by Project Health to recognize a verified copy in
+/// this client's standard NAS media folder. It never repairs or writes ingest state.
+pub fn filed_media_copies(project_root: &Path, client_relative: &str) -> std::collections::HashMap<String, PathBuf> {
+    const MAX_MANIFEST_BYTES: u64 = 64 * 1024 * 1024;
+    let mut copies = std::collections::HashMap::new();
+    let path = manifest_path(project_root);
+    let Ok(metadata) = fs::metadata(&path) else { return copies };
+    if metadata.len() > MAX_MANIFEST_BYTES { return copies; }
+    let Ok(bytes) = fs::read(path) else { return copies };
+    let Ok(manifest) = serde_json::from_slice::<Manifest>(&bytes) else { return copies };
+    let client_relative = client_relative.replace('/', "\\").trim_matches('\\').to_lowercase();
+    if !valid_client_path(&client_relative) { return copies; }
+    for file in manifest.files.iter().filter(|file| file.status == "Filed" && file.client_paths.len() == 1) {
+        if file.client_paths[0].replace('/', "\\").trim_matches('\\').to_lowercase() != client_relative || file.destinations.len() != 1 {
+            continue;
+        }
+        let destination_name = Path::new(&file.destinations[0]).file_name();
+        let Some(destination_name) = destination_name.filter(|name| matches!(name.to_string_lossy().as_ref(), value if !value.is_empty() && value != "." && value != "..")) else { continue };
+        let Some(role_dir) = role_destination(&file.role) else { continue };
+        let destination = project_root.join(client_relative_path(&file.client_paths[0])).join(role_dir).join(destination_name);
+        let Ok(destination_metadata) = fs::metadata(&destination) else { continue };
+        if !destination_metadata.is_file() || destination_metadata.len() != file.size { continue; }
+        let source = Path::new(&file.source);
+        let source_path = if source.file_name().is_some_and(|name| name.to_string_lossy().eq_ignore_ascii_case(&file.name))
+            && Path::new(&file.relative_path).components().count() == 1 {
+            source.to_path_buf()
+        } else {
+            source.join(&file.relative_path)
+        };
+        copies.insert(normalized_path(&source_path), destination);
+    }
+    copies
+}
+
+fn client_relative_path(path: &str) -> PathBuf {
+    path.split(['\\', '/']).filter(|part| !part.is_empty()).collect()
+}
 #[tauri::command]
 pub async fn ingest_preview_filing(project_root:String,eligible_client_paths:Option<Vec<String>>)->Result<Vec<FilingPreview>,String>{
  tauri::async_runtime::spawn_blocking(move||preview_filing_sync(project_root,eligible_client_paths)).await.map_err(|error|error.to_string())?
@@ -333,13 +380,23 @@ pub async fn ingest_file(project_root:String,eligible_client_paths:Option<Vec<St
     let root=PathBuf::from(&project_root);let result=tauri::async_runtime::spawn_blocking(move||file_selected_sync(project_root,eligible_client_paths)).await.map_err(|e|e.to_string())?;
     if let Ok(_lease)=acquire_lease(&root){let _=write_progress(&root,if result.is_ok(){"complete"}else{"paused"},"",1,1);}result
 }
+#[tauri::command]
+pub async fn ingest_file_ids(project_root:String,file_ids:Vec<String>)->Result<Manifest,String>{
+    if file_ids.is_empty(){return Err("Choose at least one staged file to organise".into());}
+    let root=PathBuf::from(&project_root);let ids:std::collections::HashSet<String>=file_ids.into_iter().collect();
+    let result=tauri::async_runtime::spawn_blocking(move||file_selected_sync_filtered(project_root,None,Some(ids))).await.map_err(|e|e.to_string())?;
+    if let Ok(_lease)=acquire_lease(&root){let _=write_progress(&root,if result.is_ok(){"complete"}else{"paused"},"",1,1);}result
+}
 #[cfg(test)]
 fn file_sync(project_root:String)->Result<Manifest,String>{file_selected_sync(project_root,None)}
 fn file_selected_sync(project_root:String,eligible_client_paths:Option<Vec<String>>)->Result<Manifest,String>{
+    file_selected_sync_filtered(project_root,eligible_client_paths,None)
+}
+fn file_selected_sync_filtered(project_root:String,eligible_client_paths:Option<Vec<String>>,eligible_file_ids:Option<std::collections::HashSet<String>>)->Result<Manifest,String>{
     let root=PathBuf::from(project_root);let _lease=acquire_lease(&root)?;let mut state=read_manifest(&root)?;
     let total=state.files.iter().filter(|f|f.status=="Verified").map(|f|if f.clients.is_empty(){usize::from(f.client.is_some())}else{f.clients.len()}).sum::<usize>();let mut completed=0usize;
     for i in 0..state.files.len(){
-        let f=state.files[i].clone();if f.status=="Filed"||f.status!="Verified"{continue;}
+        let f=state.files[i].clone();if f.status=="Filed"||f.status!="Verified"||eligible_file_ids.as_ref().is_some_and(|ids|!ids.contains(&f.id)){continue;}
         let mut names=f.clients.clone();if names.is_empty(){if let Some(c)=f.client.clone(){names.push(c)}}
         if !f.client_paths.is_empty()&&f.client_paths.len()!=names.len(){return Err(format!("Client destination metadata is inconsistent for {}",f.name));}
         let mut targets:Vec<(String,String)>=names.into_iter().enumerate().map(|(i,name)|{let rel=f.client_paths.get(i).cloned().unwrap_or_else(||name.clone());(name,rel)}).collect();

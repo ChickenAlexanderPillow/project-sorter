@@ -3049,7 +3049,7 @@ export default function App() {
                 </div>
                 {expanded && !client.exportStatusLoading && (
                   <div className="client-details">
-                    <ClientWorkspace key={client.path} clientPath={client.path} onContextMenu={openPepperContextMenu} reviewDefault={sortedApprovalVersions.length>0||published} hasApprovals={sortedApprovalVersions.length>0} finalPath={published&&exports.final_filename?`${client.path.replace(/[\\/]+$/, "")}\\04_FINAL\\${exports.final_filename}`:null}>
+                    <ClientWorkspace key={client.path} projectRoot={projectRoot} clientPath={client.path} onContextMenu={openPepperContextMenu} reviewDefault={sortedApprovalVersions.length>0||published} hasApprovals={sortedApprovalVersions.length>0} finalPath={published&&exports.final_filename?`${client.path.replace(/[\\/]+$/, "")}\\04_FINAL\\${exports.final_filename}`:null}>
                     {sortedApprovalVersions.length === 0 ? (
                       pendingApprovalEntry
                         ? <VersionHistory label={`${label.name} approval versions`}>{pendingApprovalEntry}</VersionHistory>

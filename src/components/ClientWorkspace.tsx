@@ -6,7 +6,7 @@ import { ClientFiles, type FileContextMenu } from './ClientFiles';
 import { SourceMediaPreview } from './SourceMediaPreview';
 import './ClientWorkspace.css';
 
-export function ClientWorkspace({clientPath,reviewDefault,hasApprovals,finalPath,children,onContextMenu}:{clientPath:string;reviewDefault:boolean;hasApprovals:boolean;finalPath?:string|null;children:ReactNode;onContextMenu:FileContextMenu}){
+export function ClientWorkspace({projectRoot,clientPath,reviewDefault,hasApprovals,finalPath,children,onContextMenu}:{projectRoot:string;clientPath:string;reviewDefault:boolean;hasApprovals:boolean;finalPath?:string|null;children:ReactNode;onContextMenu:FileContextMenu}){
   const [tab,setTab]=useState<'review'|'files'>(()=>reviewDefault?'review':'files');
   const previousDefault=useRef(reviewDefault);
   const [error,setError]=useState('');const id=useId();
@@ -17,7 +17,7 @@ export function ClientWorkspace({clientPath,reviewDefault,hasApprovals,finalPath
       <button type="button" id={`${id}-review`} role="tab" aria-selected={tab==='review'} aria-controls={`${id}-review-panel`} onClick={()=>setTab('review')}><MessageSquareCheck size={15}/>Review</button>
     </nav>
     <div className="cw-panels">
-      <RetainedView active={tab==='files'} id={`${id}-files-panel`} labelledBy={`${id}-files`}><ClientFiles clientPath={clientPath} onContextMenu={onContextMenu}/></RetainedView>
+      <RetainedView active={tab==='files'} id={`${id}-files-panel`} labelledBy={`${id}-files`}><ClientFiles projectRoot={projectRoot} clientPath={clientPath} onContextMenu={onContextMenu}/></RetainedView>
       <RetainedView active={tab==='review'} id={`${id}-review-panel`} labelledBy={`${id}-review`}>{!hasApprovals&&finalPath?<div className="cw-final-preview" onContextMenu={event=>onContextMenu(event,'Published final',[{label:'Open file location',action:()=>{void invoke('open_file_location',{path:finalPath}).catch(error=>setError(String(error)));}}])}><header><span>Published final</span></header><SourceMediaPreview path={finalPath} name={finalPath.split(/[\\/]/).pop()}/>{error&&<div className="cf-error" role="alert">{error}</div>}</div>:children}</RetainedView>
     </div>
   </section>;

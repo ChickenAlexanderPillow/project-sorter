@@ -22,7 +22,7 @@ const projectAction=(name:string)=>PROJECT_ACTIONS[name.split('.').pop()?.toLowe
 const PROJECT_APPS:Record<string,string>={prproj:'Premiere Pro',aep:'After Effects',aepx:'After Effects',sesx:'Audition',blend:'Blender',drp:'DaVinci Resolve'};
 const projectApp=(name:string)=>PROJECT_APPS[name.split('.').pop()?.toLowerCase()||'']||'Editing project';
 
-export function ClientFiles({clientPath,onContextMenu}:{clientPath:string;onContextMenu:FileContextMenu}){
+export function ClientFiles({projectRoot,clientPath,onContextMenu}:{projectRoot:string;clientPath:string;onContextMenu:FileContextMenu}){
   const [section,setSection]=useState<Section>('edit');
   const [listing,setListing]=useState<Listing|null>(null),[loading,setLoading]=useState(true),[error,setError]=useState('');
   const [selectedPath,setSelectedPath]=useState<string|null>(null),[query,setQuery]=useState(''),[searchOpen,setSearchOpen]=useState(false);
@@ -134,7 +134,7 @@ export function ClientFiles({clientPath,onContextMenu}:{clientPath:string;onCont
         </div>
       </div>
       {selected&&displaySection==='edit'&&<aside className="cf-project-sidebar" aria-label={`Project health for ${selected.name}`}>
-        {loading?<div className="cf-loading" role="status"><LoaderCircle size={18} className="cf-spin"/>Loading project?</div>:selected.name.toLowerCase().endsWith('.prproj')?<PremiereProjectHealth key={`${clientPath}/${selected.path}/${selected.modified_ms}/${revision}`} clientPath={clientPath} projectPath={selected.path}/>:<div className="cf-health-unsupported"><h3>Project health</h3><p>Media checks are available for Premiere Pro projects.</p></div>}
+        {loading?<div className="cf-loading" role="status"><LoaderCircle size={18} className="cf-spin"/>Loading project?</div>:selected.name.toLowerCase().endsWith('.prproj')?<PremiereProjectHealth key={`${clientPath}/${selected.path}/${selected.modified_ms}/${revision}`} projectRoot={projectRoot} clientPath={clientPath} projectPath={selected.path}/>:<div className="cf-health-unsupported"><h3>Project health</h3><p>Media checks are available for Premiere Pro projects.</p></div>}
       </aside>}
       {selected&&displaySection!=='edit'&&<aside className="cf-preview">
         <header className="cf-preview-heading"><strong title={selected.relative_path}>{selected.name}</strong></header>
