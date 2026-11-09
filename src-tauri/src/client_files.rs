@@ -44,6 +44,7 @@ fn category_roots(category: &str) -> Result<Vec<(&'static str, &'static str)>, S
             ("Stills", "01_MEDIA/050_STILLS"),
             ("Graphics", "01_MEDIA/070_GRAPHICS"),
         ]),
+        "stock" => Ok(vec![("Stock", "01_MEDIA/090_STOCK")]),
         "edit" => Ok(vec![("Edit", "02_EDIT")]),
         _ => Err("Choose Video, Audio, Stills or Edit.".into()),
     }
@@ -124,6 +125,7 @@ fn list_assets(client_path: &Path, category: &str) -> Result<ClientAssets, Strin
                 if !matches!(
                     (category, kind),
                     ("video", "video") | ("audio", "audio") | ("stills", "image")
+                        | ("stock", "video") | ("stock", "audio") | ("stock", "image")
                 ) {
                     continue;
                 }

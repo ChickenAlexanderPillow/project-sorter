@@ -181,7 +181,7 @@ pub struct SourceAvailability{pub source:String,pub available:bool}
 pub fn ingest_source_availability(project_root:String)->Result<Vec<SourceAvailability>,String>{let root=PathBuf::from(project_root);let manifest=read_manifest(&root)?;let mut sources:Vec<String>=manifest.files.iter().map(|f|f.source.clone()).collect();sources.sort();sources.dedup();Ok(sources.into_iter().map(|source|SourceAvailability{available:Path::new(&source).exists(),source}).collect())}
 #[derive(Serialize)]
 pub struct FilingPreview{pub file_id:String,pub name:String,pub role:String,pub client:String,pub destination:String,pub collision:bool,pub issue:Option<String>}
-fn role_destination(role:&str)->Option<&'static str>{match role{"Proxy video"=>Some("01_MEDIA/010_VIDEO_PROXY"),"Full-resolution video"=>Some("01_MEDIA/020_VIDEO_RAW"),"Raw audio"=>Some("01_MEDIA/040_AUDIO_RAW"),"Clean audio"=>Some("01_MEDIA/030_AUDIO_CLEAN"),"Music"=>Some("01_MEDIA/060_MUSIC"),"Stills"=>Some("01_MEDIA/050_STILLS"),"Graphics"=>Some("01_MEDIA/070_GRAPHICS"),"Miscellaneous"=>Some("01_MEDIA/080_MISCELLANEOUS"),_=>None}}
+fn role_destination(role:&str)->Option<&'static str>{match role{"Proxy video"=>Some("01_MEDIA/010_VIDEO_PROXY"),"Full-resolution video"=>Some("01_MEDIA/020_VIDEO_RAW"),"Raw audio"=>Some("01_MEDIA/040_AUDIO_RAW"),"Clean audio"=>Some("01_MEDIA/030_AUDIO_CLEAN"),"Music"=>Some("01_MEDIA/060_MUSIC"),"Stills"=>Some("01_MEDIA/050_STILLS"),"Graphics"=>Some("01_MEDIA/070_GRAPHICS"),"Miscellaneous"=>Some("01_MEDIA/080_MISCELLANEOUS"),"Stock"=>Some("01_MEDIA/090_STOCK"),_=>None}}
 
 fn normalized_path(path: &Path) -> String {
     let normalized = path.to_string_lossy().replace('/', "\\");

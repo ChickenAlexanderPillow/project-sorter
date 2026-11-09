@@ -1,8 +1,9 @@
-import { useEffect, useId, useState } from 'react';
+import { useEffect, useId, useRef, useState } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { Check, Copy, File, FolderOpen, LoaderCircle, RefreshCw, X } from 'lucide-react';
 import { statusFor, type MediaHealthStatus as Status } from './premiereHealthStatus';
 import { mediaKind } from './MediaTypes';
+import { CopyMediaPreview } from './CopyMediaPreview';
 import './PremiereProjectHealth.css';
 
 type MachineAvailability = { machine_name: string; last_seen: string };
@@ -21,11 +22,11 @@ const hints: Record<Status, string> = {
 const roleDestinations: Record<string, string> = {
   'Proxy video': '01_MEDIA/010_VIDEO_PROXY', 'Full-resolution video': '01_MEDIA/020_VIDEO_RAW',
   'Clean audio': '01_MEDIA/030_AUDIO_CLEAN', 'Raw audio': '01_MEDIA/040_AUDIO_RAW',
-  Music: '01_MEDIA/060_MUSIC', Stills: '01_MEDIA/050_STILLS', Graphics: '01_MEDIA/070_GRAPHICS', Miscellaneous: '01_MEDIA/080_MISCELLANEOUS',
+  Music: '01_MEDIA/060_MUSIC', Stills: '01_MEDIA/050_STILLS', Graphics: '01_MEDIA/070_GRAPHICS', Miscellaneous: '01_MEDIA/080_MISCELLANEOUS', Stock: '01_MEDIA/090_STOCK',
 };
 const roleOptions: Record<string, string[]> = {
-  video: ['Full-resolution video', 'Proxy video'], audio: ['Raw audio', 'Clean audio', 'Music'],
-  image: ['Stills', 'Graphics'], other: ['Miscellaneous'],
+  video: ['Full-resolution video', 'Proxy video', 'Stock'], audio: ['Raw audio', 'Clean audio', 'Music', 'Stock'],
+  image: ['Stills', 'Graphics', 'Stock'], other: ['Miscellaneous', 'Stock'],
 };
 const defaultCopyRole = (path: string) => {
   const kind = mediaKind(path);
@@ -55,11 +56,11 @@ export function PremiereProjectHealth({ projectRoot, clientPath, projectPath }: 
   const [locationError, setLocationError] = useState('');
   const [openingLocation, setOpeningLocation] = useState<string | null>(null);
   const [copyOpen, setCopyOpen] = useState(false);
-  const [copySelection, setCopySelection] = useState<Record<string, boolean>>({});
   const [copyRoles, setCopyRoles] = useState<Record<string, string>>({});
   const [copyBusy, setCopyBusy] = useState(false);
   const [copyError, setCopyError] = useState('');
   const [copySuccess, setCopySuccess] = useState('');
+  const copyListRef = useRef<HTMLDivElement>(null);
   const headingId = useId();
 
   useEffect(() => {
@@ -86,13 +87,12 @@ export function PremiereProjectHealth({ projectRoot, clientPath, projectPath }: 
 
   function startCopyDialog(localItems: MediaItem[]) {
     setCopyError(''); setCopySuccess('');
-    setCopySelection(Object.fromEntries(localItems.map(item => [item.original_path, true])));
     setCopyRoles(Object.fromEntries(localItems.map(item => [item.original_path, defaultCopyRole(item.file_name)])));
     setCopyOpen(true);
   }
 
   async function copyLocalMedia(localItems: MediaItem[]) {
-    const selected = localItems.filter(item => copySelection[item.original_path]);
+    const selected = localItems;
     if (!selected.length || copyBusy) return;
     setCopyBusy(true); setCopyError(''); setCopySuccess('');
     let staged = false;
@@ -207,20 +207,40 @@ export function PremiereProjectHealth({ projectRoot, clientPath, projectPath }: 
       </div>
       {copyOpen && <div className="pph-copy-backdrop" role="presentation" onMouseDown={event => { if (event.target === event.currentTarget && !copyBusy) setCopyOpen(false); }}>
         <section className="pph-copy-dialog" role="dialog" aria-modal="true" aria-labelledby="pph-copy-title">
-          <header><div><h2 id="pph-copy-title">Copy local media to NAS</h2><p>Choose a destination type for each file. Pepper stages and verifies each copy, then files it under this client.</p></div><button type="button" className="pph-rescan" aria-label="Close dialog" disabled={copyBusy} onClick={() => setCopyOpen(false)}><X size={15}/></button></header>
-          <div className="pph-copy-list" role="list">
+          <header><div><h2 id="pph-copy-title">Copy local media to NAS</h2><p>Set a destination type for each file. Pepper will stage, verify, and file all listed files under this client.</p></div><button type="button" className="pph-rescan" aria-label="Close dialog" disabled={copyBusy} onClick={() => setCopyOpen(false)}><X size={15}/></button></header>
+          <div className="pph-copy-list" ref={copyListRef} role="list">
             {localItems.map(item => {
               const choices = roleOptions[mediaKind(item.file_name) || 'other'];
               const role = copyRoles[item.original_path] || defaultCopyRole(item.file_name);
-              return <div className={`pph-copy-row ${copySelection[item.original_path] ? 'selected' : ''}`} key={item.original_path}>
-                <input type="checkbox" checked={Boolean(copySelection[item.original_path])} disabled={copyBusy} aria-label={`Include ${item.file_name}`} onChange={event => setCopySelection(current => ({ ...current, [item.original_path]: event.target.checked }))}/>
-                <div className="pph-copy-file"><strong title={item.file_name}>{item.file_name}</strong><small title={item.original_path}>{item.original_path}</small></div>
-                <label><span>File as</span><select value={role} disabled={copyBusy || !copySelection[item.original_path]} onChange={event => setCopyRoles(current => ({ ...current, [item.original_path]: event.target.value }))}>{choices.map(choice => <option key={choice} value={choice}>{choice}</option>)}</select><small>{roleDestinations[role]}</small></label>
+              return <div className="pph-copy-row" role="listitem" key={item.original_path}>
+                <div className="pph-copy-file-heading"><strong title={item.file_name}>{item.file_name}</strong></div>
+                <small className="pph-copy-source" title={item.original_path}>{item.original_path}</small>
+                <LazyCopyPreview root={copyListRef} path={item.resolved_path || item.original_path} name={item.file_name}/>
+                <label><span>File as</span><select value={role} disabled={copyBusy} onChange={event => setCopyRoles(current => ({ ...current, [item.original_path]: event.target.value }))}>{choices.map(choice => <option key={choice} value={choice}>{choice}</option>)}</select><small>{roleDestinations[role]}</small></label>
               </div>;
             })}
           </div>
-          <footer><button type="button" className="pph-copy-cancel" disabled={copyBusy} onClick={() => setCopyOpen(false)}>Cancel</button><button type="button" className="pph-copy-confirm" disabled={copyBusy || !localItems.some(item => copySelection[item.original_path])} onClick={() => void copyLocalMedia(localItems)}>{copyBusy ? <><LoaderCircle size={14} className="pph-spin"/>Copying and verifying…</> : <><Copy size={14}/>Copy selected to NAS</>}</button></footer>
+          <footer><button type="button" className="pph-copy-cancel" disabled={copyBusy} onClick={() => setCopyOpen(false)}>Cancel</button><button type="button" className="pph-copy-confirm" disabled={copyBusy || !localItems.length} onClick={() => void copyLocalMedia(localItems)}>{copyBusy ? <><LoaderCircle size={14} className="pph-spin"/>Copying and verifying…</> : <><Copy size={14}/>Copy files to NAS</>}</button></footer>
         </section>
       </div>}
     </section>;
+}
+
+function LazyCopyPreview({root,path,name}:{root:React.RefObject<HTMLDivElement|null>;path:string;name:string}) {
+  const element=useRef<HTMLDivElement>(null);
+  const [visible,setVisible]=useState(false);
+  const kind=mediaKind(path);
+  useEffect(()=>{
+    const node=element.current;
+    if(!node)return;
+    if(!('IntersectionObserver' in window)){setVisible(true);return;}
+    const observer=new IntersectionObserver(entries=>{
+      setVisible(entries.some(entry=>entry.isIntersecting));
+    },{root:root.current,rootMargin:'120px'});
+    observer.observe(node);
+    return()=>observer.disconnect();
+  },[root]);
+  return <div className="pph-copy-preview" ref={element} aria-label={`Preview of ${name}`}>
+    {visible ? <CopyMediaPreview key={path} path={path} name={name}/> : <><div className="pph-copy-canvas"><span>{kind?'Preview loads when visible':'No preview available'}</span></div><div className="pph-copy-playback"/></>}
+  </div>;
 }

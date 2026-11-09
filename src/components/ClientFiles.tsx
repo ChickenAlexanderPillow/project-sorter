@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState, type MouseEvent, type PointerEvent } from 'react';
 import { invoke } from '@tauri-apps/api/core';
-import { ArrowUpRight, CircleAlert, FileVideo, FolderOpen, Headphones, Image, LoaderCircle, RefreshCw, Search, SquarePen } from 'lucide-react';
+import { ArrowUpRight, CircleAlert, FileVideo, FolderOpen, Headphones, Image, LoaderCircle, Package, RefreshCw, Search, SquarePen } from 'lucide-react';
 import { selectFilePaths } from './fileSelection';
 import { startNativeFileDrag } from './nativeFileDrag';
 import { mediaRoleIcon } from './MediaTypes';
@@ -13,7 +13,7 @@ import { PremiereProjectHealth } from './PremiereProjectHealth';
 type Asset={name:string;path:string;relative_path:string;kind:string;variant:string;size:number;modified_ms:number|null};
 type Folder={label:string;path:string;available:boolean};
 type Listing={files:Asset[];folders:Folder[];truncated:boolean};
-const SECTIONS=[{id:'edit',name:'Edit',Icon:SquarePen},{id:'video',name:'Video',Icon:FileVideo},{id:'audio',name:'Audio',Icon:Headphones},{id:'stills',name:'Stills',Icon:Image}] as const;
+const SECTIONS=[{id:'edit',name:'Edit',Icon:SquarePen},{id:'video',name:'Video',Icon:FileVideo},{id:'audio',name:'Audio',Icon:Headphones},{id:'stills',name:'Stills',Icon:Image},{id:'stock',name:'Stock',Icon:Package}] as const;
 export type FileContextMenu=(event:MouseEvent,title:string,items:{label:string;action:()=>void;disabled?:boolean;separatorBefore?:boolean}[])=>void;
 type Section=typeof SECTIONS[number]['id'];
 const bytes=(size:number)=>size>=1024**3?`${(size/1024**3).toFixed(1)} GB`:size>=1024**2?`${(size/1024**2).toFixed(1)} MB`:`${Math.max(1,Math.round(size/1024))} KB`;
@@ -38,9 +38,10 @@ export function ClientFiles({projectRoot,clientPath,onContextMenu}:{projectRoot:
   const dragged=useRef(false),nativeBusy=useRef(false);
   const [displaySection,setDisplaySection]=useState<Section>('edit');
   const [hasStills,setHasStills]=useState(false);
+  const [hasStock,setHasStock]=useState(false);
   useEffect(()=>{
     let active=true;
-    void invoke<Listing>('client_files_list',{clientPath,category:'stills'}).then(next=>{if(active){setHasStills(next.files.length>0);if(!next.files.length)setSection(current=>current==='stills'?'edit':current);}}).catch(()=>{});
+    void Promise.all(['stills','stock'].map(category=>invoke<Listing>('client_files_list',{clientPath,category}))).then(([stills,stock])=>{if(active){setHasStills(stills.files.length>0);setHasStock(stock.files.length>0);if(!stills.files.length||!stock.files.length)setSection(current=>current==='stills'&&!stills.files.length||current==='stock'&&!stock.files.length?'edit':current);}}).catch(()=>{});
     return()=>{active=false;};
   },[clientPath,revision]);
   useEffect(()=>{
@@ -65,7 +66,7 @@ export function ClientFiles({projectRoot,clientPath,onContextMenu}:{projectRoot:
   const category=SECTIONS.find(item=>item.id===displaySection)!;
   const visible=(listing?.files||[]).filter(file=>`${file.name} ${file.relative_path} ${file.variant} ${displaySection==='edit'?projectApp(file.name):''}`.toLowerCase().includes(query.toLowerCase()));
   const selected=visible.find(file=>file.path===selectedPath)||visible[0]||null;
-  const variantOrder=displaySection==='video'?['Raw','Proxy']:displaySection==='audio'?['Clean','Raw','Music']:displaySection==='stills'?['Stills','Graphics']:['Premiere Pro','After Effects','Audition','Blender','DaVinci Resolve','Editing project'];
+  const variantOrder=displaySection==='video'?['Raw','Proxy']:displaySection==='audio'?['Clean','Raw','Music']:displaySection==='stills'?['Stills','Graphics']:displaySection==='stock'?['Stock']:['Premiere Pro','After Effects','Audition','Blender','DaVinci Resolve','Editing project'];
   const groups=variantOrder.map(variant=>({variant,files:visible.filter(file=>(displaySection==='edit'?projectApp(file.name):file.variant)===variant)})).filter(group=>group.files.length>0);
   const ordered=groups.flatMap(group=>group.files.map(file=>file.path));
   const visibleVideoPaths=useVisibleVideoPaths(fileList,ordered.join('\0'));
@@ -103,7 +104,7 @@ export function ClientFiles({projectRoot,clientPath,onContextMenu}:{projectRoot:
   };
   return <><section className={`client-files ${displaySection==='edit'?'cf-edit':''}`} aria-label="Client files">
     <header className="cf-toolbar">
-      <nav className="cf-sections" aria-label="File categories">{SECTIONS.filter(item=>item.id!=='stills'||hasStills).map(({id,name,Icon})=><button type="button" key={id} aria-pressed={section===id} onClick={()=>{if(id!==section){setLoading(true);setSection(id);setQuery('');}}}><Icon size={15}/><span>{name}</span></button>)}</nav>
+      <nav className="cf-sections" aria-label="File categories">{SECTIONS.filter(item=>item.id==='stills'?hasStills:item.id==='stock'?hasStock:true).map(({id,name,Icon})=><button type="button" key={id} aria-pressed={section===id} onClick={()=>{if(id!==section){setLoading(true);setSection(id);setQuery('');}}}><Icon size={15}/><span>{name}</span></button>)}</nav>
       <div className="cf-tools">
         {searchOpen&&<input autoFocus aria-label="Search client files" placeholder="Find a file" value={query} onChange={event=>setQuery(event.target.value)} onKeyDown={event=>{if(event.key==='Escape'){setQuery('');setSearchOpen(false);}}}/>}
         <button type="button" title={searchOpen?'Close file search':'Find a file'} aria-label={searchOpen?'Close file search':'Find a file'} aria-expanded={searchOpen} onClick={()=>{setSearchOpen(!searchOpen);if(searchOpen)setQuery('');}}><Search size={15}/></button>

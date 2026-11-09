@@ -424,7 +424,7 @@ const VIDEO_EXTENSIONS: [&str; 9] = [
 const CLIENT_TEMPLATE_PROJECT_SOURCE: &str = r#"Z:\The Huddle\Templates\Copied_Huddle Master Template 2026_4K_2\Huddle Master Template 2026_4K_2.prproj"#;
 const CLIENT_SCENE_SWITCHING_TEMPLATE_SOURCE: &str = r#"Z:\The Huddle\Templates\Copied_Huddle Master Template Scenes Switching 2026 4K_1\Huddle Master Template Scenes Switching 2026 4K_1.prproj"#;
 const CLIENT_TYPES: [&str; 5] = ["EXHIBITOR", "HUDDLE", "PRODUCT", "MARIYAMEETS", "SOCIAL"];
-const TEMPLATE_DIRS: [&str; 13] = [
+const TEMPLATE_DIRS: [&str; 14] = [
     "01_MEDIA",
     "01_MEDIA/010_VIDEO_PROXY",
     "01_MEDIA/020_VIDEO_RAW",
@@ -434,12 +434,13 @@ const TEMPLATE_DIRS: [&str; 13] = [
     "01_MEDIA/060_MUSIC",
     "01_MEDIA/070_GRAPHICS",
     "01_MEDIA/080_MISCELLANEOUS",
+    "01_MEDIA/090_STOCK",
     "02_EDIT",
     "03_EXPORTS",
     "03_EXPORTS/APPROVAL",
     "04_FINAL",
 ];
-const OPTIONAL_LEGACY_DIRS: [&str; 2] = ["070_GRAPHICS", "080_MISCELLANEOUS"];
+const OPTIONAL_LEGACY_DIRS: [&str; 3] = ["070_GRAPHICS", "080_MISCELLANEOUS", "090_STOCK"];
 
 fn destination_for_mode(mode: &str) -> Option<&'static str> {
     match mode {

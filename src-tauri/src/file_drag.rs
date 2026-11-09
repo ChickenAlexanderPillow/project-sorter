@@ -27,6 +27,7 @@ fn validate_paths(client: &Path, paths: Vec<String>) -> Result<Vec<String>, Stri
         "01_MEDIA/050_STILLS",
         "01_MEDIA/060_MUSIC",
         "01_MEDIA/070_GRAPHICS",
+        "01_MEDIA/090_STOCK",
         "02_EDIT",
     ]
     .iter()
