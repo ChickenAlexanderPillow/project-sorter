@@ -620,11 +620,15 @@ export default function App() {
 
   useEffect(() => {
     const loadConfig = async () => {
-      void invoke<ProjectRootOption[]>("list_project_roots")
-        .then(setProjectRoots)
+      const projectRootsPromise = invoke<ProjectRootOption[]>("list_project_roots")
+        .then((roots) => {
+          setProjectRoots(roots);
+          return roots;
+        })
         .catch((err) => {
           console.error("Unable to load project folders", err);
           setError(`Unable to load project folders: ${String(err)}`);
+          return null;
         });
       void invoke<ProjectShowCatalog>("get_project_show_catalog")
         .then((catalog) => {
@@ -662,14 +666,26 @@ export default function App() {
           .catch((err) => console.warn("Frame.io destination verification is unavailable", err));
       }
       const migratedRoots = (await CONFIG_STORE.get<string[]>("legacyFinalMigrationRoots")) ?? [];
+      const roots = await projectRootsPromise;
+      const savedRootPath = typeof savedRoot === "string" ? savedRoot.replace(/[\\/]+$/, "").toLowerCase() : "";
+      const matchingRoot = roots?.find((project) => project.path.replace(/[\\/]+$/, "").toLowerCase() === savedRootPath);
+      // If project enumeration succeeded, a missing saved root was removed or
+      // renamed. Fall back to the first available project. If enumeration
+      // failed, preserve the saved path because the NAS may simply be offline.
+      const startupRoot = roots === null
+        ? (typeof savedRoot === "string" ? savedRoot : "")
+        : matchingRoot?.path ?? roots[0]?.path ?? "";
+      if (roots !== null && startupRoot !== savedRoot) {
+        await saveConfigValue("projectRoot", startupRoot);
+      }
 
-      if (typeof savedRoot === "string") {
-        setProjectRoot(savedRoot);
-        projectRootRef.current = savedRoot;
+      if (startupRoot) {
+        setProjectRoot(startupRoot);
+        projectRootRef.current = startupRoot;
         setLoading(true);
         setScanProgress({ phase: "clients", completed: 0, total: 0 });
         scanProgressVisibleRef.current = true;
-        await loadClientCache(savedRoot);
+        await loadClientCache(startupRoot);
       }
       if (typeof savedShowNonClients === "boolean") {
         setShowNonClients(savedShowNonClients);
@@ -684,18 +700,18 @@ export default function App() {
           .catch(() => undefined);
       }
 
-      if (typeof savedRoot === "string") {
+      if (startupRoot) {
         await unlistenClientScanPromise;
-        if (!migratedRoots.includes(savedRoot)) {
+        if (!migratedRoots.includes(startupRoot)) {
           try {
-            const count = await invoke<number>("migrate_project_finals", { projectRoot: savedRoot });
-            await CONFIG_STORE.set("legacyFinalMigrationRoots", [...migratedRoots, savedRoot]);
+            const count = await invoke<number>("migrate_project_finals", { projectRoot: startupRoot });
+            await CONFIG_STORE.set("legacyFinalMigrationRoots", [...migratedRoots, startupRoot]);
             if (count > 0) console.info(`Marked ${count} existing FINAL files as published.`);
           } catch (error) {
             console.error("Could not migrate existing FINAL status", error);
           }
         }
-        await refreshClients(savedRoot);
+        await refreshClients(startupRoot);
       }
     };
 

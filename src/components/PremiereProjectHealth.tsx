@@ -4,8 +4,9 @@ import { Check, File, FolderOpen, LoaderCircle, RefreshCw } from 'lucide-react';
 import { statusFor, type MediaHealthStatus as Status } from './premiereHealthStatus';
 import './PremiereProjectHealth.css';
 
-type MediaItem = { file_name: string; original_path: string; resolved_path: string | null; status: string };
-type HealthReport = { items: MediaItem[] };
+type MachineAvailability = { machine_name: string; last_seen: string };
+type MediaItem = { file_name: string; original_path: string; resolved_path: string | null; status: string; available_on: MachineAvailability[] };
+type HealthReport = { machine_name: string; availability_note: string | null; items: MediaItem[] };
 const labels: Record<Status, string> = { local: 'Not on NAS', missing: 'Missing', unavailable: 'Unavailable', moved: 'Moved', unknown: 'Needs checking', found: 'Found' };
 const hints: Record<Status, string> = {
   local: 'Stored on this computer, not on the NAS. Copy it to the NAS and reconnect it in Premiere.',
@@ -20,6 +21,13 @@ function errorCopy(error: string) {
   if (/unsupported|not supported|not readable XML|No supported|XML root|version is missing/i.test(error)) return 'Check this project in Premiere instead.';
   if (/unavailable|Cannot open|Cannot inspect|access.*denied/i.test(error)) return 'Check the project’s drive connection and try again.';
   return 'Try again, or check the project in Premiere.';
+}
+function peerLabel(peers: MachineAvailability[]) {
+  if (!peers.length) return '';
+  return peers.length === 1 ? `Last on ${peers[0].machine_name}` : `Last seen on ${peers.length} computers`;
+}
+function peerTitle(peers: MachineAvailability[]) {
+  return peers.map(peer => `${peer.machine_name} · ${new Date(peer.last_seen).toLocaleString()}`).join('\n');
 }
 
 export function PremiereProjectHealth({ clientPath, projectPath }: { clientPath: string; projectPath: string }) {
@@ -68,7 +76,7 @@ export function PremiereProjectHealth({ clientPath, projectPath }: { clientPath:
     : singleStatus === 'moved' ? `${fileCount} to reconnect`
     : `${fileCount} ${issues.length === 1 ? 'needs' : 'need'} attention`;
   const displayed = showFound ? found : issues;
-  const visible = displayed.filter(item => `${item.file_name} ${item.original_path} ${item.resolved_path || ''}`.toLowerCase().includes(query.toLowerCase()));
+  const visible = displayed.filter(item => `${item.file_name} ${item.original_path} ${item.resolved_path || ''} ${report?.machine_name || ''}`.toLowerCase().includes(query.toLowerCase()));
   const showStatus = !showFound && issueStatuses.size > 1;
 
   return <section className="pph-panel" aria-labelledby={headingId} aria-busy={busy}>
@@ -91,10 +99,11 @@ export function PremiereProjectHealth({ clientPath, projectPath }: { clientPath:
                 {visible.map(item => {
                   const status = statusFor(item.status);
                   const path = item.resolved_path || item.original_path;
-                  return <li className="pph-media-row" key={item.original_path} aria-label={`${item.file_name}: ${labels[status]}`} title={hints[status]}>
+                  const peerReports = status === 'found' ? [] : item.available_on;
+                  return <li className="pph-media-row" key={item.original_path} aria-label={`${item.file_name}: ${labels[status]}${peerReports.length ? `; last seen on ${peerReports.map(peer => peer.machine_name).join(', ')}` : ''}`} title={hints[status]}>
                     <File size={16} className="pph-file-icon" aria-hidden="true"/>
                     <div className="pph-file-name"><strong title={item.file_name}>{item.file_name}</strong><span title={status === 'moved' ? `Saved: ${item.original_path}\nFound: ${path}` : item.original_path}>{folderName(path)}</span></div>
-                    {showStatus && <span className={`pph-file-status ${status}`} title={hints[status]}>{labels[status]}</span>}
+                    {(showStatus || status === 'local' || peerReports.length > 0) && <span className={`pph-file-status ${status}`} title={status === 'local' ? `${hints[status]} Available on ${report.machine_name}.` : peerReports.length ? `${labels[status]} here. Last known on:\n${peerTitle(peerReports)}` : hints[status]}>{status === 'local' ? `Local · ${report.machine_name}` : peerReports.length ? peerLabel(peerReports) : labels[status]}</span>}
                     <button type="button" className="pph-icon-button" disabled={openingLocation !== null} title="Open file location" aria-label={`Open file location for ${item.file_name}`} onClick={() => void openLocation(item)}>{openingLocation === item.original_path ? <LoaderCircle size={14} className="pph-spin"/> : <FolderOpen size={15}/>}</button>
                   </li>;
                 })}
@@ -102,6 +111,7 @@ export function PremiereProjectHealth({ clientPath, projectPath }: { clientPath:
               {!visible.length && <p className="pph-empty">No matching files</p>}
             </>}
             {found.length > 0 && <button type="button" className="pph-text-button" aria-pressed={showFound} onClick={() => { setShowFound(value => !value); setQuery(''); }}>{showFound ? issues.length ? 'Show issues' : 'Hide files' : 'Show NAS files'}</button>}
+            {report.availability_note && <p className="pph-feedback" title={report.availability_note}>This check couldn’t be shared with other computers.</p>}
             {locationError && <p className="pph-feedback" role="alert">{locationError}</p>}
           </> : null}
       </div>

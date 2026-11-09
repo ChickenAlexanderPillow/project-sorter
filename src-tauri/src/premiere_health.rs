@@ -1,4 +1,5 @@
-//! Read-only Premiere Pro media path inspection.
+//! Read-only Premiere Pro media path inspection with a separate, compact
+//! per-computer availability sidecar. The project and its media are never changed.
 //!
 //! The .prproj container is proprietary. Pepper intentionally supports only
 //! PremiereData v3 XML projects with Media/FilePath entries and fails closed
@@ -6,20 +7,30 @@
 
 use flate2::read::GzDecoder;
 use quick_xml::{events::Event, Reader};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 use std::{
-    fs::{self, File},
-    io::{self, BufReader, Read},
+    collections::HashMap,
+    fs::{self, File, OpenOptions},
+    io::{self, BufReader, Read, Write},
     path::{Component, Path, PathBuf},
+    time::Duration,
 };
+use uuid::Uuid;
 
 const MAX_PROJECT_BYTES: u64 = 512 * 1024 * 1024;
 const MAX_EXPANDED_BYTES: u64 = 512 * 1024 * 1024;
 const MAX_XML_DEPTH: usize = 256;
 const MAX_MEDIA_OBJECTS: usize = 250_000;
+const AVAILABILITY_SCHEMA: u32 = 1;
+const MAX_AVAILABILITY_REPORT_BYTES: u64 = 16 * 1024 * 1024;
+const MAX_PEER_REPORTS: usize = 24;
+const MAX_PEER_REPORT_AGE: chrono::Duration = chrono::Duration::days(90);
 
 #[derive(Debug, Serialize)]
 pub struct PremiereHealthReport {
+    pub machine_name: String,
+    pub availability_note: Option<String>,
     pub project_name: String,
     pub project_path: String,
     pub premiere_version: String,
@@ -37,6 +48,31 @@ pub struct PremiereMediaItem {
     pub resolved_path: Option<String>,
     pub status: String,
     pub references: usize,
+    pub available_on: Vec<MachineAvailability>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MachineAvailability {
+    pub machine_name: String,
+    pub last_seen: String,
+}
+
+#[derive(Debug, Serialize)]
+struct AvailabilityRecord {
+    schema_version: u32,
+    project_key: String,
+    machine_name: String,
+    scanned_at: String,
+    local_media_ids: Vec<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct ReadAvailabilityRecord {
+    schema_version: u32,
+    project_key: String,
+    machine_name: String,
+    scanned_at: String,
+    local_media_ids: Vec<String>,
 }
 
 #[derive(Default)]
@@ -416,6 +452,115 @@ pub async fn premiere_project_health_scan(
         .map_err(|error| error.to_string())?
 }
 
+fn sha256_text(value: &str) -> String {
+    format!("{:x}", Sha256::digest(value.as_bytes()))
+}
+
+fn availability_id(path: &str) -> String {
+    sha256_text(&clean_project_path(path).to_lowercase())
+}
+
+fn safe_child_dir(parent: &Path, name: &str) -> io::Result<PathBuf> {
+    let path = parent.join(name);
+    match fs::create_dir(&path) {
+        Ok(()) => {}
+        Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {}
+        Err(error) => return Err(error),
+    }
+    let metadata = fs::symlink_metadata(&path)?;
+    if metadata.file_type().is_symlink() || !metadata.is_dir() {
+        return Err(io::Error::new(io::ErrorKind::InvalidData, "Availability metadata path is not a safe directory"));
+    }
+    #[cfg(windows)]
+    if name == ".pepper" { hide_availability_directory(&path); }
+    Ok(path)
+}
+
+#[cfg(windows)]
+fn hide_availability_directory(path: &Path) {
+    use std::os::windows::ffi::OsStrExt;
+    let path: Vec<u16> = path.as_os_str().encode_wide().chain(Some(0)).collect();
+    #[link(name = "kernel32")]
+    unsafe extern "system" {
+        fn GetFileAttributesW(path: *const u16) -> u32;
+        fn SetFileAttributesW(path: *const u16, attributes: u32) -> i32;
+    }
+    let attributes = unsafe { GetFileAttributesW(path.as_ptr()) };
+    if attributes != u32::MAX { let _ = unsafe { SetFileAttributesW(path.as_ptr(), attributes | 0x2) }; }
+}
+
+fn peer_availability(
+    directory: &Path,
+    own_file: &Path,
+    project_key: &str,
+) -> HashMap<String, Vec<MachineAvailability>> {
+    let mut peers = HashMap::<String, Vec<MachineAvailability>>::new();
+    let Ok(entries) = fs::read_dir(directory) else { return peers };
+    let mut paths: Vec<PathBuf> = entries.flatten().map(|entry| entry.path())
+        .filter(|path| path != own_file && path.extension().is_some_and(|ext| ext == "json"))
+        .collect();
+    paths.sort();
+    for path in paths.into_iter().take(MAX_PEER_REPORTS) {
+        let Ok(metadata) = fs::metadata(&path) else { continue };
+        if metadata.len() > MAX_AVAILABILITY_REPORT_BYTES { continue; }
+        let Ok(bytes) = fs::read(&path) else { continue };
+        let Ok(record) = serde_json::from_slice::<ReadAvailabilityRecord>(&bytes) else { continue };
+        if record.schema_version != AVAILABILITY_SCHEMA || record.project_key != project_key
+            || record.machine_name.trim().is_empty() || record.machine_name.len() > 128
+            || record.local_media_ids.len() > MAX_MEDIA_OBJECTS
+        { continue; }
+        let Ok(scanned_at) = chrono::DateTime::parse_from_rfc3339(&record.scanned_at) else { continue };
+        let age = chrono::Utc::now().signed_duration_since(scanned_at.with_timezone(&chrono::Utc));
+        if age < chrono::Duration::zero() || age > MAX_PEER_REPORT_AGE { continue; }
+        for id in record.local_media_ids {
+            if id.len() != 64 || !id.bytes().all(|byte| byte.is_ascii_hexdigit()) { continue; }
+            peers.entry(id).or_default().push(MachineAvailability {
+                machine_name: record.machine_name.clone(),
+                last_seen: record.scanned_at.clone(),
+            });
+        }
+    }
+    peers
+}
+
+#[cfg(windows)]
+fn replace_availability_file(from: &Path, to: &Path) -> io::Result<()> {
+    use std::os::windows::ffi::OsStrExt;
+    let from: Vec<u16> = from.as_os_str().encode_wide().chain(Some(0)).collect();
+    let to: Vec<u16> = to.as_os_str().encode_wide().chain(Some(0)).collect();
+    #[link(name = "kernel32")]
+    unsafe extern "system" { fn MoveFileExW(existing: *const u16, new: *const u16, flags: u32) -> i32; }
+    let ok = unsafe { MoveFileExW(from.as_ptr(), to.as_ptr(), 0x1 | 0x8) };
+    if ok == 0 { Err(io::Error::last_os_error()) } else { Ok(()) }
+}
+
+#[cfg(not(windows))]
+fn replace_availability_file(from: &Path, to: &Path) -> io::Result<()> { fs::rename(from, to) }
+
+fn write_availability_report(directory: &Path, file: &Path, record: &AvailabilityRecord) -> io::Result<()> {
+    let temp = directory.join(format!(".{}.{}.tmp", file.file_name().unwrap_or_default().to_string_lossy(), Uuid::new_v4()));
+    let result = (|| {
+        let mut output = OpenOptions::new().write(true).create_new(true).open(&temp)?;
+        serde_json::to_writer(&mut output, record).map_err(io::Error::other)?;
+        if output.metadata()?.len() > MAX_AVAILABILITY_REPORT_BYTES {
+            return Err(io::Error::new(io::ErrorKind::InvalidData, "Availability report exceeds Pepper's size limit"));
+        }
+        output.flush()?;
+        output.sync_all()?;
+        drop(output);
+        for attempt in 0..6 {
+            match replace_availability_file(&temp, file) {
+                Err(error) if cfg!(windows) && matches!(error.raw_os_error(), Some(5 | 32 | 33)) && attempt < 5 =>
+                    std::thread::sleep(Duration::from_millis(40 * (1 << attempt))),
+                result => return result,
+            }
+        }
+        unreachable!()
+    })();
+    if result.is_err() { let _ = fs::remove_file(&temp); }
+    result
+}
+
 fn scan_sync(client_path: String, path: String) -> Result<PremiereHealthReport, String> {
     let client_root = PathBuf::from(client_path)
         .canonicalize()
@@ -441,6 +586,10 @@ fn scan_sync(client_path: String, path: String) -> Result<PremiereHealthReport, 
     }
     let (reader, project_bytes) = xml_reader(&project_path)?;
     let (version, media, expanded_bytes) = extract_media(reader)?;
+    let relative_project = selected_path.strip_prefix(&client_root)
+        .map_err(|_| "Premiere project is outside the selected client folder".to_string())?
+        .to_string_lossy().replace('\\', "/").to_lowercase();
+    let project_key = sha256_text(&relative_project);
     let mut items: Vec<PremiereMediaItem> = Vec::new();
     let mut index = std::collections::HashMap::<String, usize>::new();
     let mut ignored_non_file_entries = 0;
@@ -472,6 +621,7 @@ fn scan_sync(client_path: String, path: String) -> Result<PremiereHealthReport, 
             resolved_path,
             status,
             references: 1,
+            available_on: Vec::new(),
         });
     }
     if items.is_empty() {
@@ -481,7 +631,44 @@ fn scan_sync(client_path: String, path: String) -> Result<PremiereHealthReport, 
         .file_name()
         .map(|name| name.to_string_lossy().into_owned())
         .unwrap_or_else(|| "Premiere project".into());
+    let machine_name = std::env::var("COMPUTERNAME")
+        .or_else(|_| std::env::var("HOSTNAME"))
+        .unwrap_or_else(|_| "unknown computer".into());
+    let machine_key = sha256_text(&machine_name.trim().to_lowercase());
+    let mut availability_note = None;
+    let availability_dir = (|| {
+        let pepper = safe_child_dir(&client_root, ".pepper")?;
+        let health = safe_child_dir(&pepper, "media-health")?;
+        safe_child_dir(&health, &project_key)
+    })();
+    match availability_dir {
+        Ok(directory) => {
+            let own_file = directory.join(format!("{machine_key}.json"));
+            let peers = peer_availability(&directory, &own_file, &project_key);
+            for item in &mut items {
+                item.available_on = peers.get(&availability_id(&item.original_path)).cloned().unwrap_or_default();
+            }
+            let mut local_media_ids: Vec<String> = items.iter()
+                .filter(|item| item.status == "available_local")
+                .map(|item| availability_id(&item.original_path)).collect();
+            local_media_ids.sort();
+            local_media_ids.dedup();
+            let record = AvailabilityRecord {
+                schema_version: AVAILABILITY_SCHEMA,
+                project_key: project_key.clone(),
+                machine_name: machine_name.clone(),
+                scanned_at: chrono::Utc::now().to_rfc3339(),
+                local_media_ids,
+            };
+            if let Err(error) = write_availability_report(&directory, &own_file, &record) {
+                availability_note = Some(format!("Could not read or update shared computer history: {error}"));
+            }
+        }
+        Err(error) => availability_note = Some(format!("Could not read or update shared computer history: {error}")),
+    }
     Ok(PremiereHealthReport {
+        machine_name,
+        availability_note,
         project_name,
         project_path: project_path.to_string_lossy().into_owned(),
         premiere_version: version,

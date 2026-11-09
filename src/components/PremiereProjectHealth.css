@@ -25,7 +25,7 @@
 .pph-file-name strong,.pph-file-name>span{display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .pph-file-name strong{font-size:11px;font-weight:400;line-height:1.5;color:#ccc}
 .pph-file-name>span{margin-top:2px;font-size:10px;color:#818181}
-.pph-file-status{flex-shrink:0;max-width:82px;font-size:10px;color:#b5a38d;text-align:right}
+.pph-file-status{flex-shrink:0;max-width:140px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:10px;color:#b5a38d;text-align:right}
 .pph-file-status.missing{color:#c2a38e}
 .pph-panel .pph-icon-button{display:grid;place-items:center;flex-shrink:0;width:26px;height:26px;min-height:26px;padding:0;border:0;border-radius:var(--pepper-radius-control,5px);background:transparent;color:#888}
 .pph-panel .pph-icon-button:hover:not(:disabled){background:#383838;color:#eee}
