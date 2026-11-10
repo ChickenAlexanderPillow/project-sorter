@@ -7,6 +7,7 @@ import { SourceMediaPreview } from './SourceMediaPreview';
 import { mediaKind } from './MediaTypes';
 import { recordingGroups, type Recording } from './recordingGroups';
 import './GroupWorkspace.css';
+import { RecordingTimeline, RecordingPill } from './RecordingTimeline';
 
 type File = Recording & {inbox_path:string;role:string;status:string;client:string|null;clients:string[];client_paths:string[]};
 type Client = {name:string;path:string};
@@ -79,21 +80,22 @@ export function GroupWorkspace({projectRoot,files,clients,disabled,onAssign,onCr
     window.addEventListener('blur',cancel);window.addEventListener('keydown',escape);
     return()=>{window.removeEventListener('pointermove',move);window.removeEventListener('pointerup',finish);window.removeEventListener('pointercancel',cancel);window.removeEventListener('blur',cancel);window.removeEventListener('keydown',escape);};
   });
-  const row=(file:File)=>{
+  const row=(file:File, pill?:{left:number;width:number})=>{
     const kind=mediaKind(file.name),Icon=kind==='audio'?Headphones:kind==='image'?Image:FileVideo;
-    return <button key={file.id} className={`ig-group-file ${selected.includes(file.id)?'selected':''} ${dragged.includes(file.id)?'drag-source':''}`} aria-pressed={selected.includes(file.id)} onClick={event=>choose(file,event.shiftKey)} onPointerDown={event=>{if(file.status!=='Filed')beginDrag(event,selected.includes(file.id)?chosen.map(item=>item.id):[file.id]);}}><GripVertical size={12}/><Icon size={15}/><span title={file.name}>{file.name}</span>{file.status==='Filed'&&<small>Organised</small>}</button>;
+    return <button key={file.id} className={`ig-group-file ${selected.includes(file.id)?'selected':''} ${dragged.includes(file.id)?'drag-source':''} ${pill?'ig-interval-row':''}`} title={pill?`${file.name}\n${file.recording_metadata?.start_source?.startsWith('filesystem_')?'Filesystem fallback': 'Embedded recording time'} | ${Number(BigInt(file.recording_metadata!.duration_ns!))/1e9}s`:undefined} aria-pressed={selected.includes(file.id)} onClick={event=>choose(file,event.shiftKey)} onPointerDown={event=>{if(file.status!=='Filed')beginDrag(event,selected.includes(file.id)?chosen.map(item=>item.id):[file.id]);}}><GripVertical size={12}/><Icon size={15}/><span title={file.name}>{file.name}</span>{pill&&<RecordingPill {...pill}/>}{file.status==='Filed'&&<small>Organised</small>}</button>;
   };
   const mediaRows=(items:File[])=>([{kind:'video',label:'Video'},{kind:'audio',label:'Audio'},{kind:'image',label:'Stills'},{kind:null,label:'Other'}] as const).map(({kind,label})=>{
     const typed=items.filter(file=>mediaKind(file.name)===kind);
-    return typed.length>0?<div className="ig-group-media-section" role="group" aria-label={label} key={label}>{typed.map(row)}</div>:null;
+    return typed.length>0?<div className="ig-group-media-section" role="group" aria-label={label} key={label}>{typed.map(file=>row(file))}</div>:null;
   });
+  const timelineRows=(items:File[])=><RecordingTimeline files={items} className="ig-recording-timeline">{(file,placement)=>row(file,placement)}</RecordingTimeline>;
   return <div className={`ig-group-layout ${dragged.length?'dragging':''}`} onClick={event=>{const target=event.target as HTMLElement;if(target.closest('.ig-preview-rail,.ig-group-file,.ig-auto-group-heading,button,input,textarea,select,a,[role="button"],video,audio'))return;setSelected([]);setPreview(null);setShare(false);}}><div className="ig-group-main">
     <div ref={ghost} className={`ig-media-drag-ghost ${dragged.length?'visible':''}`} aria-hidden="true"><GripVertical size={14}/><span>{dragged.length===1?files.find(file=>file.id===dragged[0])?.name:`${dragged.length} files`}</span></div>
     <section className={`ig-unassigned ${over==='unassigned'?'drop-over':''}`} data-media-destination="unassigned">
       <header className="ig-group-section-title"><h2>Media groups</h2><span>{pending.length} files</span>{chosen.some(file=>storedPaths(file).length>0)&&<button className="ig-text-button" disabled={disabled} onClick={()=>assign(chosen.map(file=>file.id),null)}>Remove client assignment</button>}</header>
       {groups.map(group=><section className={`ig-auto-group ${group.files.every(file=>selected.includes(file.id))?'selected':''}`} key={group.id}>
-        <button type="button" className="ig-client-drop-heading ig-client-disclosure" aria-label={`${collapsedGroups.includes(group.id)?'Expand':'Collapse'} ${group.name}`} aria-expanded={!collapsedGroups.includes(group.id)} title={group.automatic?'Suggested from source file dates within five minutes of the first clip. Check the clips before assigning a client.':undefined} onPointerDown={event=>beginDrag(event,group.files.map(file=>file.id))} onClick={()=>{if(suppressClick.current){suppressClick.current=false;return;}setCollapsedGroups(current=>current.includes(group.id)?current.filter(id=>id!==group.id):[...current,group.id]);}}><span className="ig-client-assign"><Folder size={16}/><span className="ig-disclosure-label">{group.name}</span><small>{group.files.length} {group.files.length===1?'file':'files'}</small></span><ChevronRight className="ig-disclosure-chevron" size={14}/></button>
-        {!collapsedGroups.includes(group.id)&&mediaRows(group.files)}
+        <button type="button" className="ig-client-drop-heading ig-client-disclosure" aria-label={`${collapsedGroups.includes(group.id)?'Expand':'Collapse'} ${group.name}`} aria-expanded={!collapsedGroups.includes(group.id)} title={group.automatic?'Suggested from overlapping recording intervals.':undefined} onPointerDown={event=>beginDrag(event,group.files.map(file=>file.id))} onClick={()=>{if(suppressClick.current){suppressClick.current=false;return;}setCollapsedGroups(current=>current.includes(group.id)?current.filter(id=>id!==group.id):[...current,group.id]);}}><span className="ig-client-assign"><Folder size={16}/><span className="ig-disclosure-label">{group.name}</span><small>{group.files.length} {group.files.length===1?'file':'files'}</small></span><ChevronRight className="ig-disclosure-chevron" size={14}/></button>
+        {!collapsedGroups.includes(group.id)&&(group.automatic?timelineRows(group.files):mediaRows(group.files))}
       </section>)}
       {!pending.length&&<div className="ig-assignment-empty">All media has a client.</div>}
     </section>

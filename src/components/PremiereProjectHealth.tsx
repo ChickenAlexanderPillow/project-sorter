@@ -56,9 +56,12 @@ export function PremiereProjectHealth({ projectRoot, clientPath, projectPath }: 
   const [locationError, setLocationError] = useState('');
   const [openingLocation, setOpeningLocation] = useState<string | null>(null);
   const [copyOpen, setCopyOpen] = useState(false);
+  const [copySelection, setCopySelection] = useState<Set<string>>(new Set());
+  const copyDialogRef = useRef<HTMLDialogElement>(null);
   const [copyRoles, setCopyRoles] = useState<Record<string, string>>({});
   const [copyBusy, setCopyBusy] = useState(false);
   const [copyError, setCopyError] = useState('');
+  const [copyProgress, setCopyProgress] = useState<{ phase: string; source: string } | null>(null);
   const [copySuccess, setCopySuccess] = useState('');
   const copyListRef = useRef<HTMLDivElement>(null);
   const headingId = useId();
@@ -72,6 +75,25 @@ export function PremiereProjectHealth({ projectRoot, clientPath, projectPath }: 
       .finally(() => { if (active) setBusy(false); });
     return () => { active = false; };
   }, [projectRoot, clientPath, projectPath, attempt]);
+
+  useEffect(() => {
+    if (copyOpen) copyDialogRef.current?.showModal();
+  }, [copyOpen]);
+
+  useEffect(() => {
+    if (!copyBusy) { setCopyProgress(null); return; }
+    let active = true;
+    let timer: ReturnType<typeof setTimeout>;
+    const poll = async () => {
+      try {
+        const value = await invoke<{ phase: string; source: string } | null>('ingest_progress', { projectRoot });
+        if (active) setCopyProgress(value);
+      } catch { /* Copy results remain authoritative when progress is unavailable. */ }
+      if (active) timer = setTimeout(() => void poll(), 1000);
+    };
+    void poll();
+    return () => { active = false; clearTimeout(timer); };
+  }, [copyBusy, projectRoot]);
 
   async function openLocation(item: MediaItem) {
     const status = statusFor(item.status);
@@ -87,53 +109,27 @@ export function PremiereProjectHealth({ projectRoot, clientPath, projectPath }: 
 
   function startCopyDialog(localItems: MediaItem[]) {
     setCopyError(''); setCopySuccess('');
+    setCopySelection(new Set(localItems.map(item => item.original_path)));
     setCopyRoles(Object.fromEntries(localItems.map(item => [item.original_path, defaultCopyRole(item.file_name)])));
     setCopyOpen(true);
   }
 
   async function copyLocalMedia(localItems: MediaItem[]) {
-    const selected = localItems;
+    const selected = localItems.filter(item => copySelection.has(item.original_path));
     if (!selected.length || copyBusy) return;
     setCopyBusy(true); setCopyError(''); setCopySuccess('');
-    let staged = false;
     try {
-      const sources = selected.map(item => item.resolved_path || item.original_path);
-      const manifest = await invoke<{ files: Array<{ id: string; source: string; name: string; status: string; role: string; clients: string[]; client: string | null; client_paths: string[]; destinations: string[] }> }>('ingest_collect', { projectRoot, sources });
-      staged = true;
-      const relativeRoot = projectRoot.replace(/[\\/]+$/, '');
-      const clientPrefix = `${relativeRoot}\\`;
-      if (!clientPath.toLowerCase().startsWith(clientPrefix.toLowerCase())) throw new Error('The client folder is outside the selected project.');
-      const relativeClient = clientPath.slice(clientPrefix.length).replace(/\\/g, '/');
-      const clientName = clientPath.replace(/[\\/]+$/, '').split(/[\\/]/).pop() || clientPath;
-      const normalize = (path: string) => path.replace(/\\/g, '/').toLowerCase();
-      const fileIds: string[] = [];
-      for (const item of selected) {
-        const source = item.resolved_path || item.original_path;
-        const entry = manifest.files.find(file => normalize(file.source) === normalize(source));
-        if (!entry) throw new Error(`Could not find the verified staged copy for ${item.file_name}.`);
-        if (entry.status === 'Filed' || entry.destinations.length) continue;
-        if ((entry.clients.length || entry.client) && !(entry.clients.length === 1 && entry.clients[0] === clientName && entry.client_paths.length === 1 && normalize(entry.client_paths[0]) === normalize(relativeClient))) {
-          throw new Error(`${item.file_name} is already assigned in Import media. Finish or clear that assignment there first.`);
-        }
-        entry.role = copyRoles[item.original_path] || defaultCopyRole(item.file_name);
-        entry.client = clientName;
-        entry.clients = [clientName];
-        entry.client_paths = [relativeClient];
-        fileIds.push(entry.id);
-      }
-      if (!fileIds.length) {
-        setCopySuccess('These files are already filed in the client workspace.');
-        setCopyOpen(false);
-        return;
-      }
-      await invoke('ingest_save', { projectRoot, manifest });
-      const filed = await invoke<typeof manifest>('ingest_file_ids', { projectRoot, fileIds });
-      const completed = filed.files.filter(file => fileIds.includes(file.id) && file.status === 'Filed').length;
-      setCopySuccess(`${completed} ${completed === 1 ? 'file' : 'files'} copied into the client folders. Originals are untouched; verified recovery copies remain in Import media. Relink the project in Premiere to use the NAS copies.`);
+      const result = await invoke<{ copied: number; already_present: number }>('ingest_copy_project_media', {
+        projectRoot, clientPath,
+        files: selected.map(item => ({ source: item.resolved_path || item.original_path, role: copyRoles[item.original_path] || defaultCopyRole(item.file_name) })),
+      });
+      const total = result.copied + result.already_present;
+      if (total !== selected.length) throw new Error('The copy result was incomplete. Check Import media before retrying.');
+      setCopySuccess(`${total} ${total === 1 ? 'file is' : 'files are'} verified on NAS${result.already_present ? ` (${result.already_present} already present)` : ''}. Relink in Premiere to use the shared copies.`);
       setCopyOpen(false);
       setAttempt(value => value + 1);
     } catch (reason) {
-      setCopyError(`Could not finish copying the selected files: ${String(reason)}${staged ? ' Verified staged copies remain in Import media for recovery.' : ''}`);
+      setCopyError(`Copy not completed: ${String(reason)} Originals are untouched. Any verified recovery copies remain in Import media; you can retry after resolving the problem.`);
     } finally {
       setCopyBusy(false);
     }
@@ -147,23 +143,22 @@ export function PremiereProjectHealth({ projectRoot, clientPath, projectPath }: 
   const localItems = items.filter(item => statusFor(item.status) === 'local');
   const issueStatuses = new Set(issues.map(item => statusFor(item.status)));
   const singleStatus = issueStatuses.size === 1 ? statusFor(issues[0].status) : null;
-  const fileCount = `${issues.length} ${issues.length === 1 ? 'file' : 'files'}`;
-  const headline = !issues.length ? 'All media on NAS'
+  const headline = !items.length ? 'No linked media found' : !issues.length ? 'All media on NAS'
+    : singleStatus === 'local' ? `${issues.length} ${issues.length === 1 ? 'file stored' : 'files stored'} locally`
     : singleStatus === 'missing' ? `${issues.length} missing ${issues.length === 1 ? 'file' : 'files'}`
-    : singleStatus === 'unavailable' ? `${fileCount} unavailable`
-    : singleStatus === 'local' ? `${fileCount} ${issues.length === 1 ? 'is' : 'are'} not on NAS`
-    : singleStatus === 'moved' ? `${fileCount} to reconnect`
-    : singleStatus === 'copied' ? `${fileCount} copied to NAS · relink in Premiere`
-    : `${fileCount} ${issues.length === 1 ? 'needs' : 'need'} attention`;
+    : singleStatus === 'copied' || singleStatus === 'moved' ? `${issues.length} ${issues.length === 1 ? 'file' : 'files'} to relink`
+    : `${issues.length} ${issues.length === 1 ? 'file needs' : 'files need'} attention`;
   const displayed = showFound ? found : issues;
+  const selectedCount = localItems.filter(item => copySelection.has(item.original_path)).length;
+  const clientName = clientPath.replace(/[\\/]+$/, '').split(/[\\/]/).pop() || clientPath;
   const visible = displayed.filter(item => `${item.file_name} ${item.original_path} ${item.resolved_path || ''} ${report?.machine_name || ''}`.toLowerCase().includes(query.toLowerCase()));
   const showStatus = !showFound && issueStatuses.size > 1;
 
   return <section className="pph-panel" aria-labelledby={headingId} aria-busy={busy}>
       <header className="pph-header">
-        <h3 id={headingId} title={projectPath}>Media</h3>
+        <h3 id={headingId} title={projectPath}>Project health</h3>
         <div className="pph-header-actions">
-          <button type="button" className="pph-rescan" disabled={busy} onClick={() => setAttempt(value => value + 1)} title="Rescan project media" aria-label="Rescan project media"><RefreshCw size={14} className={busy ? 'pph-spin' : ''}/></button>
+          <button type="button" className="pph-rescan" disabled={busy || copyOpen} onClick={() => setAttempt(value => value + 1)} title="Rescan project media" aria-label="Rescan project media"><RefreshCw size={14} className={busy ? 'pph-spin' : ''}/></button>
         </div>
       </header>
       <div className="pph-body">
@@ -171,17 +166,15 @@ export function PremiereProjectHealth({ projectRoot, clientPath, projectPath }: 
           : error ? <p className="pph-error" role="alert">{errorCopy(error)}</p>
           : report ? <>
             <div className={`pph-result ${issues.length ? 'attention' : 'healthy'}`}>
-              <div className="pph-result-top">
+              <div className="pph-result-copy">
                 <div className="pph-result-heading" role="status">{issues.length ? <i aria-hidden="true"/> : <Check size={16} aria-hidden="true"/>}<strong>{headline}</strong></div>
-                {localItems.length > 0 && <button type="button" className="pph-copy-button" disabled={busy} onClick={() => startCopyDialog(localItems)}><Copy size={13}/>Copy to NAS</button>}
+                <p className="pph-summary-meta">{items.length} {items.length === 1 ? 'linked file' : 'linked files'} &middot; {found.length} on NAS</p>
               </div>
-              <span>{issues.length ? `${found.length} on NAS` : `${found.length} ${found.length === 1 ? 'file' : 'files'}`}</span>
-              {singleStatus === 'local' && <p className="pph-action-hint">Copy to NAS, then relink in Premiere.</p>}
-              {singleStatus === 'missing' && <p className="pph-action-hint">These files are not available at their linked paths on this computer, so Pepper cannot copy them from here. Check the reported last computer or reconnect the source drive.</p>}
-              {singleStatus === 'copied' && <p className="pph-action-hint">The verified NAS copy is ready. Reconnect this file in Premiere.</p>}
+              {localItems.length > 0 && <button type="button" className="pph-copy-button" disabled={busy} onClick={() => startCopyDialog(localItems)}><Copy size={13}/>Copy to NAS</button>}
             </div>
+            {showFound && <div className="pph-list-label">On NAS</div>}
             {displayed.length > 0 && <>
-              {displayed.length > 8 && <input className="pph-search" type="search" value={query} onChange={event => setQuery(event.target.value)} placeholder="Find a file" aria-label="Find a media file"/>}
+              {(issues.length + found.length > 8) && <input className="pph-search" type="search" value={query} onChange={event => setQuery(event.target.value)} placeholder="Find a file" aria-label="Find a media file"/>}
               <ul className="pph-media-list" aria-label={showFound ? 'Media files on NAS' : 'Files needing attention'}>
                 {visible.map(item => {
                   const status = statusFor(item.status);
@@ -198,31 +191,31 @@ export function PremiereProjectHealth({ projectRoot, clientPath, projectPath }: 
               </ul>
               {!visible.length && <p className="pph-empty">No matching files</p>}
             </>}
-            {found.length > 0 && <button type="button" className="pph-text-button" aria-pressed={showFound} onClick={() => { setShowFound(value => !value); setQuery(''); }}>{showFound ? issues.length ? 'Show issues' : 'Hide files' : 'Show NAS files'}</button>}
+            {found.length > 0 && <button type="button" className="pph-text-button" aria-pressed={showFound} onClick={() => { setShowFound(value => !value); setQuery(''); }}>{showFound ? issues.length ? 'Show files needing attention' : 'Hide files' : `Show ${found.length} NAS ${found.length === 1 ? 'file' : 'files'}`}</button>}
             {report.availability_note && <p className="pph-feedback" title={report.availability_note}>This check couldn’t be shared with other computers.</p>}
             {copySuccess && <p className="pph-feedback pph-success" role="status">{copySuccess}</p>}
-            {copyError && <p className="pph-feedback" role="alert">{copyError}</p>}
+            {copyError && !copyOpen && <p className="pph-feedback" role="alert">{copyError}</p>}
             {locationError && <p className="pph-feedback" role="alert">{locationError}</p>}
           </> : null}
       </div>
-      {copyOpen && <div className="pph-copy-backdrop" role="presentation" onMouseDown={event => { if (event.target === event.currentTarget && !copyBusy) setCopyOpen(false); }}>
-        <section className="pph-copy-dialog" role="dialog" aria-modal="true" aria-labelledby="pph-copy-title">
-          <header><div><h2 id="pph-copy-title">Copy local media to NAS</h2><p>Set a destination type for each file. Pepper will stage, verify, and file all listed files under this client.</p></div><button type="button" className="pph-rescan" aria-label="Close dialog" disabled={copyBusy} onClick={() => setCopyOpen(false)}><X size={15}/></button></header>
+      {copyOpen && <dialog ref={copyDialogRef} className="pph-copy-dialog" aria-labelledby="pph-copy-title" aria-describedby="pph-copy-description" onCancel={event => { event.preventDefault(); if (!copyBusy) setCopyOpen(false); }} onClick={event => { if (event.target === event.currentTarget && !copyBusy) { const rect = event.currentTarget.getBoundingClientRect(); if (event.clientX < rect.left || event.clientX > rect.right || event.clientY < rect.top || event.clientY > rect.bottom) setCopyOpen(false); } }}>
+          <header><div><h2 id="pph-copy-title">Copy to NAS</h2><p id="pph-copy-description">Choose files and their destination types.</p></div><button type="button" className="pph-rescan" aria-label="Close dialog" disabled={copyBusy} onClick={() => setCopyOpen(false)}><X size={15}/></button></header>
+          <div className="pph-copy-toolbar"><div><span>Destination</span><strong title={clientPath}>{clientName}</strong></div><button type="button" className="pph-text-button" disabled={copyBusy} onClick={() => setCopySelection(new Set(selectedCount === localItems.length ? [] : localItems.map(item => item.original_path)))}>{selectedCount === localItems.length ? 'Deselect all' : 'Select all'}</button></div>
           <div className="pph-copy-list" ref={copyListRef} role="list">
             {localItems.map(item => {
               const choices = roleOptions[mediaKind(item.file_name) || 'other'];
               const role = copyRoles[item.original_path] || defaultCopyRole(item.file_name);
-              return <div className="pph-copy-row" role="listitem" key={item.original_path}>
-                <div className="pph-copy-file-heading"><strong title={item.file_name}>{item.file_name}</strong></div>
+              return <div className={`pph-copy-row ${copySelection.has(item.original_path) ? 'selected' : ''}`} role="listitem" key={item.original_path}>
+                <label className="pph-copy-file-heading"><input type="checkbox" checked={copySelection.has(item.original_path)} disabled={copyBusy} onChange={event => setCopySelection(current => { const next = new Set(current); if (event.target.checked) next.add(item.original_path); else next.delete(item.original_path); return next; })}/><strong title={item.file_name}>{item.file_name}</strong></label>
                 <small className="pph-copy-source" title={item.original_path}>{item.original_path}</small>
                 <LazyCopyPreview root={copyListRef} path={item.resolved_path || item.original_path} name={item.file_name}/>
-                <label><span>File as</span><select value={role} disabled={copyBusy} onChange={event => setCopyRoles(current => ({ ...current, [item.original_path]: event.target.value }))}>{choices.map(choice => <option key={choice} value={choice}>{choice}</option>)}</select><small>{roleDestinations[role]}</small></label>
+                <label className="pph-copy-destination"><span>Destination type</span><select value={role} disabled={copyBusy || !copySelection.has(item.original_path)} onChange={event => setCopyRoles(current => ({ ...current, [item.original_path]: event.target.value }))}>{choices.map(choice => <option key={choice} value={choice}>{choice}</option>)}</select><small>{roleDestinations[role]}</small></label>
               </div>;
             })}
           </div>
-          <footer><button type="button" className="pph-copy-cancel" disabled={copyBusy} onClick={() => setCopyOpen(false)}>Cancel</button><button type="button" className="pph-copy-confirm" disabled={copyBusy || !localItems.length} onClick={() => void copyLocalMedia(localItems)}>{copyBusy ? <><LoaderCircle size={14} className="pph-spin"/>Copying and verifying…</> : <><Copy size={14}/>Copy files to NAS</>}</button></footer>
-        </section>
-      </div>}
+          <div className="pph-copy-notice" aria-live="polite">{copyError ? <p className="pph-feedback" role="alert">{copyError}</p> : copyBusy ? <p role="status">{copyProgress && ['collecting', 'verifying', 'filing', 'inventorying'].includes(copyProgress.phase) ? `${copyProgress.phase === 'verifying' ? 'Verifying' : copyProgress.phase === 'filing' ? 'Filing' : copyProgress.phase === 'inventorying' ? 'Checking' : 'Copying'} ${copyProgress.source.split(/[\\/]/).pop() || 'selected files'}...` : 'Preparing and verifying selected files...'}</p> : <p>Originals stay untouched. Relink in Premiere after copying.</p>}</div>
+          <footer><span className="pph-copy-count" role="status">{selectedCount} of {localItems.length} selected</span><button type="button" className="pph-copy-cancel" autoFocus disabled={copyBusy} onClick={() => setCopyOpen(false)}>Cancel</button><button type="button" className="pph-copy-confirm" disabled={copyBusy || !selectedCount} onClick={() => void copyLocalMedia(localItems)}>{copyBusy ? <><LoaderCircle size={14} className="pph-spin"/>Copying and verifying…</> : <><Copy size={14}/>Copy {selectedCount} {selectedCount === 1 ? 'file' : 'files'} to NAS</>}</button></footer>
+      </dialog>}
     </section>;
 }
 

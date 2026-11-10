@@ -1,0 +1,6 @@
+.recording-timeline{--recording-label-width:152px;--recording-right:9px;overflow-x:auto}
+.recording-timeline-scale{display:flex;justify-content:space-between;margin:0 var(--recording-right) 5px var(--recording-label-width);min-width:130px;color:#777;font-size:9px;font-variant-numeric:tabular-nums}
+.recording-pill-track{position:relative;display:block;height:18px;min-width:0;overflow:visible;background:linear-gradient(90deg,#ffffff08 1px,transparent 1px);background-size:25% 100%}
+.recording-pill-track>i{position:absolute;top:4px;height:10px;border-radius:5px;background:#939c9d;box-shadow:0 0 0 .5px #a9b0b0;pointer-events:none}
+.selected .recording-pill-track>i{background:#ced4d4}
+button:hover>.recording-pill-track>i{background:#b4bdbd}

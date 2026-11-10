@@ -48,6 +48,7 @@
   },
   "bundle": {
     "active": true,
+    "resources": ["resources/media-tools/*"],
     "createUpdaterArtifacts": true,
     "targets": "all",
     "icon": [

@@ -168,6 +168,7 @@ type ClientsChanged = { project_root: string; client_names: string[]; all_client
 type ApprovalProgressStatus = { client_name: string; phase: string | null; pending_version: number | null };
 
 type ExportVersion = {
+  size?: number | null;
   version: number;
   filename: string;
   relative_path: string;
@@ -3337,18 +3338,12 @@ export default function App() {
         <dialog
           ref={promotionDialogRef}
           className="modal update-modal promotion-modal"
-          aria-labelledby="promotion-title"
-          aria-describedby="promotion-description"
+          aria-label="Publish final"
           onCancel={(event) => {
             event.preventDefault();
             setPendingPromotion(null);
           }}
         >
-          <h2 id="promotion-title">{pendingPromotion.export_status.publish_failed ? "Retry failed publish?" : "Publish version?"}</h2>
-          <p id="promotion-description">
-            {pendingPromotion.export_status.publish_failed ? "Retry publishing" : "Publish"} <strong>V{pendingPromotion.export_status.latest_version}</strong> for{" "}
-            <strong>{parseClientLabel(pendingPromotion.name).name.toUpperCase()}</strong> to 04_FINAL.
-          </p>
           {(() => {
             const cleanVersion = pendingPromotion.export_status.versions.find(
               (version) => version.version === pendingPromotion.export_status.latest_version,
@@ -3357,20 +3352,14 @@ export default function App() {
             const cleanPath = `${pendingPromotion.path.replace(/[\\/]+$/, "")}\\03_EXPORTS\\${cleanVersion.relative_path.replace(/[\\/]+/g, "\\")}`;
             return (
               <article className="export-preview promotion-preview">
-                <div className="export-preview-heading">
-                  <div className="export-preview-title">
-                    <span className="version-label">Clean V{cleanVersion.version}</span>
-                    <strong>{cleanVersion.filename}</strong>
-                  </div>
-                  <span className="promotion-clean-label">Exact file sent to FINAL</span>
+                <div className="promotion-file-header">
+                  <strong title={cleanVersion.filename}>{cleanVersion.filename}</strong>
+                  <span>{cleanVersion.size != null ? formatStorage(cleanVersion.size) : "Size unavailable"}</span>
                 </div>
                 <InlineVideoPlayer className="promotion-video-player" src={convertFileSrc(cleanPath)} />
               </article>
             );
           })()}
-          <p className="update-notes promotion-filename">
-            {pendingPromotion.name}_FINAL{pendingPromotion.export_status.latest_filename?.match(/\.[^.]+$/)?.[0]}
-          </p>
           {pendingPromotion.export_status.final_filename && (
             <p>Existing FINAL videos will be moved into a timestamped archive folder.</p>
           )}

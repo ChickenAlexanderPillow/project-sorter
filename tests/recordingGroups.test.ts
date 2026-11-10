@@ -1,65 +1,50 @@
 ﻿import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { recordingGroups, type Recording } from '../src/components/recordingGroups.ts';
-
-const recording=(id:string,minutes:number|null,extra:Partial<Recording>={}):Recording=>({id,name:`${id}.mp4`,source_created:minutes===null?null:String((Date.UTC(2026,9,30)+minutes*60_000)*1_000_000),source_modified:null,timestamp_warning:null,group_id:null,group_name:null,...extra});
-test('nearby video and audio group automatically without chaining across the show',()=>{
-  const groups=recordingGroups([recording('camera',0),recording('audio',4),recording('next-camera',8),recording('next-audio',9)]);
-  assert.deepEqual(groups.map(group=>group.files.map(file=>file.id)),[['camera','audio'],['next-camera','next-audio']]);
+import { recordingGroups, recordingInterval, recordingTimeline, type Recording } from '../src/components/recordingGroups.ts';
+const base=BigInt(Date.UTC(2026,0,1))*1_000_000n;
+const recording=(id:string,start=0,duration=60,extra:Partial<Recording>={}):Recording=>({id,name:`${id}.mp4`,source_created:base.toString(),source_modified:null,timestamp_warning:null,group_id:null,group_name:null,recording_metadata:{start_ns:(base+BigInt(start)*1_000_000_000n).toString(),duration_ns:(BigInt(duration)*1_000_000_000n).toString(),start_source:'format.creation_time',duration_source:'stream.duration',warning:null,probe_error:null},...extra});
+const ids=(files:Recording[])=>recordingGroups(files).map(g=>g.files.map(f=>f.id));
+test('direct overlap with mixed audio and video',()=>{assert.deepEqual(ids([recording('camera'),recording('mic',30,60,{name:'mic.wav'})]),[['camera','mic']]);});
+test('later import batches join earlier media and can merge previous suggestions',()=>{
+ const first=Object.assign(recording('camera-a',0,30),{batch_id:'card-one',newly_collected:false});
+ const second=Object.assign(recording('camera-b',180,30),{batch_id:'card-two',newly_collected:false});
+ assert.equal(recordingGroups([first,second])[0].id,'unsorted');
+ const mic=Object.assign(recording('mic',20,180,{name:'mic.wav'}),{batch_id:'recorder-later',newly_collected:true});
+ assert.deepEqual(ids([second,mic,first]),[['camera-a','mic','camera-b']]);
+ const alreadyGrouped=recording('previous',0,30,{group_id:'auto:camera-a',group_name:'Earlier suggestion'});
+ assert.deepEqual(ids([alreadyGrouped,first,second,mic]),[['camera-a','previous','mic','camera-b']]);
 });
-test('missing and suspect dates stay unsorted while established groups survive',()=>{
-  const files=[recording('no-date',null),recording('suspect',0,{timestamp_warning:'Uncertain date'}),recording('solo',40),recording('established',0,{group_id:'saved',group_name:'Interview'})];
-  const before=JSON.stringify(files);const groups=recordingGroups(files);
-  assert.deepEqual(groups.find(group=>group.id==='unsorted')?.files.map(file=>file.id),['no-date','suspect','solo']);
-  assert.equal(groups.find(group=>group.id==='saved')?.name,'Interview');
-  assert.equal(JSON.stringify(files),before);
+test('continuous audio transitively bridges camera stop and restart',()=>{assert.deepEqual(ids([recording('first',0,30),recording('mic',20,200,{name:'mic.wav'}),recording('restart',180,60)]),[['first','mic','restart']]);});
+test('non-overlap never uses the old five minute rule; touching edges do not overlap',()=>{
+  for(const start of [60,61,120,300])assert.equal(recordingGroups([recording('a'),recording('b',start)])[0].id,'unsorted');
 });
-test('late audio joins unassigned video and previous automatic groups are reconsidered',()=>{
-  const video=recording('camera',0);
-  assert.equal(recordingGroups([video])[0].id,'unsorted');
-  const audio=recording('audio',1,{name:'recorder.wav'});
-  assert.deepEqual(recordingGroups([video,audio])[0].files.map(file=>file.id),['camera','audio']);
-  const previous=recording('older-camera',0,{group_id:'suggested-older-camera',group_name:'Old automatic group'});
-  assert.deepEqual(recordingGroups([previous,audio])[0].files.map(file=>file.id),['older-camera','audio']);
+test('one nanosecond positive overlap is sufficient',()=>{const a=recording('a'),b=recording('b',60);b.recording_metadata!.start_ns=(BigInt(b.recording_metadata!.start_ns!)-1n).toString();assert.equal(recordingGroups([a,b])[0].automatic,true);});
+test('missing, invalid, suspect and legacy metadata stay unsorted',()=>{
+ const invalid:Recording[]=[recording('legacy',0,60,{recording_metadata:undefined})];
+ for(const [key,values] of Object.entries({start_ns:[null,'0','-1','NaN','1.5','999999999999999999999'],duration_ns:[null,'0','-1','Infinity','1e9','604800000000001'],start_source:[null,'unknown'],duration_source:[null,'guess'],warning:['Conflicting timestamps'],probe_error:['Unavailable']})){
+  for(const value of values){const f=recording(`bad-${invalid.length}`);Object.assign(f.recording_metadata!,{[key]:value});invalid.push(f);}
+ }
+ assert.deepEqual(ids([recording('a'),recording('b'),...invalid]),[['a','b'],invalid.map(f=>f.id)]);
 });
-
-test('five-minute boundary is inclusive without rounding the next nanosecond into the group',()=>{
-  const start=recording('start',0);
-  const exact=recording('exact',5);
-  const beyond=recording('beyond',5,{source_created:String(BigInt(exact.source_created!)+1n)});
-  const groups=recordingGroups([beyond,exact,start]);
-  assert.deepEqual(groups[0].files.map(file=>file.id),['start','exact']);
-  assert.deepEqual(groups.find(group=>group.id==='unsorted')?.files.map(file=>file.id),['beyond']);
+test('filesystem fallback requires explicit provenance and available duration',()=>{
+ const f=recording('fallback');f.recording_metadata!.start_source='filesystem_modified';
+ assert.ok(recordingInterval(f));assert.equal(f.recording_metadata!.start_source,'filesystem_modified');
+ f.timestamp_warning='Suspect date';assert.equal(recordingInterval(f),null);
+ f.timestamp_warning=null;f.recording_metadata!.duration_ns=null;assert.equal(recordingInterval(f),null);
 });
-
-test('invalid dates never suggest a match and missing creation time uses modification time',()=>{
-  const base=recording('base',0);
-  const fallback=recording('fallback',null,{source_modified:base.source_created});
-  const invalid=['NaN','Infinity','-1','0','1e18','1.5','999999999999999999999999999'].map((source_created,i)=>recording(`invalid-${i}`,0,{source_created}));
-  const groups=recordingGroups([base,fallback,...invalid]);
-  assert.deepEqual(groups[0].files.map(file=>file.id),['base','fallback']);
-  assert.deepEqual(groups.find(group=>group.id==='unsorted')?.files.map(file=>file.id),invalid.map(file=>file.id));
+test('manual IDs and legacy named groups survive invalid metadata and never absorb suggestions',()=>{
+ const files=[recording('manual',0,60,{group_id:'saved',group_name:'Interview',recording_metadata:null}),recording('manual2',0,60,{group_id:'saved',group_name:'Interview'}),recording('legacy',0,60,{group_name:'Named'}),recording('a'),recording('b')];
+ const before=JSON.stringify(files);const groups=recordingGroups(files);assert.deepEqual(groups.map(g=>g.id),['saved','legacy:Named','auto:a']);assert.deepEqual(groups[0].files.map(f=>f.id),['manual','manual2']);assert.equal(JSON.stringify(files),before);
 });
-
-test('automatic group identity and order are stable for shuffled files with equal timestamps',()=>{
-  const files=[recording('b',0),recording('a',0),recording('d',20),recording('c',20)];
-  const before=JSON.stringify(files);
-  assert.deepEqual(recordingGroups(files),recordingGroups([...files].reverse()));
-  assert.equal(JSON.stringify(files),before);
-  assert.deepEqual(recordingGroups(files).map(group=>group.id),['auto:a','auto:c']);
+test('previous automatic assignments are reconsidered and equal starts sort stably',()=>{
+ const files=[recording('b'),recording('a',0,60,{group_id:'suggested-old',group_name:'Old'})];assert.deepEqual(recordingGroups(files),recordingGroups([...files].reverse()));assert.equal(recordingGroups(files)[0].id,'auto:a');
 });
-
-test('each input appears exactly once across many sessions, missing dates, and saved groups',()=>{
-  const files=Array.from({length:200},(_,i)=>recording(`clip-${i}`,i%13===0?null:i*2,{timestamp_warning:i%17===0?'Check date':null,...(i%23===0?{group_id:'manual',group_name:'Interview'}:{})}));
-  const groups=recordingGroups(files);
-  const output=groups.flatMap(group=>group.files.map(file=>file.id));
-  assert.equal(output.length,files.length);
-  assert.equal(new Set(output).size,files.length);
-  assert.deepEqual([...output].sort(),files.map(file=>file.id).sort());
-  for(const group of groups.filter(group=>group.automatic)){
-    assert.ok(group.files.every(file=>!file.timestamp_warning&&file.source_created));
-    const times=group.files.map(file=>BigInt(file.source_created!));
-    assert.ok(times.at(-1)!-times[0]<=300_000_000_000n);
-  }
+test('shared scale faithfully positions short, long and widely separated manual intervals',()=>{
+ const files=[recording('long',0,10000),recording('short',1,1),recording('distant',20000,10)];const t=recordingTimeline(files)!;
+ assert.equal(t.rows[0].left,0);assert.equal(t.rows[0].width,10000/20010*100);assert.equal(t.rows[1].width,1/20010*100);assert.equal(t.rows[2].left+t.rows[2].width,100);assert.ok(t.rows.every((r,i)=>r.file===files[i]));
+ assert.equal(recordingTimeline([recording('unknown',0,60,{recording_metadata:null})]),null);
 });
-
+test('each file appears once with nested overlaps, isolated recordings and manual groups',()=>{
+ const files=Array.from({length:200},(_,i)=>recording(`clip-${i}`,i*30,45,i%17===0?{recording_metadata:null}:i%23===0?{group_id:'manual',group_name:'Interview'}:{}));
+ const output=recordingGroups(files).flatMap(g=>g.files.map(f=>f.id));assert.equal(output.length,files.length);assert.equal(new Set(output).size,files.length);
+});

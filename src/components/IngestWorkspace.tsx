@@ -1,3 +1,4 @@
+import type { RecordingMetadata } from './recordingGroups';
 import { useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { ArrowLeft, ArrowRight, Check, CheckCheck, CircleAlert, Copy, FileAudio, Folder, FolderInput, LoaderCircle, Network, Plus, ShieldCheck, X } from "lucide-react";
@@ -11,7 +12,7 @@ import { defaultRole, mediaKind, mediaRoleIcon, type SourceMedia } from "./Media
 import { MediaSources } from "./MediaSources";
 import "./ImportSelection.css";
 
-type IngestFile = { id:string; batch_id:string; collected_at:string|null; newly_collected:boolean; name:string; source:string; source_name:string; relative_path:string; inbox_path:string; role:string; size:number; sha256:string; source_modified:string|null; source_created:string|null; timestamp_warning:string|null; status:string; group_id?:string|null; group_name:string|null; client:string|null; clients:string[]; client_paths:string[]; destinations:string[]; duplicate_of:string|null; counterpart_id:string|null };
+type IngestFile = { id:string; batch_id:string; collected_at:string|null; newly_collected:boolean; name:string; source:string; source_name:string; relative_path:string; inbox_path:string; role:string; size:number; sha256:string; source_modified:string|null; source_created:string|null; recording_metadata?:RecordingMetadata|null; timestamp_warning:string|null; status:string; group_id?:string|null; group_name:string|null; client:string|null; clients:string[]; client_paths:string[]; destinations:string[]; duplicate_of:string|null; counterpart_id:string|null };
 type Manifest = { schema_version:number; files:IngestFile[]; reviewed_groups:string[] };
 type Client = { name:string; path:string; status:string };
 type Lease = { locked:boolean; owner:string|null; stale:boolean };

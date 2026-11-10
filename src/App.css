@@ -1592,13 +1592,55 @@ button.accent {
   backdrop-filter: blur(2px);
 }
 
-.promotion-modal .promotion-filename {
-  overflow-wrap: anywhere;
-}
-
 .promotion-preview { margin: 12px 0; }
-.promotion-preview .pepper-video-skin { max-height: 420px; }
-.promotion-clean-label,
+.promotion-file-header {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 8px 10px;
+  border-bottom: 1px solid var(--pepper-line);
+  background: var(--pepper-surface-raised);
+  font-size: 12px;
+}
+.promotion-file-header strong {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.promotion-file-header span {
+  flex: 0 0 auto;
+  color: var(--pepper-muted);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+.export-preview.promotion-preview .pepper-video-skin {
+  width: 100%;
+  height: auto;
+  max-height: min(56.25vw, 62vh);
+  aspect-ratio: 16 / 9;
+  margin: 0 auto;
+  border-radius: 6px;
+}
+.promotion-modal .modal-actions {
+  padding-top: 0;
+  border-top: 0;
+}
+.promotion-video-player {
+  --media-control-size: 30px;
+  --media-spacing: 4px;
+}
+.promotion-video-player .video-controls-start,
+.promotion-video-player .video-controls-end,
+.promotion-video-player .video-controls-trailing { gap: 4px; }
+.promotion-video-player .media-time-group {
+  min-height: 26px;
+  gap: 3px;
+  padding: 0 6px;
+  font-size: 11px;
+}
 .promotion-preview-empty { color: var(--pepper-muted); font-size: 11px; }
 .promotion-preview-empty { padding: 12px; border: 1px solid var(--pepper-line); border-radius: 6px; }
 
@@ -4170,3 +4212,7 @@ input[type="radio"] {
 }
 .client-season-group > .client-row:last-child { border-bottom: 0; }
 .client-season-group > .client-details:last-child { border-bottom: 0; border-radius: 0; }
+
+.promotion-preview-meta{display:flex;flex-shrink:0;flex-direction:column;align-items:flex-end;gap:4px}
+.promotion-file-size{color:var(--pepper-text);font-size:12px;font-variant-numeric:tabular-nums;white-space:nowrap}
+@media(max-width:560px){.promotion-preview .export-preview-heading{flex-wrap:wrap}.promotion-preview-meta{align-items:flex-start}}

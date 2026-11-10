@@ -15,6 +15,7 @@ pub struct ClientAsset {
     variant: String,
     size: u64,
     modified_ms: Option<u64>,
+    created_ms: Option<u64>,
 }
 #[derive(Serialize)]
 pub struct AssetFolder {
@@ -31,6 +32,7 @@ pub struct ClientAssets {
 
 fn category_roots(category: &str) -> Result<Vec<(&'static str, &'static str)>, String> {
     match category {
+        "all" => Ok(vec![("Media", "01_MEDIA")]),
         "video" => Ok(vec![
             ("Raw", "01_MEDIA/020_VIDEO_RAW"),
             ("Proxy", "01_MEDIA/010_VIDEO_PROXY"),
@@ -113,7 +115,10 @@ fn list_assets(client_path: &Path, category: &str) -> Result<ClientAssets, Strin
                 continue;
             }
             let path = entry.path();
-            let kind = if category == "edit" {
+            // All retains supporting files as well as every media/project kind.
+            let kind = if category == "all" {
+                if project_file(path) { "project" } else { crate::media_browser::media_kind(path).unwrap_or("other") }
+            } else if category == "edit" {
                 if !project_file(path) {
                     continue;
                 }
@@ -138,7 +143,7 @@ fn list_assets(client_path: &Path, category: &str) -> Result<ClientAssets, Strin
                 name: entry.file_name().to_string_lossy().into_owned(),
                 path: path.to_string_lossy().into_owned(),
                 relative_path: path
-                    .strip_prefix(&folder)
+                    .strip_prefix(if category=="all" {client_path} else {&folder})
                     .unwrap_or(path)
                     .to_string_lossy()
                     .into_owned(),
@@ -150,6 +155,9 @@ fn list_assets(client_path: &Path, category: &str) -> Result<ClientAssets, Strin
                     .ok()
                     .and_then(|date| date.duration_since(UNIX_EPOCH).ok())
                     .and_then(|date| u64::try_from(date.as_millis()).ok()),
+                created_ms: metadata.created().ok()
+                    .and_then(|date|date.duration_since(UNIX_EPOCH).ok())
+                    .and_then(|date|u64::try_from(date.as_millis()).ok()),
             });
             if files.len() > 2000 {
                 files.pop();
@@ -178,6 +186,25 @@ fn list_assets(client_path: &Path, category: &str) -> Result<ClientAssets, Strin
     })
 }
 
+#[derive(Serialize)]
+pub struct ClientRecording {
+    path: String,
+    recording_metadata: Option<crate::ingest::RecordingMetadata>,
+}
+#[tauri::command]
+pub async fn client_files_recordings(project_root: String, client_path: String) -> Result<Vec<ClientRecording>, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let root=PathBuf::from(project_root);
+        let client=PathBuf::from(client_path);
+        if !client.canonicalize().map_err(|e|e.to_string())?.starts_with(root.canonicalize().map_err(|e|e.to_string())?) {
+            return Err("This client is outside the project.".into());
+        }
+        let listing=list_assets(&client,"all")?;
+        let paths:Vec<_>=listing.files.into_iter().filter(|file|matches!(file.kind.as_str(),"audio"|"video")).map(|file|PathBuf::from(file.path)).collect();
+        Ok(crate::ingest::client_recording_metadata(&root,&paths).into_iter().map(|(path,recording_metadata)|ClientRecording{path,recording_metadata}).collect())
+    }).await.map_err(|e|e.to_string())?
+}
+
 #[tauri::command]
 pub async fn client_files_list(
     client_path: String,
@@ -193,13 +220,11 @@ fn validated_project(client_path: &Path, path: &Path) -> Result<PathBuf, String>
         return Err("Choose an available editing project.".into());
     }
     let root = client_path.canonicalize().map_err(|e| e.to_string())?;
-    let edit = client_path
-        .join("02_EDIT")
-        .canonicalize()
-        .map_err(|e| e.to_string())?;
     let target = path.canonicalize().map_err(|e| e.to_string())?;
-    if !edit.starts_with(&root) || !target.starts_with(&edit) {
-        return Err("This project is outside the client's Edit folder.".into());
+    let allowed=["02_EDIT","01_MEDIA"].into_iter().any(|folder|client_path.join(folder).canonicalize().ok()
+        .is_some_and(|folder|folder.starts_with(&root)&&target.starts_with(folder)));
+    if !allowed {
+        return Err("This project is outside the client's Edit and Media folders.".into());
     }
     // Use the original absolute spelling for Windows file associations rather
     // than passing ShellExecute a verbatim (\\?\) canonical path.
@@ -266,6 +291,14 @@ mod tests {
         let empty = list_assets(root, "stills").unwrap();
         assert!(empty.files.is_empty());
         assert!(empty.folders.iter().all(|f| !f.available));
+        let all=list_assets(root,"all").unwrap();
+        assert_eq!(all.files.len(),4);
+        assert!(all.files.iter().all(|f|f.relative_path.starts_with("01_MEDIA")));
+        assert!(!all.files.iter().any(|f|f.name=="Main.prproj"||f.name=="start.exe"));
+        assert!(all.files.iter().any(|f|f.kind=="audio"));
+        assert!(all.files.iter().any(|f|f.kind=="video"));
+        assert!(all.files.iter().any(|f|f.kind=="other"&&f.name=="TAKE.xml"));
+        assert!(!all.files.iter().any(|f|f.relative_path.contains("Auto-Save")||f.relative_path.contains("03_EXPORTS")));
     }
     #[test]
     fn opening_is_limited_to_edit_projects_in_this_client() {
@@ -275,6 +308,9 @@ mod tests {
         let project = root.join("02_EDIT/Main.prproj");
         fs::write(&project, b"project").unwrap();
         assert!(validated_project(&root, &project).is_ok());
+        let media_project=root.join("01_MEDIA/080_MISCELLANEOUS/Scene.blend");
+        fs::create_dir_all(media_project.parent().unwrap()).unwrap();fs::write(&media_project,b"project").unwrap();
+        assert!(validated_project(&root,&media_project).is_ok());
         let outside = temp.path().join("Other.prproj");
         fs::write(&outside, b"other").unwrap();
         assert!(validated_project(&root, &outside).is_err());

@@ -101,3 +101,7 @@
 @media(max-width:1000px){.ig-group-layout{grid-template-columns:minmax(0,1fr) 250px;gap:16px}.ig-group-main{grid-template-columns:minmax(0,1fr) 220px;gap:0 12px}.ig-auto-group-heading>small:first-of-type{display:none}}
 @media(max-width:850px){.ig-group-layout{display:flex;flex-wrap:wrap}.ig-group-main{width:100%;grid-template-columns:minmax(0,1fr) minmax(220px,.8fr)}.ig-group-preview{width:100%;position:static}.ig-group-preview:has(.ig-inspector-empty){display:none}}
 @media(max-width:550px){.ig-group-main{display:block}.ig-group-main>.ig-unassigned{border-right:0;border-bottom:1px solid #414141;margin-bottom:18px;min-height:100px}.ig-group-main>.ig-client-destinations{min-height:100px}}
+.ig-recording-timeline{padding:6px 0 8px;border-top:1px solid #363636;overflow-x:auto}
+ .ig-recording-timeline .ig-interval-row{display:grid;grid-template-columns:12px 15px 92px minmax(130px,1fr);gap:8px;min-width:294px;padding:6px 9px;border:0;align-items:center}
+.ig-interval-row>span:first-of-type{font-size:10px}
+.ig-interval-row>.recording-pill-track{flex:initial;overflow:visible}

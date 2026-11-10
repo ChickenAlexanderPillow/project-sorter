@@ -3,6 +3,49 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::{fs, io::{Read, Write}, path::{Path, PathBuf}};
 use uuid::Uuid;
+#[path = "recording_metadata.rs"]
+mod recording_metadata;
+pub(crate) use recording_metadata::RecordingMetadata;
+
+// Client browsing is read-only. Retained ingest evidence is used only when the
+// current file still matches its hash; otherwise only embedded dates are read.
+pub(crate) fn client_recording_metadata(root: &Path, paths: &[PathBuf]) -> Vec<(String, Option<RecordingMetadata>)> {
+    let evidence = fs::metadata(manifest_path(root)).ok().filter(|m|m.len()<=64*1024*1024)
+        .and_then(|_|fs::read(manifest_path(root)).ok())
+        .and_then(|bytes|serde_json::from_slice::<Manifest>(&bytes).ok()).unwrap_or_default();
+    let mut known = std::collections::HashMap::new();
+    for file in &evidence.files {
+        if let Some(metadata)=&file.recording_metadata {
+            for path in file.destinations.iter().chain(std::iter::once(&file.inbox_path)) {
+                known.insert(normalized_path(Path::new(path)),(file,metadata));
+            }
+        }
+    }
+    std::thread::scope(|scope| {
+        let handles:Vec<_> = paths.chunks((paths.len().max(1)+3)/4).map(|chunk| {
+            let known=&known;
+            scope.spawn(move || chunk.iter().map(|path| {
+                let read=|| {
+                    let before=fs::metadata(path).ok()?;
+                    let retained=known.get(&normalized_path(path)).filter(|(file,_)|file.size==before.len())
+                        .filter(|(file,_)|hash(path).ok().as_deref()==Some(file.sha256.as_str()));
+                    let metadata=retained.map(|(file,metadata)|{
+                        let mut metadata=(*metadata).clone();
+                        if metadata.warning.is_none() && metadata.start_source.as_deref().is_some_and(|s|s.starts_with("filesystem_")) {
+                            metadata.warning=file.timestamp_warning.clone();
+                        }
+                        metadata
+                    })
+                        .unwrap_or_else(||recording_metadata::read(path,None,None,||Ok(())));
+                    let after=fs::metadata(path).ok()?;
+                    (before.len()==after.len() && before.modified().ok()==after.modified().ok()).then_some(metadata)
+                };
+                (path.to_string_lossy().into_owned(),read())
+            }).collect::<Vec<_>>())
+        }).collect();
+        handles.into_iter().flat_map(|handle|handle.join().unwrap_or_default()).collect()
+    })
+}
 
 #[derive(Clone, Serialize, Deserialize, Default)]
 pub struct Manifest {
@@ -32,6 +75,8 @@ pub struct IngestFile {
     pub source_modified: Option<String>,
     pub source_created: Option<String>,
     pub timestamp_warning: Option<String>,
+    #[serde(default)]
+    pub recording_metadata: Option<RecordingMetadata>,
     pub status: String,
     #[serde(default)]
     pub group_id: Option<String>,
@@ -49,8 +94,8 @@ pub struct IngestFile {
     pub counterpart_id: Option<String>,
 }
 
-struct WriterLease { path: PathBuf }
-impl WriterLease { fn heartbeat(&self)->Result<(),String>{filetime::set_file_mtime(&self.path,filetime::FileTime::from_system_time(std::time::SystemTime::now())).map_err(|e|e.to_string())} }
+struct WriterLease { path: PathBuf, last_heartbeat: std::cell::Cell<std::time::Instant> }
+impl WriterLease { fn heartbeat(&self)->Result<(),String>{if self.last_heartbeat.get().elapsed()<std::time::Duration::from_secs(10){return Ok(());}filetime::set_file_mtime(&self.path,filetime::FileTime::from_system_time(std::time::SystemTime::now())).map_err(|e|e.to_string())?;self.last_heartbeat.set(std::time::Instant::now());Ok(())} }
 impl Drop for WriterLease { fn drop(&mut self) { let _ = fs::remove_file(&self.path); } }
 fn acquire_lease(root: &Path) -> Result<WriterLease, String> {
     let dir = root.join("_INGEST/state"); fs::create_dir_all(&dir).map_err(|e|e.to_string())?;
@@ -58,7 +103,7 @@ fn acquire_lease(root: &Path) -> Result<WriterLease, String> {
     let mut f=fs::OpenOptions::new().write(true).create_new(true).open(&path).map_err(|e|format!("Ingest is locked by another writer ({}): {e}",path.display()))?;
     let machine=std::env::var("COMPUTERNAME").unwrap_or_else(|_|"unknown".into());let owner=format!("machine={machine}\npid={}\nstarted={}\n",std::process::id(),chrono::Utc::now().to_rfc3339());
     use std::io::Write; f.write_all(owner.as_bytes()).map_err(|e|e.to_string())?; f.sync_all().map_err(|e|e.to_string())?;
-    Ok(WriterLease{path})
+    Ok(WriterLease{path,last_heartbeat:std::cell::Cell::new(std::time::Instant::now())})
 }
 
 fn manifest_path(root: &Path) -> PathBuf { root.join("_INGEST/state/manifest.json") }
@@ -112,10 +157,11 @@ fn retry_state_io<T>(mut operation:impl FnMut()->std::io::Result<T>)->std::io::R
 }
 #[cfg(not(windows))]
 fn atomic_replace_once(from:&Path,to:&Path)->std::io::Result<()>{fs::rename(from,to)}
-fn hash(path: &Path) -> Result<String, String> {
+fn hash(path: &Path) -> Result<String, String> { hash_with_lease(path, None) }
+fn hash_with_lease(path: &Path, lease: Option<&WriterLease>) -> Result<String, String> {
     let mut f = fs::File::open(path).map_err(|e| e.to_string())?;
     let mut h = Sha256::new(); let mut buf = [0u8; 1024*1024];
-    loop { let n = f.read(&mut buf).map_err(|e| e.to_string())?; if n == 0 { break; } h.update(&buf[..n]); }
+    loop { let n = f.read(&mut buf).map_err(|e| e.to_string())?; if n == 0 { break; } h.update(&buf[..n]); if let Some(lease)=lease { lease.heartbeat()?; } }
     Ok(format!("{:x}", h.finalize()))
 }
 fn timestamp_ns(time:std::time::SystemTime)->Option<String>{time.duration_since(std::time::UNIX_EPOCH).ok().map(|d|d.as_nanos().to_string())}
@@ -290,8 +336,46 @@ fn collect_sync(project_root: String, sources: Vec<String>) -> Result<Manifest, 
     let root = PathBuf::from(project_root);
     if !root.is_dir() { return Err("Project folder is unavailable".into()); }
     let _lease=acquire_lease(&root)?;
+    collect_with_lease(&root, sources, &_lease)
+}
+
+// Upgrade old records only from their hash-verified originals. The dates saved
+// at initial collection remain the filesystem fallback, even if the source was
+// subsequently copied or its filesystem timestamps changed.
+fn backfill_recording_metadata(root: &Path, state: &mut Manifest, lease: &WriterLease) -> Result<(), String> {
+    let reserved = root.join("_INGEST").canonicalize().map_err(|e|e.to_string())?;
+    for index in 0..state.files.len() {
+        lease.heartbeat()?;
+        let file = &state.files[index];
+        if file.status == "Filed" || file.recording_metadata.is_some() { continue; }
+        let source = PathBuf::from(&file.source);
+        let original = if source.is_file() { source } else { source.join(&file.relative_path) };
+        let Ok(original) = original.canonicalize() else { continue; };
+        if original.starts_with(&reserved) || same_source_path(&original, Path::new(&file.inbox_path)) { continue; }
+        let Ok(before) = fs::metadata(&original) else { continue; };
+        if !before.is_file() || before.len() != file.size { continue; }
+        report_progress(root,"metadata",&file.name,index,state.files.len());
+        if hash_with_lease(&original,Some(lease)).ok().as_deref() != Some(file.sha256.as_str()) { continue; }
+        let metadata = recording_metadata::read(&original, file.source_created.as_deref(), file.source_modified.as_deref(), || lease.heartbeat());
+        let Ok(after) = fs::metadata(&original) else { continue; };
+        if before.len() != after.len() || before.modified().ok() != after.modified().ok()
+            || hash_with_lease(&original,Some(lease)).ok().as_deref() != Some(file.sha256.as_str()) { continue; }
+        lease.heartbeat()?;
+        // Retry temporary probe failures on a later collection, without replacing
+        // existing evidence or making unavailable originals a collection error.
+        if metadata.probe_error.is_some() { continue; }
+        let id = file.id.clone();
+        state.files[index].recording_metadata = Some(metadata);
+        write_manifest(root,state)?;
+        append_journal(root,serde_json::json!({"action":"recording_metadata_backfilled","at":chrono::Utc::now().to_rfc3339(),"file_id":id,"source":original}))?;
+    }
+    Ok(())
+}
+
+fn collect_with_lease(root: &Path, sources: Vec<String>, _lease: &WriterLease) -> Result<Manifest, String> {
     let inbox = root.join("_INGEST/sources"); fs::create_dir_all(&inbox).map_err(|e| e.to_string())?;
     let mut state = read_manifest(&root)?;
+    backfill_recording_metadata(root,&mut state,_lease)?;
     for source in sources {
         let src = PathBuf::from(&source);
         if !src.exists() { return Err(format!("Source is unavailable: {source}")); }
@@ -317,7 +401,7 @@ fn collect_sync(project_root: String, sources: Vec<String>) -> Result<Manifest, 
             let modified = before.modified().ok().and_then(timestamp_ns);
             let created_time=before.created().ok();let created = created_time.and_then(timestamp_ns);
             report_progress(&root,"verifying",&source,completed,total);
-            let original_hash = hash(&original)?;
+            let original_hash = hash_with_lease(&original,Some(_lease))?;
             // Retry identity is the original path AND its content, not merely a
             // matching filename/hash on another card. Keep existing decisions/IDs.
             if let Some(existing)=state.files.iter().find(|file|{
@@ -326,12 +410,15 @@ fn collect_sync(project_root: String, sources: Vec<String>) -> Result<Manifest, 
                         || same_source_path(&Path::new(&file.source).join(&file.relative_path),&original))
             }){
                 let existing_copy=Path::new(&existing.inbox_path);
-                let digest=hash(existing_copy).map_err(|e|format!("Could not verify previously collected copy {}: {e}",existing_copy.display()))?;
+                let digest=hash_with_lease(existing_copy,Some(_lease)).map_err(|e|format!("Could not verify previously collected copy {}: {e}",existing_copy.display()))?;
                 if digest!=existing.sha256{return Err(format!("Previously collected copy has changed: {}",existing_copy.display()));}
                 append_journal(&root,serde_json::json!({"action":"source_already_collected","at":chrono::Utc::now().to_rfc3339(),"file_id":existing.id,"source":original}))?;
                 completed+=1;
                 continue;
             }
+            // Probe the original before any copy. Never derive evidence from a destination.
+            report_progress(&root,"metadata",&source,completed,total);
+            let recording_metadata = Some(recording_metadata::read(&original, created.as_deref(), modified.as_deref(), || _lease.heartbeat()));
             let timestamp_warning=if in_place{dest=original.clone();None}else{
                 let tmp = dest.with_extension(format!("{}.partial", Uuid::new_v4()));
                 append_journal(&root,serde_json::json!({"action":"transfer_started","at":chrono::Utc::now().to_rfc3339(),"temp_path":tmp,"inbox_path":dest,"file_id":Uuid::new_v4().to_string()}))?;
@@ -339,7 +426,7 @@ fn collect_sync(project_root: String, sources: Vec<String>) -> Result<Manifest, 
                 if let Err(e)=copy_with_heartbeat(&original, &tmp,&_lease){let _=fs::remove_file(&tmp);let _=append_journal(&root,serde_json::json!({"action":"transfer_completed","at":chrono::Utc::now().to_rfc3339(),"temp_path":tmp}));return Err(e);}
                 report_progress(&root,"verifying",&source,completed,total);
                 let after = fs::metadata(&original).map_err(|e| e.to_string())?;
-                if before.len()!=after.len() || before.modified().ok()!=after.modified().ok() || original_hash!=hash(&tmp)? || original_hash!=hash(&original)? {
+                if before.len()!=after.len() || before.modified().ok()!=after.modified().ok() || original_hash!=hash_with_lease(&tmp,Some(_lease))? || original_hash!=hash_with_lease(&original,Some(_lease))? {
                     let _ = fs::remove_file(&tmp);let _=append_journal(&root,serde_json::json!({"action":"transfer_completed","at":chrono::Utc::now().to_rfc3339(),"temp_path":tmp})); return Err(format!("Source changed during collection; retry: {}", original.display()));
                 }
                 let mut warning = match before.modified() {Ok(time)=>filetime::set_file_mtime(&tmp,filetime::FileTime::from_system_time(time)).err().map(|e|format!("Could not preserve source modification time: {e}")),Err(_)=>Some("Source modification time is unavailable".into())};
@@ -348,7 +435,7 @@ fn collect_sync(project_root: String, sources: Vec<String>) -> Result<Manifest, 
             };
             let role = match crate::media_browser::media_kind(&original) {Some("video")=>"Full-resolution video",Some("audio")=>"Raw audio",Some("image")=>"Stills",_=>"Unclassified supporting file"};
             let file_id=Uuid::new_v4().to_string();let duplicate_of=state.files.iter().find(|f|f.sha256==original_hash).map(|f|f.id.clone());
-            state.files.push(IngestFile { id:file_id, batch_id:id.clone(), collected_at:Some(chrono::Utc::now().to_rfc3339()), newly_collected:true, name: original.file_name().unwrap_or_default().to_string_lossy().into_owned(), source: source.clone(), source_name:src.file_name().unwrap_or_default().to_string_lossy().into_owned(), relative_path: rel.to_string_lossy().into_owned(), inbox_path: dest.to_string_lossy().into_owned(), role: role.into(), size: before.len(), sha256: original_hash.clone(), source_modified: modified, source_created: created, timestamp_warning, status: "Verified".into(), group_id: None, group_name: None, client: None, clients:Vec::new(),client_paths:Vec::new(),destinations:Vec::new(),duplicate_of,counterpart_id:None });
+            state.files.push(IngestFile { id:file_id, batch_id:id.clone(), collected_at:Some(chrono::Utc::now().to_rfc3339()), newly_collected:true, name: original.file_name().unwrap_or_default().to_string_lossy().into_owned(), source: source.clone(), source_name:src.file_name().unwrap_or_default().to_string_lossy().into_owned(), relative_path: rel.to_string_lossy().into_owned(), inbox_path: dest.to_string_lossy().into_owned(), role: role.into(), size: before.len(), sha256: original_hash.clone(), source_modified: modified, source_created: created, recording_metadata, timestamp_warning, status: "Verified".into(), group_id: None, group_name: None, client: None, clients:Vec::new(),client_paths:Vec::new(),destinations:Vec::new(),duplicate_of,counterpart_id:None });
             write_manifest(&root,&state)?;
             append_journal(&root,serde_json::json!({"action":"collected","at":chrono::Utc::now().to_rfc3339(),"file_id":state.files.last().unwrap().id,"sha256":original_hash}))?;
             completed+=1;report_progress(&root,"collecting",&source,completed,total);
@@ -366,7 +453,7 @@ pub fn ingest_save(project_root: String, manifest: Manifest) -> Result<(), Strin
     if manifest.files.iter().any(|f|!current.files.iter().any(|c|c.id==f.id)) {return Err("Manifest includes unknown files; refresh ingest state before saving".into());}
     let mut merged=current;
     for f in manifest.files { let Some(old)=merged.files.iter_mut().find(|c|c.id==f.id) else {continue};
-        if old.sha256!=f.sha256||old.inbox_path!=f.inbox_path||old.source!=f.source||old.name!=f.name||old.relative_path!=f.relative_path||old.size!=f.size||old.source_modified!=f.source_modified||old.source_created!=f.source_created||old.batch_id!=f.batch_id {return Err("Original file evidence cannot be edited".into());}
+        if old.sha256!=f.sha256||old.inbox_path!=f.inbox_path||old.source!=f.source||old.name!=f.name||old.relative_path!=f.relative_path||old.size!=f.size||old.source_modified!=f.source_modified||old.source_created!=f.source_created||old.batch_id!=f.batch_id||old.recording_metadata!=f.recording_metadata {return Err("Original file evidence cannot be edited".into());}
         if !old.destinations.is_empty()&&(old.clients!=f.clients||old.client_paths!=f.client_paths||old.client!=f.client||old.role!=f.role){return Err(format!("{} has already been filed. Reassigning filed media requires the explicit move workflow.",old.name));}
         if old.group_id!=f.group_id||old.group_name!=f.group_name||old.client!=f.client||old.clients!=f.clients||old.client_paths!=f.client_paths||old.role!=f.role||old.newly_collected!=f.newly_collected{append_journal(&root,serde_json::json!({"action":"decision_updated","at":chrono::Utc::now().to_rfc3339(),"file_id":f.id,"from_group":old.group_name.clone(),"to_group":f.group_name.clone(),"clients":f.clients.clone(),"client_paths":f.client_paths.clone(),"role":f.role}))?;}
         old.group_id=f.group_id;old.group_name=f.group_name;old.client=f.client;old.clients=f.clients;old.client_paths=f.client_paths;old.role=f.role;old.newly_collected=f.newly_collected;old.source_name=f.source_name;
@@ -394,6 +481,9 @@ fn file_selected_sync(project_root:String,eligible_client_paths:Option<Vec<Strin
 }
 fn file_selected_sync_filtered(project_root:String,eligible_client_paths:Option<Vec<String>>,eligible_file_ids:Option<std::collections::HashSet<String>>)->Result<Manifest,String>{
     let root=PathBuf::from(project_root);let _lease=acquire_lease(&root)?;let mut state=read_manifest(&root)?;
+    file_with_lease(&root, &mut state, eligible_client_paths, eligible_file_ids, &_lease)
+}
+fn file_with_lease(root:&Path, state:&mut Manifest, eligible_client_paths:Option<Vec<String>>, eligible_file_ids:Option<std::collections::HashSet<String>>, _lease:&WriterLease)->Result<Manifest,String>{
     let total=state.files.iter().filter(|f|f.status=="Verified").map(|f|if f.clients.is_empty(){usize::from(f.client.is_some())}else{f.clients.len()}).sum::<usize>();let mut completed=0usize;
     for i in 0..state.files.len(){
         let f=state.files[i].clone();if f.status=="Filed"||f.status!="Verified"||eligible_file_ids.as_ref().is_some_and(|ids|!ids.contains(&f.id)){continue;}
@@ -405,7 +495,7 @@ fn file_selected_sync_filtered(project_root:String,eligible_client_paths:Option<
         if let Some(eligible)=eligible_client_paths.as_ref(){targets.retain(|(_,relative)|eligible.contains(relative));}
         if targets.is_empty(){continue;}
         let rel=role_destination(&f.role).ok_or_else(||format!("Choose a media type for {} before organising",f.name))?;
-        let source=PathBuf::from(&f.inbox_path);if !source.is_file()||hash(&source)?!=f.sha256{return Err(format!("Inbox file is missing or changed: {}",f.name));}
+        let source=PathBuf::from(&f.inbox_path);if !source.is_file()||hash_with_lease(&source,Some(_lease))?!=f.sha256{return Err(format!("Inbox file is missing or changed: {}",f.name));}
         for (client,relative) in targets{
             if eligible_client_paths.as_ref().is_some_and(|paths|!paths.contains(&relative)){continue;}
             if client.is_empty()||client=="_INGEST"||!valid_client_name(&client)||!valid_client_path(&relative){return Err(format!("Invalid client destination: {client}"));}
@@ -414,23 +504,268 @@ fn file_selected_sync_filtered(project_root:String,eligible_client_paths:Option<
             let dir=client_root.join(rel);if !dir.is_dir(){return Err(format!("Client destination folder is missing: {}",dir.display()));}
             let canonical_root=root.canonicalize().map_err(|e|e.to_string())?;let canonical_client=client_root.canonicalize().map_err(|e|e.to_string())?;let canonical_dir=dir.canonicalize().map_err(|e|e.to_string())?;
             if !canonical_client.starts_with(&canonical_root)||!canonical_dir.starts_with(&canonical_client){return Err(format!("Destination escapes its project client folder: {}",dir.display()));}
+            report_progress(root,"filing",&f.name,completed,total);
             append_journal(&root,serde_json::json!({"action":"file_started","at":chrono::Utc::now().to_rfc3339(),"file_id":f.id,"client":client.clone(),"client_path":relative,"role":f.role}))?;
-            let mut dest=dir.join(&f.name);let mut n=1;while dest.exists(){if hash(&dest).ok().as_deref()==Some(f.sha256.as_str()){break;}let stem=Path::new(&f.name).file_stem().unwrap_or_default().to_string_lossy();let ext=Path::new(&f.name).extension().and_then(|x|x.to_str()).unwrap_or("");let suffix=if ext.is_empty(){String::new()}else{format!(".{ext}")};dest=dir.join(format!("{stem} (Ingest {n}){suffix}"));n+=1;}
+            let mut dest=dir.join(&f.name);let mut n=1;while dest.exists(){if hash_with_lease(&dest,Some(_lease)).ok().as_deref()==Some(f.sha256.as_str()){break;}let stem=Path::new(&f.name).file_stem().unwrap_or_default().to_string_lossy();let ext=Path::new(&f.name).extension().and_then(|x|x.to_str()).unwrap_or("");let suffix=if ext.is_empty(){String::new()}else{format!(".{ext}")};dest=dir.join(format!("{stem} (Ingest {n}){suffix}"));n+=1;}
             if dest.to_string_lossy().encode_utf16().count()>32760{return Err(format!("Destination path is too long: {}",dest.display()));}
             let free=available_space(&dir)?;if f.size>free.saturating_sub(free/50){return Err(format!("Not enough destination space for {}",f.name));}
-            if !dest.exists(){let tmp=dest.with_extension(format!("{}.partial",Uuid::new_v4()));append_journal(&root,serde_json::json!({"action":"transfer_started","at":chrono::Utc::now().to_rfc3339(),"temp_path":tmp.to_string_lossy(),"file_id":f.id,"client":client.clone()}))?;if let Err(e)=copy_with_heartbeat(&source,&tmp,&_lease){let _=fs::remove_file(&tmp);let _=append_journal(&root,serde_json::json!({"action":"transfer_completed","at":chrono::Utc::now().to_rfc3339(),"temp_path":tmp.to_string_lossy()}));return Err(e);}if hash(&tmp)?!=f.sha256{let _=fs::remove_file(&tmp);let _=append_journal(&root,serde_json::json!({"action":"transfer_completed","at":chrono::Utc::now().to_rfc3339(),"temp_path":tmp.to_string_lossy()}));return Err(format!("Filing verification failed for {}",f.name));}if let Some(t)=f.source_modified.as_deref().and_then(time_from_ns){if let Err(e)=filetime::set_file_mtime(&tmp,filetime::FileTime::from_system_time(t)){state.files[i].timestamp_warning=Some(format!("Could not preserve filed modification time: {e}"));}}if let Some(raw)=f.source_created.as_deref(){if let Some(t)=time_from_ns(raw){if let Some(w)=preserve_creation_time(&tmp,Some(t)){state.files[i].timestamp_warning=Some(w);}}}if let Err(e)=fs::rename(&tmp,&dest){let _=fs::remove_file(&tmp);return Err(e.to_string());}append_journal(&root,serde_json::json!({"action":"transfer_completed","at":chrono::Utc::now().to_rfc3339(),"temp_path":tmp.to_string_lossy()}))?;}
+            if !dest.exists(){let tmp=dest.with_extension(format!("{}.partial",Uuid::new_v4()));append_journal(&root,serde_json::json!({"action":"transfer_started","at":chrono::Utc::now().to_rfc3339(),"temp_path":tmp.to_string_lossy(),"file_id":f.id,"client":client.clone()}))?;if let Err(e)=copy_with_heartbeat(&source,&tmp,&_lease){let _=fs::remove_file(&tmp);let _=append_journal(&root,serde_json::json!({"action":"transfer_completed","at":chrono::Utc::now().to_rfc3339(),"temp_path":tmp.to_string_lossy()}));return Err(e);}if hash_with_lease(&tmp,Some(_lease))?!=f.sha256{let _=fs::remove_file(&tmp);let _=append_journal(&root,serde_json::json!({"action":"transfer_completed","at":chrono::Utc::now().to_rfc3339(),"temp_path":tmp.to_string_lossy()}));return Err(format!("Filing verification failed for {}",f.name));}if let Some(t)=f.source_modified.as_deref().and_then(time_from_ns){if let Err(e)=filetime::set_file_mtime(&tmp,filetime::FileTime::from_system_time(t)){state.files[i].timestamp_warning=Some(format!("Could not preserve filed modification time: {e}"));}}if let Some(raw)=f.source_created.as_deref(){if let Some(t)=time_from_ns(raw){if let Some(w)=preserve_creation_time(&tmp,Some(t)){state.files[i].timestamp_warning=Some(w);}}}if let Err(e)=fs::rename(&tmp,&dest){let _=fs::remove_file(&tmp);return Err(e.to_string());}append_journal(&root,serde_json::json!({"action":"transfer_completed","at":chrono::Utc::now().to_rfc3339(),"temp_path":tmp.to_string_lossy()}))?;}
+            if fs::metadata(&dest).map_err(|e|e.to_string())?.len()!=f.size || hash_with_lease(&dest,Some(_lease))?!=f.sha256 {
+                return Err(format!("Final NAS copy could not be verified: {}",dest.display()));
+            }
             state.files[i].destinations.push(dest.to_string_lossy().into_owned());write_manifest(&root,&state)?;
             append_journal(&root,serde_json::json!({"action":"file_committed","at":chrono::Utc::now().to_rfc3339(),"file_id":f.id,"client":client,"client_path":relative,"destination":dest.to_string_lossy()}))?;
             completed+=1;report_progress(&root,"filing",&f.name,completed,total);
         }
         if state.files[i].destinations.len()>=target_count{state.files[i].status="Filed".into();write_manifest(&root,&state)?;}
     }
-    Ok(state)
+    Ok(state.clone())
+}
+
+#[derive(Clone, Deserialize)]
+pub struct ProjectMediaCopy { pub source: String, pub role: String }
+#[derive(Debug, Serialize)]
+pub struct ProjectMediaCopyResult { pub copied: usize, pub already_present: usize }
+
+/// A single writer lease covers collection, targeted assignment, and filing.
+/// The frontend never saves a snapshot of unrelated import decisions.
+#[tauri::command]
+pub async fn ingest_copy_project_media(project_root:String, client_path:String, files:Vec<ProjectMediaCopy>)->Result<ProjectMediaCopyResult,String>{
+    tauri::async_runtime::spawn_blocking(move||copy_project_media_sync(project_root,client_path,files)).await.map_err(|e|e.to_string())?
+}
+fn copy_project_media_sync(project_root:String,client_path:String,files:Vec<ProjectMediaCopy>)->Result<ProjectMediaCopyResult,String>{
+    let root=PathBuf::from(project_root);
+    let result=(||{
+        if files.is_empty(){return Err("Choose at least one file to copy".into());}
+        let canonical_root=root.canonicalize().map_err(|e|format!("Project folder is unavailable: {e}"))?;
+        let client=PathBuf::from(client_path).canonicalize().map_err(|e|format!("Client folder is unavailable: {e}"))?;
+        let relative=client.strip_prefix(&canonical_root).map_err(|_|"Client is outside the selected project")?;
+        let relative=relative.to_string_lossy().replace('\\',"/");
+        if !valid_client_path(&relative){return Err("Choose a client inside the selected project".into());}
+        let client_name=client.file_name().ok_or("Invalid client folder")?.to_string_lossy().into_owned();
+        let mut unique=std::collections::HashSet::new();
+        let mut selected=Vec::new();
+        for file in files {
+            let source=PathBuf::from(&file.source).canonicalize().map_err(|e|format!("Source is unavailable ({}): {e}",file.source))?;
+            if !source.is_file() || crate::media_browser::media_kind(&source).is_none(){return Err(format!("Choose a supported media file: {}",file.source));}
+            let role=role_destination(&file.role).ok_or("Choose a valid destination type")?;
+            let destination=client.join(role).canonicalize().map_err(|e|format!("Destination folder is unavailable ({role}): {e}"))?;
+            if !destination.is_dir() || !destination.starts_with(&client){return Err("Destination is outside the selected client".into());}
+            if !unique.insert(normalized_path(&source)){return Err("The same source was selected more than once".into());}
+            selected.push((source,file.role));
+        }
+        let lease=acquire_lease(&root)?;
+        let mut state=collect_with_lease(&root,selected.iter().map(|(p,_)|p.to_string_lossy().into_owned()).collect(),&lease)?;
+        let mut ids=std::collections::HashSet::new();
+        let mut already_present=0;
+        for (source,role) in &selected {
+            // Changed content at the same path is a separate collected version.
+            let digest=hash_with_lease(source,Some(&lease))?;
+            let file=state.files.iter_mut().find(|f|f.sha256==digest && (same_source_path(Path::new(&f.source),source)||same_source_path(&Path::new(&f.source).join(&f.relative_path),source))).ok_or("The staged source could not be identified")?;
+            let same_client=file.client_paths.len()==1 && file.client_paths[0].replace('\\',"/").eq_ignore_ascii_case(&relative);
+            if (!file.clients.is_empty() || file.client.is_some() || !file.client_paths.is_empty() || !file.destinations.is_empty()) && !same_client {
+                return Err(format!("{} is assigned to another client in Import media. Review that assignment before copying.",file.name));
+            }
+            if !file.destinations.is_empty() && file.role!=*role {return Err(format!("{} is already filed as {}. Keep that destination type or review it in Import media.",file.name,file.role));}
+            let expected=client.join(role_destination(role).unwrap()).canonicalize().map_err(|e|e.to_string())?;
+            let mut verified=Vec::new();
+            for destination in &file.destinations {
+                let destination=Path::new(destination);
+                if destination.parent().and_then(|p|p.canonicalize().ok()).as_ref()==Some(&expected)
+                    && fs::metadata(destination).is_ok_and(|m|m.is_file()&&m.len()==file.size)
+                    && hash_with_lease(destination,Some(&lease))?==file.sha256 {verified.push(destination.to_string_lossy().into_owned());}
+            }
+            verified.truncate(1);
+            file.destinations=verified;
+            if !file.destinations.is_empty(){already_present+=1;file.status="Filed".into();}
+            else{file.status="Verified".into();}
+            file.role=role.clone();file.client=Some(client_name.clone());file.clients=vec![client_name.clone()];file.client_paths=vec![relative.clone()];
+            ids.insert(file.id.clone());
+        }
+        write_manifest(&root,&state)?;
+        let filed=file_with_lease(&root,&mut state,None,Some(ids.clone()),&lease)?;
+        if filed.files.iter().filter(|f|ids.contains(&f.id)&&f.status=="Filed"&&f.destinations.len()==1).count()!=ids.len(){return Err("Some selected files were not filed. Verified recovery copies remain in Import media.".into());}
+        report_progress(&root,"complete","",selected.len(),selected.len());
+        Ok(ProjectMediaCopyResult{copied:selected.len()-already_present,already_present})
+    })();
+    if result.is_err() && root.join("_INGEST/state").is_dir(){if let Ok(_lease)=acquire_lease(&root){report_progress(&root,"paused","",0,0);}}
+    result
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn copy_request(source:&Path)->ProjectMediaCopy{ProjectMediaCopy{source:source.to_string_lossy().into_owned(),role:"Raw audio".into()}}
+    fn copy_to(root:&Path,client:&Path,files:Vec<ProjectMediaCopy>)->Result<ProjectMediaCopyResult,String>{
+        copy_project_media_sync(root.to_string_lossy().into_owned(),client.to_string_lossy().into_owned(),files)
+    }
+    fn copy_layout(root:&Path)->PathBuf{
+        let client=root.join("SEASON 2/Exact_CLIENT_Name");
+        fs::create_dir_all(client.join("01_MEDIA/040_AUDIO_RAW")).unwrap();client
+    }
+    fn exercise_project_copy(root:&Path){
+        let local=tempfile::tempdir().unwrap();let source=local.path().join("Take_001.wav");
+        let bytes:Vec<u8>=(0..4*1024*1024).map(|i|(i%251)as u8).collect();fs::write(&source,&bytes).unwrap();
+        let original=fs::metadata(&source).unwrap();let digest=hash(&source).unwrap();let client=copy_layout(root);
+        let dir=client.join("01_MEDIA/040_AUDIO_RAW");fs::write(dir.join("Take_001.wav"),b"Existing media - preserve me").unwrap();
+        // Unselected collected media and its assignment must remain unchanged.
+        let unrelated=local.path().join("Other.wav");fs::write(&unrelated,b"unrelated").unwrap();
+        let mut initial=collect_sync(root.to_string_lossy().into_owned(),vec![unrelated.to_string_lossy().into_owned()]).unwrap();
+        initial.files[0].group_name=Some("Keep this group".into());initial.files[0].clients=vec!["Another_client".into()];
+        write_manifest(root,&initial).unwrap();let untouched=serde_json::to_value(&initial.files[0]).unwrap();
+        let first=copy_to(root,&client,vec![copy_request(&source)]).unwrap();assert_eq!((first.copied,first.already_present),(1,0));
+        let state=read_manifest(root).unwrap();assert_eq!(state.files.len(),2);assert_eq!(serde_json::to_value(&state.files[0]).unwrap(),untouched);
+        let filed=&state.files[1];assert_eq!(filed.status,"Filed");assert_eq!(filed.client_paths,vec!["SEASON 2/Exact_CLIENT_Name"]);
+        let destination=PathBuf::from(&filed.destinations[0]);assert_eq!(hash(&destination).unwrap(),digest);assert_eq!(hash(Path::new(&filed.inbox_path)).unwrap(),digest);
+        assert_eq!(fs::read(dir.join("Take_001.wav")).unwrap(),b"Existing media - preserve me");
+        assert_eq!(destination.file_name().unwrap(),"Take_001 (Ingest 1).wav");
+        let again=copy_to(root,&client,vec![copy_request(&source)]).unwrap();assert_eq!((again.copied,again.already_present),(0,1));assert_eq!(read_manifest(root).unwrap().files.len(),2);
+        assert_eq!(filed_media_copies(root,"SEASON 2/Exact_CLIENT_Name").len(),1);
+        // Same-length corruption must not be accepted on retry, or overwritten.
+        fs::write(&destination,vec![0u8;bytes.len()]).unwrap();
+        let repaired=copy_to(root,&client,vec![copy_request(&source)]).unwrap();assert_eq!(repaired.copied,1);
+        let repaired_state=read_manifest(root).unwrap();let repaired_file=&repaired_state.files[1];
+        assert_ne!(repaired_file.destinations[0],destination.to_string_lossy());assert_eq!(hash(Path::new(&repaired_file.destinations[0])).unwrap(),digest);
+        assert_eq!(fs::read(&destination).unwrap(),vec![0u8;bytes.len()]);
+        assert_eq!(hash(&source).unwrap(),digest);assert_eq!(fs::metadata(&source).unwrap().modified().unwrap(),original.modified().unwrap());
+        assert_eq!(fs::metadata(&source).unwrap().created().ok(),original.created().ok());
+        assert!(!root.join("_INGEST/state/writer.lock").exists());
+        assert!(!walkdir::WalkDir::new(root).into_iter().flatten().any(|e|is_ingest_temporary(e.path())));
+        eprintln!("Verified local -> {}: 4 MiB SHA-256 {digest}; collision preserved; retry reused; corrupt destination recovered; source timestamps unchanged",root.display());
+    }
+    #[test]
+    fn recording_evidence_comes_from_original_is_immutable_and_old_manifests_load() {
+        let temp=tempfile::tempdir().unwrap();let root=temp.path().join("project");fs::create_dir(&root).unwrap();
+        let source=temp.path().join("original.mp4");fs::write(&source,include_bytes!("../../tests/fixtures/recording.mp4")).unwrap();
+        let original=fs::read(&source).unwrap();let source_meta=fs::metadata(&source).unwrap();
+        let state=collect_sync(root.to_string_lossy().into_owned(),vec![source.to_string_lossy().into_owned()]).unwrap();
+        let evidence=state.files[0].recording_metadata.as_ref().unwrap();
+        assert_eq!(evidence.start_source.as_deref(),Some("format.creation_time"));
+        assert_eq!(evidence.start_ns.as_deref(),Some("1767268800000000000"));
+        assert!(evidence.duration_ns.as_ref().unwrap().parse::<u64>().unwrap()>=1_000_000_000);
+        assert_eq!(state.files[0].source_created,source_meta.created().ok().and_then(timestamp_ns));
+        assert_eq!(fs::read(&source).unwrap(),original);
+        assert_eq!(fs::metadata(&source).unwrap().modified().unwrap(),source_meta.modified().unwrap());
+        assert_eq!(read_manifest(&root).unwrap().files[0].recording_metadata,state.files[0].recording_metadata);
+        let mut edited=state.clone();edited.files[0].recording_metadata.as_mut().unwrap().start_source=Some("filesystem_created".into());
+        assert!(ingest_save(root.to_string_lossy().into_owned(),edited).unwrap_err().contains("Original file evidence"));
+        let mut legacy=serde_json::to_value(&state).unwrap();legacy["files"][0].as_object_mut().unwrap().remove("recording_metadata");
+        let legacy:Manifest=serde_json::from_value(legacy).unwrap();assert!(legacy.files[0].recording_metadata.is_none());
+    }
+
+    #[test]
+    fn later_collection_upgrades_legacy_originals_without_changing_decisions() {
+        let temp=tempfile::tempdir().unwrap();let root=temp.path().join("project");fs::create_dir(&root).unwrap();
+        let card=temp.path().join("card");fs::create_dir(&card).unwrap();
+        let original=card.join("camera.mp4");fs::write(&original,include_bytes!("../../tests/fixtures/recording.mp4")).unwrap();
+        let mut first=collect_sync(root.to_string_lossy().into_owned(),vec![card.to_string_lossy().into_owned()]).unwrap();
+        first.files[0].recording_metadata=None;
+        first.files[0].group_id=Some("manual".into());first.files[0].group_name=Some("Keep interview".into());
+        first.files[0].clients=vec!["Keep_PRODUCT".into()];first.files[0].client_paths=vec!["Keep_PRODUCT".into()];
+        first.reviewed_groups=vec!["manual".into()];
+        let before=serde_json::to_value(&first.files[0]).unwrap();write_manifest(&root,&first).unwrap();
+        let later=temp.path().join("recorder.mov");fs::write(&later,include_bytes!("../../tests/fixtures/recording.mp4")).unwrap();
+        let next=collect_sync(root.to_string_lossy().into_owned(),vec![later.to_string_lossy().into_owned()]).unwrap();
+        assert_eq!(next.files.len(),2);assert_ne!(next.files[0].batch_id,next.files[1].batch_id);
+        assert!(next.files.iter().all(|f|f.recording_metadata.as_ref().is_some_and(|m|m.start_ns.is_some()&&m.duration_ns.is_some())));
+        let mut after=serde_json::to_value(&next.files[0]).unwrap();after["recording_metadata"]=serde_json::Value::Null;
+        assert_eq!(before,after);assert_eq!(next.reviewed_groups,first.reviewed_groups);
+        assert_eq!(next.files[0].recording_metadata,read_manifest(&root).unwrap().files[0].recording_metadata);
+        let repeated=collect_sync(root.to_string_lossy().into_owned(),vec![original.to_string_lossy().into_owned()]).unwrap();
+        assert_eq!(repeated.files.len(),2);assert_eq!(repeated.files[0].recording_metadata,next.files[0].recording_metadata);
+    }
+
+    #[test]
+    fn client_intervals_use_verified_evidence_and_never_destination_filesystem_dates() {
+        let temp=tempfile::tempdir().unwrap();let root=temp.path().join("project");fs::create_dir(&root).unwrap();
+        let original=temp.path().join("original.mp4");fs::write(&original,include_bytes!("../../tests/fixtures/recording.mp4")).unwrap();
+        let mut state=collect_sync(root.to_string_lossy().into_owned(),vec![original.to_string_lossy().into_owned()]).unwrap();
+        let copied=root.join("client/01_MEDIA/020_VIDEO_RAW/copy.mp4");fs::create_dir_all(copied.parent().unwrap()).unwrap();fs::copy(&original,&copied).unwrap();
+        let metadata=state.files[0].recording_metadata.as_mut().unwrap();metadata.start_source=Some("filesystem_created".into());metadata.start_ns=Some("1700000000000000000".into());
+        state.files[0].destinations=vec![copied.to_string_lossy().into_owned()];write_manifest(&root,&state).unwrap();
+        assert_eq!(client_recording_metadata(&root,&[copied.clone()])[0].1,state.files[0].recording_metadata);
+        state.files[0].timestamp_warning=Some("Check source date".into());write_manifest(&root,&state).unwrap();
+        assert!(client_recording_metadata(&root,&[copied.clone()])[0].1.as_ref().unwrap().warning.is_some());
+        let external=root.join("client/01_MEDIA/020_VIDEO_RAW/external.mp4");fs::copy(&original,&external).unwrap();
+        let result=client_recording_metadata(&root,&[external]);assert_eq!(result[0].1.as_ref().unwrap().start_source.as_deref(),Some("format.creation_time"));
+        fs::write(&copied,vec![0;fs::metadata(&copied).unwrap().len() as usize]).unwrap();
+        let result=client_recording_metadata(&root,&[copied]);let result=result[0].1.as_ref().unwrap();
+        assert!(result.start_ns.is_none());assert!(result.duration_ns.is_none());assert!(result.probe_error.is_some());
+    }
+
+    #[test]
+    fn legacy_backfill_does_not_infer_from_inbox_or_changed_or_unavailable_originals() {
+        let temp=tempfile::tempdir().unwrap();let root=temp.path().join("project");fs::create_dir(&root).unwrap();
+        let missing=temp.path().join("missing.mp4");let changed=temp.path().join("changed.mp4");
+        let in_place=root.join("_INGEST/sources/in-place.mp4");fs::create_dir_all(in_place.parent().unwrap()).unwrap();
+        for path in [&missing,&changed,&in_place]{fs::write(path,include_bytes!("../../tests/fixtures/recording.mp4")).unwrap();}
+        let mut state=collect_sync(root.to_string_lossy().into_owned(),vec![missing.to_string_lossy().into_owned(),changed.to_string_lossy().into_owned(),in_place.to_string_lossy().into_owned()]).unwrap();
+        for file in &mut state.files {file.recording_metadata=None;}
+        write_manifest(&root,&state).unwrap();fs::remove_file(&missing).unwrap();
+        let mut altered=fs::read(&changed).unwrap();altered[100]^=1;fs::write(&changed,altered).unwrap();
+        let later=temp.path().join("later.mp4");fs::write(&later,include_bytes!("../../tests/fixtures/recording.mp4")).unwrap();
+        let next=collect_sync(root.to_string_lossy().into_owned(),vec![later.to_string_lossy().into_owned()]).unwrap();
+        assert_eq!(next.files.len(),4);assert!(next.files[..3].iter().all(|f|f.recording_metadata.is_none()));
+        assert!(next.files[3].recording_metadata.as_ref().unwrap().duration_ns.is_some());
+    }
+
+    #[test]
+    fn project_copy_verifies_retries_collisions_and_preserves_unrelated_decisions(){
+        let temp=tempfile::tempdir().unwrap();exercise_project_copy(temp.path());
+    }
+    #[test]
+    #[ignore = "Writes only generated fixtures in a temporary directory under PEPPER_NAS_TEST_ROOT"]
+    fn project_copy_live_nas(){
+        let parent=std::env::var("PEPPER_NAS_TEST_ROOT").expect("Set PEPPER_NAS_TEST_ROOT to an existing NAS test parent");
+        let temp=tempfile::Builder::new().prefix("Pepper-copy-verification-").tempdir_in(&parent).unwrap();
+        exercise_project_copy(temp.path());
+    }
+    #[test]
+    fn project_copy_rejects_wrong_client_and_missing_destination_before_collection(){
+        let temp=tempfile::tempdir().unwrap();let root=temp.path().join("show");let client=copy_layout(&root);
+        let source=temp.path().join("REC.wav");fs::write(&source,b"recording").unwrap();
+        let outside=temp.path().join("outside");fs::create_dir_all(&outside).unwrap();
+        assert!(copy_to(&root,&outside,vec![copy_request(&source)]).unwrap_err().contains("outside"));
+        let invalid=ProjectMediaCopy{source:source.to_string_lossy().into_owned(),role:"Music".into()};
+        assert!(copy_to(&root,&client,vec![invalid]).unwrap_err().contains("unavailable"));
+        assert!(!root.join("_INGEST").exists());
+        assert!(copy_to(&root,&client,vec![copy_request(&source),copy_request(&source)]).unwrap_err().contains("more than once"));
+        assert!(!root.join("_INGEST").exists());
+    }
+    #[test]
+    fn project_copy_refuses_another_clients_filed_media(){
+        let temp=tempfile::tempdir().unwrap();let root=temp.path().join("show");let client=copy_layout(&root);
+        let other=root.join("Other_client");fs::create_dir_all(other.join("01_MEDIA/040_AUDIO_RAW")).unwrap();
+        let source=temp.path().join("REC.wav");fs::write(&source,b"recording").unwrap();
+        copy_to(&root,&client,vec![copy_request(&source)]).unwrap();
+        assert!(copy_to(&root,&other,vec![copy_request(&source)]).unwrap_err().contains("another client"));
+        assert!(!other.join("01_MEDIA/040_AUDIO_RAW/REC.wav").exists());
+        assert_eq!(read_manifest(&root).unwrap().files[0].client.as_deref(),Some("Exact_CLIENT_Name"));
+    }
+    #[test]
+    fn project_copy_recovers_a_partially_committed_file_and_rejects_changed_inbox(){
+        let temp=tempfile::tempdir().unwrap();let root=temp.path().join("show");let client=copy_layout(&root);
+        let source=temp.path().join("REC.wav");fs::write(&source,b"recording").unwrap();
+        copy_to(&root,&client,vec![copy_request(&source)]).unwrap();
+        let mut state=read_manifest(&root).unwrap();state.files[0].status="Verified".into();write_manifest(&root,&state).unwrap();
+        let retry=copy_to(&root,&client,vec![copy_request(&source)]).unwrap();assert_eq!(retry.already_present,1);assert_eq!(read_manifest(&root).unwrap().files[0].status,"Filed");
+        fs::write(&state.files[0].inbox_path,b"bad inbox").unwrap();
+        assert!(copy_to(&root,&client,vec![copy_request(&source)]).unwrap_err().contains("changed"));
+        assert_eq!(fs::read(&source).unwrap(),b"recording");assert!(!root.join("_INGEST/state/writer.lock").exists());
+    }
+    #[cfg(windows)]
+    #[test]
+    fn project_copy_handles_windows_destination_failure_then_retries(){
+        use std::os::windows::fs::OpenOptionsExt;
+        let temp=tempfile::tempdir().unwrap();let root=temp.path().join("show");let client=copy_layout(&root);
+        let source=temp.path().join("REC.wav");fs::write(&source,b"recording").unwrap();
+        let collected=collect_sync(root.to_string_lossy().into_owned(),vec![source.to_string_lossy().into_owned()]).unwrap();
+        let lock=fs::OpenOptions::new().read(true).share_mode(0).open(&collected.files[0].inbox_path).unwrap();
+        assert!(copy_to(&root,&client,vec![copy_request(&source)]).is_err());assert!(!client.join("01_MEDIA/040_AUDIO_RAW/REC.wav").exists());
+        assert!(!root.join("_INGEST/state/writer.lock").exists());drop(lock);
+        assert_eq!(copy_to(&root,&client,vec![copy_request(&source)]).unwrap().copied,1);
+    }
     #[test]
     fn collection_preserves_source_and_separates_identical_names() {
         let temp = tempfile::tempdir().unwrap();
@@ -517,7 +852,7 @@ mod tests {
         let a=root.join("Client_A/01_MEDIA/040_AUDIO_RAW");let b=root.join("Client_B/01_MEDIA/040_AUDIO_RAW");
         fs::create_dir_all(&inbox).unwrap();fs::create_dir_all(&a).unwrap();fs::create_dir_all(&b).unwrap();
         let incoming=inbox.join("REC.wav");fs::write(&incoming,b"recording").unwrap();fs::write(a.join("REC.wav"),b"existing different").unwrap();
-        let digest=hash(&incoming).unwrap();let mut state=Manifest{schema_version:1,files:vec![IngestFile{id:"one".into(),batch_id:"batch".into(),collected_at:None,newly_collected:false,name:"REC.wav".into(),source:"card".into(),source_name:"card".into(),relative_path:"REC.wav".into(),inbox_path:incoming.to_string_lossy().into_owned(),role:"Raw audio".into(),size:9,sha256:digest.clone(),source_modified:None,source_created:None,timestamp_warning:None,status:"Verified".into(),group_id:Some("group-one".into()),group_name:Some("Interview".into()),client:None,clients:vec!["Client_A".into(),"Client_B".into()],client_paths:vec!["Client_A".into(),"Client_B".into()],destinations:vec![],duplicate_of:None,counterpart_id:None}],reviewed_groups:vec![]};
+        let digest=hash(&incoming).unwrap();let mut state=Manifest{schema_version:1,files:vec![IngestFile{id:"one".into(),batch_id:"batch".into(),collected_at:None,newly_collected:false,name:"REC.wav".into(),source:"card".into(),source_name:"card".into(),relative_path:"REC.wav".into(),inbox_path:incoming.to_string_lossy().into_owned(),role:"Raw audio".into(),size:9,sha256:digest.clone(),source_modified:None,source_created:None,recording_metadata:None,timestamp_warning:None,status:"Verified".into(),group_id:Some("group-one".into()),group_name:Some("Interview".into()),client:None,clients:vec!["Client_A".into(),"Client_B".into()],client_paths:vec!["Client_A".into(),"Client_B".into()],destinations:vec![],duplicate_of:None,counterpart_id:None}],reviewed_groups:vec![]};
         write_manifest(&root,&state).unwrap();state=file_sync(root.to_string_lossy().into_owned()).unwrap();
         assert_eq!(state.files[0].status,"Filed");assert_eq!(state.files[0].destinations.len(),2);assert!(incoming.exists());
         assert!(state.files[0].destinations.iter().all(|p|hash(Path::new(p)).unwrap()==digest));

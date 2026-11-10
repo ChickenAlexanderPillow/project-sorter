@@ -52,6 +52,8 @@ struct ExportStatus {
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 struct ExportVersion {
+    #[serde(default)]
+    size: Option<u64>,
     version: u32,
     filename: String,
     relative_path: String,
@@ -713,6 +715,7 @@ fn scan_video_versions_in(root: &Path, directory: &Path) -> Result<Vec<ExportVer
         }
         let (_, version) = versioned_stem(stem)?;
         files.push(ExportVersion {
+            size: Some(metadata.len()),
             version: version.unwrap_or(1),
             filename: entry.file_name().to_string_lossy().to_string(),
             relative_path: path
@@ -791,6 +794,7 @@ fn scan_approval_versions(exports_dir: &Path) -> Result<Vec<ExportVersion>, Stri
                 .to_string_lossy()
                 .to_string();
             files.push(ExportVersion {
+            size: Some(metadata.len()),
                 version: version.unwrap_or(1),
                 filename: entry.file_name().to_string_lossy().to_string(),
                 relative_path,
@@ -2747,6 +2751,7 @@ pub fn run() {
             media_browser::media_resolve_files,
             media_browser::media_prepare_preview,
             client_files::client_files_list,
+            client_files::client_files_recordings,
             client_files::client_files_open_project,
             premiere_health::premiere_project_health_scan,
             file_drag::client_files_start_drag,
@@ -2755,6 +2760,7 @@ pub fn run() {
             ingest::ingest_save,
             ingest::ingest_file,
             ingest::ingest_file_ids,
+            ingest::ingest_copy_project_media,
             ingest::ingest_lease_status,
             ingest::ingest_recover_stale_lease,
             ingest::ingest_source_availability,
