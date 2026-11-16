@@ -1927,6 +1927,33 @@ export default function App() {
     } catch (error) { setError(`Could not save published status: ${String(error)}`); }
   };
 
+  const handleUnpublish = async (client: ClientInfo) => {
+    setPublishingClientPath(client.path);
+    setPublishingStage("publishing");
+    setError(null);
+    try {
+      let message = "Published override removed";
+      if (isFinalised(client)) {
+        message = await invoke<string>("unpublish_final", { clientPath: client.path });
+      }
+      if (manualPublishedPaths[client.path]) {
+        const next = { ...manualPublishedPaths };
+        delete next[client.path];
+        await saveConfigValue("manualPublishedClients", next);
+        setManualPublishedPaths(next);
+      }
+      showToast(message, "success");
+      setPublishingStage("refreshing");
+      await refreshClients(undefined, false, true);
+    } catch (error) {
+      setError(`Could not unpublish client: ${String(error)}`);
+      void refreshClients(undefined, false, true).catch((refreshError) => console.warn("Could not refresh client after unpublish failure", refreshError));
+    } finally {
+      setPublishingClientPath(null);
+      setPublishingStage(null);
+    }
+  };
+
   const toggleStatusWarnings = async (client: ClientInfo) => {
     const next = { ...suppressedStatusPaths };
     if (next[client.path]) delete next[client.path];
@@ -2909,6 +2936,7 @@ export default function App() {
                       { label: "Copy client name", action: () => copyFromContextMenu(client.name, "Client name") },
                       { label: "Refresh project", action: () => void refreshClients(projectRoot, true, true, true) },
                       ...(advancedMode && client.status !== "Not a client" ? [
+                        ...(published ? [{ label: "Unpublish and return to pending", action: () => void handleUnpublish(client), separatorBefore: true, disabled: Boolean(busy || publishingClientPath) }] : []),
                         { label: manuallyPublished ? "Remove published override" : "Mark as published", action: () => void toggleManualPublished(client), separatorBefore: true, disabled: !manuallyPublished && isFinalised(client) },
                         { label: warningsSuppressed ? "Show status warnings and Fix action" : "Hide status warnings and Fix action", action: () => void toggleStatusWarnings(client) },
                       ] : []),

@@ -1329,6 +1329,55 @@ fn promote_latest_export_for_client(
     ))
 }
 
+fn unpublish_final_for_client(client_path: &Path) -> Result<String, String> {
+    let final_dir = client_path.join("04_FINAL");
+    if !final_dir.is_dir() {
+        return Err("This client has no published FINAL to unpublish".to_string());
+    }
+    let status = scan_export_status(client_path);
+    let mut paths: Vec<PathBuf> = fs::read_dir(&final_dir)
+        .map_err(|error| format!("Unable to scan FINAL folder: {error}"))?
+        .filter_map(Result::ok)
+        .filter_map(|entry| {
+            let path = entry.path();
+            (entry.file_type().ok()?.is_file()
+                && (is_video_file(&path)
+                    && status.final_filename.as_deref() == path.file_name().and_then(|name| name.to_str())
+                    || path.file_name().and_then(|name| name.to_str()) == Some(FINAL_PROMOTION_RECORD)))
+                .then_some(path)
+        })
+        .collect();
+    if paths.is_empty() {
+        return Err("No published FINAL file was found to unpublish".to_string());
+    }
+    paths.sort();
+    let archive_root = final_dir.join("_ARCHIVE");
+    fs::create_dir_all(&archive_root)
+        .map_err(|error| format!("Unable to create FINAL archive: {error}"))?;
+    let stamp = chrono::Utc::now().format("%Y%m%d_%H%M%S_%3f").to_string();
+    let mut archive = archive_root.join(stamp);
+    let mut suffix = 2;
+    while archive.exists() {
+        archive = archive_root.join(format!("{}_{}", archive.file_name().unwrap_or_default().to_string_lossy(), suffix));
+        suffix += 1;
+    }
+    fs::create_dir(&archive).map_err(|error| format!("Unable to create unpublish archive: {error}"))?;
+    let mut moved: Vec<(PathBuf, PathBuf)> = Vec::new();
+    for path in &paths {
+        let target = archive.join(path.file_name().unwrap_or_default());
+        if let Err(error) = fs::rename(path, &target) {
+            for (original, archived) in moved.iter().rev() {
+                let _ = fs::rename(archived, original);
+            }
+            let _ = fs::remove_dir(&archive);
+            return Err(format!("Unable to archive published FINAL: {error}"));
+        }
+        moved.push((path.clone(), target));
+    }
+    let _ = fs::remove_file(final_dir.join(FINAL_PROMOTION_ATTEMPT));
+    Ok(format!("Unpublished FINAL; archived in {}", archive.display()))
+}
+
 pub fn migrate_existing_finals(project_root: &Path) -> Result<usize, String> {
     if !project_root.is_dir() {
         return Err(format!("Project folder is unavailable: {}", project_root.display()));
@@ -2119,6 +2168,15 @@ async fn promote_latest_export(
 }
 
 #[tauri::command]
+async fn unpublish_final(client_path: String) -> Result<String, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        unpublish_final_for_client(Path::new(&client_path))
+    })
+    .await
+    .map_err(|error| error.to_string())?
+}
+
+#[tauri::command]
 async fn migrate_project_finals(project_root: String) -> Result<usize, String> {
     tauri::async_runtime::spawn_blocking(move || migrate_existing_finals(Path::new(&project_root)))
         .await
@@ -2773,6 +2831,7 @@ pub fn run() {
             scan_project_root,
             scan_approval_progress,
             promote_latest_export,
+            unpublish_final,
             migrate_project_finals,
             set_watch_root,
             create_client,
