@@ -1407,7 +1407,7 @@ button.accent {
 .modal {
   background: #1b2028;
   color: #e7ebf0;
-  border-color: #39424f;
+  border-color: var(--pepper-line);
   box-shadow: 0 16px 32px rgba(0, 0, 0, 0.45);
 }
 
@@ -3291,6 +3291,92 @@ button.ghost,
   width: 56px;
   justify-content: flex-end;
 }
+
+.frameio-link-warning-modal {
+  box-sizing: border-box;
+  width: min(400px, calc(100vw - 32px));
+  max-height: calc(100dvh - 32px);
+  padding: 0;
+  overflow: auto;
+  border-radius: 8px;
+  background: var(--pepper-surface);
+}
+
+.frameio-link-warning-modal::backdrop {
+  background: rgba(0, 0, 0, 0.65);
+  backdrop-filter: blur(2px);
+}
+
+.frameio-warning-header {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 20px 20px 0;
+}
+
+.frameio-warning-icon {
+  display: grid;
+  flex: 0 0 18px;
+  width: 18px;
+  height: 28px;
+  place-items: center;
+  color: #d4d4d4;
+}
+
+.frameio-warning-header h2 {
+  margin: 0;
+  color: var(--pepper-text);
+  font-size: 15px;
+  font-weight: 600;
+}
+
+.frameio-warning-header > div { min-width: 0; flex: 1; }
+
+.frameio-warning-body {
+  padding: 12px 20px 20px;
+}
+
+.frameio-warning-file {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 12px;
+  color: var(--pepper-muted);
+  font-size: 11px;
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+}
+
+.frameio-warning-file strong { min-width: 0; font-size: 12px; font-weight: 600; }
+.frameio-warning-version {
+  flex-shrink: 0;
+  padding: 1px 6px;
+  border: 1px solid var(--pepper-line);
+  border-radius: 4px;
+  background: #303030;
+  color: var(--pepper-text);
+  font-size: 10px;
+  font-weight: 600;
+}
+
+.frameio-warning-body p {
+  margin: 0;
+  color: var(--pepper-text);
+  font-size: 12px;
+  line-height: 1.55;
+}
+
+.frameio-warning-actions {
+  margin: 0 !important;
+  padding: 12px 20px;
+  border-top: 1px solid var(--pepper-line);
+  background: var(--pepper-surface-raised);
+  gap: 8px;
+}
+
+.frameio-warning-actions button { min-height: 32px; padding: 6px 12px; font-size: 12px; }
+.frameio-warning-actions button.primary { background: #dedede; color: #222; }
+.frameio-warning-actions button.primary:hover:not(:disabled) { background: #f0f0f0; }
 
 .frameio-upload-progress {
   display: block;

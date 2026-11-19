@@ -16,7 +16,7 @@ type IngestFile = { id:string; batch_id:string; collected_at:string|null; newly_
 type Manifest = { schema_version:number; files:IngestFile[]; reviewed_groups:string[] };
 type Client = { name:string; path:string; status:string };
 type Lease = { locked:boolean; owner:string|null; stale:boolean };
-type Progress = { project_root:string; phase:string; source:string; completed:number; total:number };
+type Progress = { project_root:string; phase:string; source:string; completed:number; total:number; bytes_copied:number; file_size:number; completed_sources:string[] };
 type ReviewDestination = { file_id:string; name:string; role:string; client:string; destination:string; collision:boolean; issue:string|null };
 type StagedSource = SourceMedia;
 function SourcesIcon({size=16}:{size?:number}) { return <FileAudio size={size}/>; }
@@ -25,7 +25,7 @@ const blank:Manifest = { schema_version:1, files:[], reviewed_groups:[] };
 const basename = (path:string) => path.split(/[\\/]/).filter(Boolean).pop() || path;
 const bytes = (size:number) => size >= 1024 ** 3 ? `${(size / 1024 ** 3).toFixed(1)} GB` : `${(size / 1024 ** 2).toFixed(1)} MB`;
 const fileClients = (file:IngestFile) => file.clients?.length ? file.clients : file.client ? [file.client] : [];
-const fileRole = (row:ReviewDestination) => ({"Raw audio":"Raw Audio","Clean audio":"Clean Audio","Proxy video":"Proxy Video","Full-resolution video":"Full-Res Video"} as Record<string,string>)[row.role] || "Media";
+const fileRole = (row:ReviewDestination) => ({"Raw audio":"Raw Audio","Clean audio":"Clean Audio","Music":"Music","Proxy video":"Proxy Video","Full-resolution video":"Full-Res Video",Stills:"Stills",Graphics:"Graphics",Stock:"Stock",Miscellaneous:"Misc"} as Record<string,string>)[row.role] || "Media";
 export function IngestWorkspace({projectRoot, projectTitle, clients, onBack, onCreateClient}:{projectRoot:string; projectTitle:string; clients:Client[]; onBack:()=>void; onCreateClient:CreateIngestClient}) {
   const storageKey = `pepper.ingest.view:${projectRoot}`;
   const readView = () => { try { return JSON.parse(localStorage.getItem(storageKey) || "{}"); } catch { return {}; } };
@@ -60,7 +60,7 @@ export function IngestWorkspace({projectRoot, projectTitle, clients, onBack, onC
   useEffect(() => {
     let active=true;
     const previous=initialView.staged as StagedSource[]|undefined;
-    if(previous?.length) void invoke<Omit<SourceMedia,'role'>[]>('media_resolve_files',{paths:previous.map(item=>item.path)}).then(files=>{if(active)setStaged(files.map(file=>{const old=previous.find(item=>item.path===file.path);return {...file,role:['Proxy video','Full-resolution video','Raw audio','Clean audio'].includes(old?.role||'')?old!.role:defaultRole(file.path)};}));}).catch(e=>{if(active){setStaged([]);setError(String(e));}}).finally(()=>{if(active)setResolvingSources(false);});
+    if(previous?.length) void invoke<Omit<SourceMedia,'role'>[]>('media_resolve_files',{paths:previous.map(item=>item.path)}).then(files=>{if(active)setStaged(files.map(file=>{const old=previous.find(item=>item.path===file.path);return {...file,role:['Proxy video','Full-resolution video','Stock','Miscellaneous','Raw audio','Clean audio','Music','Stills','Graphics'].includes(old?.role||'')?old!.role:defaultRole(file.path)};}));}).catch(e=>{if(active){setStaged([]);setError(String(e));}}).finally(()=>{if(active)setResolvingSources(false);});
     return()=>{active=false;};
   },[projectRoot]);
   useEffect(() => { const drop = (e:Event) => { const paths=(e as CustomEvent<string[]>).detail;if(!Array.isArray(paths))return;setResolvingSources(true);void invoke<Omit<SourceMedia,'role'>[]>('media_resolve_files',{paths}).then(files=>{setStaged(current=>[...current,...files.filter(file=>!current.some(s=>s.path===file.path)).map(file=>({...file,role:defaultRole(file.path)}))]);if(!files.length)setError('No supported video, audio or image files were found.');setStep(1);}).catch(e=>setError(String(e))).finally(()=>setResolvingSources(false)); }; window.addEventListener("pepper-ingest-drop", drop); return () => window.removeEventListener("pepper-ingest-drop", drop); }, []);
@@ -109,10 +109,10 @@ export function IngestWorkspace({projectRoot, projectTitle, clients, onBack, onC
   const go = (next:number) => { if(next===4){setError("");setReviewedConflicts(false);setConfirmationOpen(true);return;}setStep(next);setError(""); };
   const addSources = (files:SourceMedia[]) => { setStaged(current => [...current,...files.filter(file=>mediaKind(file.path)&&!current.some(s=>s.path===file.path))]); go(1); };
   const setSourceTypes = (paths:string[],role:string) => {
-    setStaged(current=>current.map(item=>paths.includes(item.path)&&['video','audio'].includes(mediaKind(item.path)||'')?{...item,role}:item));
-    if(manifest.files.some(file=>paths.includes(file.inbox_path)&&file.status!=='Filed'&&['video','audio'].includes(mediaKind(file.name)||''))) mutate(m=>({...m,files:m.files.map(file=>paths.includes(file.inbox_path)&&file.status!=='Filed'&&['video','audio'].includes(mediaKind(file.name)||'')?{...file,role}:file)}));
+    setStaged(current=>current.map(item=>paths.includes(item.path)&&Boolean(mediaKind(item.path))?{...item,role}:item));
+    if(manifest.files.some(file=>paths.includes(file.inbox_path)&&file.status!=='Filed'&&Boolean(mediaKind(file.name)))) mutate(m=>({...m,files:m.files.map(file=>paths.includes(file.inbox_path)&&file.status!=='Filed'&&Boolean(mediaKind(file.name))?{...file,role}:file)}));
   };
-  const videosNeedType=staged.filter(item=>mediaKind(item.path)==='video'&&!['Proxy video','Full-resolution video'].includes(item.role)).length;
+  const videosNeedType=staged.filter(item=>mediaKind(item.path)==='video'&&!['Proxy video','Full-resolution video','Stock','Miscellaneous'].includes(item.role)).length;
   const collect = async () => {
     if(operation.current || videosNeedType || resolvingSources)return;
     operation.current=true; operationEpoch.current++; setBusy(true); setProgress(null); setLease({locked:false,owner:null,stale:false}); setError("");
@@ -160,7 +160,7 @@ export function IngestWorkspace({projectRoot, projectTitle, clients, onBack, onC
     {!loaded ? <div className="ig-loading"><LoaderCircle className="ig-spin" size={20}/> Opening your media…</div> : <>
     <RetainedView active={step===1}>
       {resolvingSources && <p className="ig-quiet-note"><LoaderCircle className="ig-spin" size={15}/> Finding media files...</p>}
-      <MediaSources staged={staged} copied={manifest.files.filter(file=>mediaKind(file.name)).map(file=>({id:file.id,path:file.inbox_path,name:file.name,kind:mediaKind(file.name)!,role:file.role,size:file.size,status:file.status,source_name:file.source_name||basename(file.source)}))} disabled={readOnly} onBrowse={()=>setSourceBrowser(true)} onRemove={path=>setStaged(current=>current.filter(item=>item.path!==path))} onType={setSourceTypes}/>
+      <MediaSources staged={staged} copied={manifest.files.filter(file=>mediaKind(file.name)).map(file=>({id:file.id,path:file.inbox_path,name:file.name,kind:mediaKind(file.name)!,role:file.role,size:file.size,status:file.status,source_name:file.source_name||basename(file.source)}))} disabled={readOnly} progress={progress} onBrowse={()=>setSourceBrowser(true)} onRemove={path=>setStaged(current=>current.filter(item=>item.path!==path))} onType={setSourceTypes}/>
       {videosNeedType > 0 && <p className="ig-quiet-note"><CircleAlert size={14}/> {videosNeedType} video{videosNeedType===1?' needs':'s need'} a type.</p>}
     </RetainedView>
 

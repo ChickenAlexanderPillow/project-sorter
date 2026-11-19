@@ -217,6 +217,12 @@
 .ig-source-tile details{margin-top:8px;font-size:10px;color:#888;border-top:1px solid #393939;padding-top:9px}
 .ig-source-tile summary{cursor:pointer;display:flex;justify-content:space-between;align-items:center}
 .ig-source-tile details p{overflow-wrap:anywhere;line-height:1.6}
+.ig-file-progress{display:block;width:100%;height:4px;appearance:none;border:0;border-radius:4px;overflow:hidden;background:#3b3b3b}
+.ig-file-progress::-webkit-progress-bar{background:#3b3b3b}
+.ig-file-progress::-webkit-progress-value{background:#b9c8bb;transition:width 180ms linear}
+.ig-file-progress::-moz-progress-bar{background:#b9c8bb}
+.ig-file-progress-mark{width:16px;height:4px;margin-left:auto;border-radius:4px;background:#b9c8bb;animation:ig-progress-pulse 1.1s ease-in-out infinite alternate}
+@keyframes ig-progress-pulse{to{opacity:.45}}
 .ig-browser-backdrop{position:fixed;inset:0;z-index:350;background:#0009;display:flex;align-items:center;justify-content:center;padding:30px;backdrop-filter:blur(3px)}
 .ig-browser{display:flex;flex-direction:column;width:min(870px,100%);height:min(720px,calc(100vh - 60px));background:#232323;border:1px solid #515151;border-radius:var(--pepper-radius-dialog);box-shadow:0 24px 90px #0009;overflow:hidden;outline:none}
 .ig-browser-heading{display:flex;align-items:flex-start;justify-content:space-between;padding:22px 23px 18px;gap:15px}
@@ -270,6 +276,8 @@
 .ig-source-preview-link strong{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-weight:500;font-size:11px;max-width:100%}
 .ig-source-preview-link small{font-size:10px;color:#888}
 .ig-source-media-tile .ig-type-rail button{padding:7px 5px;font-size:9px;gap:5px}
+.ig-source-media-tile .ig-type-rail{flex-wrap:wrap}
+.ig-source-media-tile .ig-type-rail button{flex:1 1 40%}
 .ig-source-media-tile .ig-type-rail svg{width:15px}
 .ig-source-bulk{position:sticky;bottom:0;margin-top:15px;padding:12px;background:#2e2e2e;border:1px solid #646464;border-radius:var(--pepper-radius-card);box-shadow:0 -5px 20px #0005;z-index:2}
 .ig-source-bulk>header{display:flex;align-items:center;justify-content:space-between;margin-bottom:8px}

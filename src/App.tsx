@@ -12,7 +12,7 @@ import { writeText } from "@tauri-apps/plugin-clipboard-manager";
 import { openPath } from "@tauri-apps/plugin-opener";
 import { check, type Update } from "@tauri-apps/plugin-updater";
 import { InlineVideoPlayer } from "./components/InlineVideoPlayer";
-import { ArrowUpDown, ArrowUpRight, Bell, Check, ChevronDown, ChevronRight, ChevronsUpDown, Clapperboard, CloudUpload, FolderInput, FolderKanban, Link2, LoaderCircle, Minus, Plus, RefreshCw, Search, Settings, Settings2, Square, Trash2, Wrench, X } from "lucide-react";
+import { ArrowUpDown, ArrowUpRight, Bell, Check, ChevronDown, ChevronRight, ChevronsUpDown, Clapperboard, CloudUpload, FolderInput, FolderKanban, Link2, LoaderCircle, Minus, Plus, RefreshCw, Search, Settings, Settings2, Square, Trash2, TriangleAlert, Wrench, X } from "lucide-react";
 import { MariyaSeasonSelect, useMariyaSeasons } from "./components/MariyaSeasonSelect";
 import { IngestWorkspace } from "./components/IngestWorkspace";
 import { isNativeFileDragActive } from "./components/nativeFileDrag";
@@ -412,6 +412,10 @@ export default function App() {
   const [frameIoAuthBusy, setFrameIoAuthBusy] = useState(false);
   const [frameIoProgress, setFrameIoProgress] = useState<Record<string, FrameIoProgress>>({});
   const [frameIoBusyPath, setFrameIoBusyPath] = useState<string | null>(null);
+  const [pendingFrameIoUpload, setPendingFrameIoUpload] = useState<{ path: string; clientKey: string; version: number; projectName: string; projectPath: string } | null>(null);
+  const pendingFrameIoVersion = pendingFrameIoUpload?.version
+    ?? pendingFrameIoUpload?.path.match(/_V(\d+)(?=[_.\s-]|$)/i)?.[1];
+  const frameIoUploadDialogRef = useRef<HTMLDialogElement | null>(null);
   const [clientSort, setClientSort] = useState<ClientSort>({ column: "name", direction: "asc" });
   const [publishingClientPath, setPublishingClientPath] = useState<string | null>(null);
   const [publishingStage, setPublishingStage] = useState<"publishing" | "refreshing" | null>(null);
@@ -455,6 +459,11 @@ export default function App() {
       promotionDialogRef.current?.showModal();
     }
   }, [pendingPromotion]);
+  useEffect(() => {
+    if (pendingFrameIoUpload && !frameIoUploadDialogRef.current?.open) {
+      frameIoUploadDialogRef.current?.showModal();
+    }
+  }, [pendingFrameIoUpload]);
   const [loading, setLoading] = useState(false);
   const [clientCacheLoadedRoot, setClientCacheLoadedRoot] = useState<string | null>(null);
   const [clientListRevealedRoot, setClientListRevealedRoot] = useState<string | null>(null);
@@ -3120,6 +3129,13 @@ export default function App() {
                               && approvalVersion.frameio?.destination_project_id === frameIoConfig.projectId
                               ? approvalVersion.frameio : null;
                             const versionShareUrl = approvalIsBeingRendered ? null : isLatest ? latestFrameIoShareUrl : versionRecord?.share_url;
+                            const hasEarlierApproval = isLatest && sortedApprovalVersions.some((version) => version.version < approvalVersion.version);
+                            const hasEarlierReviewLinkForDestination = hasEarlierApproval && sortedApprovalVersions.some((version) =>
+                              version.version < approvalVersion.version
+                              && version.frameio?.state === "ready"
+                              && Boolean(version.frameio.share_url)
+                              && version.frameio.destination_account_id === frameIoConfig.accountId
+                              && version.frameio.destination_project_id === frameIoConfig.projectId);
                             const versionBusy = isLatest && latestFrameIoBusy;
                             const versionError = versionRecord?.last_error
                               ?? (isLatest && /fail|error/.test(latestFrameIoState ?? "") ? latestFrameIoProgress?.message : null);
@@ -3208,7 +3224,14 @@ export default function App() {
                                           ? "Approval export in progress"
                                           : latestFrameIoBusy ? frameIoUploadLabel : latestFrameIoShareRetryAvailable ? "Retry share link; video already uploaded" : "Send for review"}
                                         disabled={client.exportStatusLoading || !activeProject || frameIoBusyPath === latestApprovalPath || latestApprovalIsRendering}
-                                        onClick={() => activeProject && void uploadApprovalToFrameIo(latestApprovalPath, client.name, activeProject.name, activeProject.path)}
+                                        onClick={() => {
+                                          if (!activeProject) return;
+                                          if (hasEarlierApproval && !hasEarlierReviewLinkForDestination) {
+                                            setPendingFrameIoUpload({ path: latestApprovalPath, clientKey: client.name, version: approvalVersion.version, projectName: activeProject.name, projectPath: activeProject.path });
+                                          } else {
+                                            void uploadApprovalToFrameIo(latestApprovalPath, client.name, activeProject.name, activeProject.path);
+                                          }
+                                        }}
                                       >
                                         {frameIoBusyPath === latestApprovalPath
                                           ? <LoaderCircle className="approval-progress-spinner" size={16} aria-hidden="true" />
@@ -3360,6 +3383,49 @@ export default function App() {
             </div>
           </div>
         </div>
+      )}
+
+      {pendingFrameIoUpload && (
+        <dialog
+          ref={frameIoUploadDialogRef}
+          className="modal frameio-link-warning-modal"
+          aria-labelledby="frameio-link-warning-title"
+          aria-describedby="frameio-link-warning-description"
+          onCancel={(event) => {
+            event.preventDefault();
+            setPendingFrameIoUpload(null);
+          }}
+        >
+          <div className="frameio-warning-header">
+            <span className="frameio-warning-icon"><TriangleAlert size={18} aria-hidden="true" /></span>
+            <div>
+              <h2 id="frameio-link-warning-title">New review link</h2>
+            </div>
+          </div>
+          <div className="frameio-warning-body">
+            <div className="frameio-warning-file">
+              <strong>{parseClientLabel(pendingFrameIoUpload.clientKey).name}</strong>
+              {pendingFrameIoVersion != null && <span className="frameio-warning-version" aria-label={`Version ${pendingFrameIoVersion}`}>V{pendingFrameIoVersion}</span>}
+            </div>
+            <p id="frameio-link-warning-description">This version needs a separate link.</p>
+          </div>
+          <div className="modal-actions frameio-warning-actions">
+            <button type="button" className="ghost" autoFocus onClick={() => setPendingFrameIoUpload(null)}>
+              Cancel
+            </button>
+            <button
+              type="button"
+              className="primary"
+              onClick={() => {
+                const upload = pendingFrameIoUpload;
+                setPendingFrameIoUpload(null);
+                if (upload) void uploadApprovalToFrameIo(upload.path, upload.clientKey, upload.projectName, upload.projectPath);
+              }}
+            >
+              Send for review
+            </button>
+          </div>
+        </dialog>
       )}
 
       {pendingPromotion && (

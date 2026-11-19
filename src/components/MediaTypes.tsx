@@ -1,10 +1,14 @@
-import { AudioLines, Clapperboard, FileVideo, Headphones, Image, Layers, Mic, MonitorPlay, Music2, ScanLine, SquarePen } from "lucide-react";
+import { AudioLines, Clapperboard, FileVideo, Folder, Headphones, Image, Layers, Mic, MonitorPlay, Music2, Package, ScanLine, SquarePen } from "lucide-react";
 
 export const MEDIA_ROLE_ICONS = {
   'Proxy video': MonitorPlay,
   'Full-resolution video': ScanLine,
   'Raw audio': Mic,
   'Clean audio': AudioLines,
+  'Music': Music2,
+  'Stock': Package,
+  'Miscellaneous': Folder,
+  'Graphics': Layers,
   'Premiere Pro': Clapperboard,
   'After Effects': Layers,
 } as const;
@@ -31,7 +35,8 @@ export const defaultRole = (path:string) => mediaKind(path) === 'video' ? 'Full-
 export function MediaTypeRail({items,onChange,disabled=false}:{items:{path:string;role:string}[];onChange:(role:string)=>void;disabled?:boolean}) {
   const videos=items.filter(item=>mediaKind(item.path)==='video');
   const audio=items.filter(item=>mediaKind(item.path)==='audio');
-  const options=videos.length ? [{role:'Proxy video',label:'Proxy',Icon:MEDIA_ROLE_ICONS['Proxy video']},{role:'Full-resolution video',label:'Full resolution',Icon:MEDIA_ROLE_ICONS['Full-resolution video']}] : audio.length ? [{role:'Raw audio',label:'Raw',Icon:MEDIA_ROLE_ICONS['Raw audio']},{role:'Clean audio',label:'Clean',Icon:MEDIA_ROLE_ICONS['Clean audio']}] : [];
-  const relevant=videos.length?videos:audio;
-  return <div className="ig-media-type-control">{options.length?<div className="ig-type-rail" role="group" aria-label={videos.length?'Video type':'Audio type'}>{options.map(({role,label,Icon})=><button type="button" key={role} aria-pressed={relevant.every(item=>item.role===role)} disabled={disabled} onClick={()=>onChange(role)}><Icon size={15}/><span>{label}</span></button>)}</div>:<span className="ig-auto-types"><Image size={15}/> Stills</span>}</div>;
+  const images=items.filter(item=>mediaKind(item.path)==='image');
+  const options=videos.length ? [{role:'Proxy video',label:'Proxy',Icon:MEDIA_ROLE_ICONS['Proxy video']},{role:'Full-resolution video',label:'Full resolution',Icon:MEDIA_ROLE_ICONS['Full-resolution video']},{role:'Stock',label:'Stock',Icon:MEDIA_ROLE_ICONS.Stock},{role:'Miscellaneous',label:'Misc',Icon:MEDIA_ROLE_ICONS.Miscellaneous}] : audio.length ? [{role:'Raw audio',label:'Raw',Icon:MEDIA_ROLE_ICONS['Raw audio']},{role:'Clean audio',label:'Clean',Icon:MEDIA_ROLE_ICONS['Clean audio']},{role:'Music',label:'Music',Icon:MEDIA_ROLE_ICONS.Music}] : images.length ? [{role:'Stills',label:'Stills',Icon:Image},{role:'Graphics',label:'Graphics',Icon:MEDIA_ROLE_ICONS.Graphics},{role:'Stock',label:'Stock',Icon:MEDIA_ROLE_ICONS.Stock},{role:'Miscellaneous',label:'Misc',Icon:MEDIA_ROLE_ICONS.Miscellaneous}] : [];
+  const relevant=videos.length?videos:audio.length?audio:images;
+  return <div className="ig-media-type-control">{options.length?<div className="ig-type-rail" role="group" aria-label={videos.length?'Video type':audio.length?'Audio type':'Still type'}>{options.map(({role,label,Icon})=><button type="button" key={role} aria-pressed={relevant.every(item=>item.role===role)} disabled={disabled} onClick={()=>onChange(role)}><Icon size={15}/><span>{label}</span></button>)}</div>:null}</div>;
 }

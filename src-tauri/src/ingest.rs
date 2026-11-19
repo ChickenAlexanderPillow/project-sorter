@@ -178,9 +178,9 @@ fn preserve_creation_time(path:&Path,time:Option<std::time::SystemTime>)->Option
 }
 #[cfg(not(windows))]
 fn preserve_creation_time(_path:&Path,time:Option<std::time::SystemTime>)->Option<String>{if time.is_some(){Some("Destination filesystem creation time could not be set; original value is retained in the manifest".into())}else{Some("Source creation time is unavailable".into())}}
-fn copy_with_heartbeat(source:&Path,dest:&Path,lease:&WriterLease)->Result<(),String>{
+fn copy_with_heartbeat(source:&Path,dest:&Path,lease:&WriterLease,mut copied:impl FnMut(u64))->Result<(),String>{
     let mut input=fs::File::open(source).map_err(|e|e.to_string())?;let mut output=fs::File::create(dest).map_err(|e|e.to_string())?;
-    let mut buf=[0u8;1024*1024];loop{let n=input.read(&mut buf).map_err(|e|e.to_string())?;if n==0{break;}output.write_all(&buf[..n]).map_err(|e|e.to_string())?;lease.heartbeat()?;}output.sync_all().map_err(|e|e.to_string())
+    let mut buf=[0u8;1024*1024];let mut total=0u64;loop{let n=input.read(&mut buf).map_err(|e|e.to_string())?;if n==0{break;}output.write_all(&buf[..n]).map_err(|e|e.to_string())?;total+=n as u64;copied(total);lease.heartbeat()?;}output.sync_all().map_err(|e|e.to_string())
 }
 fn is_ingest_temporary(path:&Path)->bool{if path.extension().and_then(|x|x.to_str())!=Some("partial"){return false;}path.file_stem().and_then(|x|x.to_str()).and_then(|s|s.rsplit_once('.').map(|(_,id)|id.to_string())).and_then(|id|Uuid::parse_str(&id).ok()).is_some()}
 #[cfg(windows)]
@@ -197,11 +197,15 @@ fn available_space(path:&Path)->Result<u64,String>{
 #[derive(Serialize)]
 pub struct LeaseStatus{locked:bool,owner:Option<String>,stale:bool}
 #[derive(Serialize,Deserialize,Clone)]
-pub struct IngestProgress{pub project_root:String,pub phase:String,pub source:String,pub completed:usize,pub total:usize,pub updated_at:String}
+pub struct IngestProgress{pub project_root:String,pub phase:String,pub source:String,pub completed:usize,pub total:usize,#[serde(default)]pub bytes_copied:u64,#[serde(default)]pub file_size:u64,#[serde(default)]pub completed_sources:Vec<String>,pub updated_at:String}
 fn write_progress(root:&Path,phase:&str,source:&str,completed:usize,total:usize)->Result<(),String>{
+    let previous=fs::read(root.join("_INGEST/state/progress.json")).ok().and_then(|data|serde_json::from_slice::<IngestProgress>(&data).ok());
+    write_progress_detail(root,phase,source,completed,total,0,0,previous.map_or_else(Vec::new,|p|p.completed_sources))
+}
+fn write_progress_detail(root:&Path,phase:&str,source:&str,completed:usize,total:usize,bytes_copied:u64,file_size:u64,completed_sources:Vec<String>)->Result<(),String>{
     let path=root.join("_INGEST/state/progress.json");
     let temp=path.with_extension(format!("{}.tmp",Uuid::new_v4()));
-    let progress=IngestProgress{project_root:root.to_string_lossy().into_owned(),phase:phase.into(),source:source.into(),completed,total,updated_at:chrono::Utc::now().to_rfc3339()};
+    let progress=IngestProgress{project_root:root.to_string_lossy().into_owned(),phase:phase.into(),source:source.into(),completed,total,bytes_copied,file_size,completed_sources,updated_at:chrono::Utc::now().to_rfc3339()};
     let result=(||{
         let mut file=fs::File::create(&temp).map_err(|e|e.to_string())?;
         serde_json::to_writer(&mut file,&progress).map_err(|e|e.to_string())?;
@@ -216,6 +220,11 @@ fn write_progress(root:&Path,phase:&str,source:&str,completed:usize,total:usize)
 // sidecar must not stop collection or filing. The next update will try again.
 fn report_progress(root:&Path,phase:&str,source:&str,completed:usize,total:usize){
     if let Err(error)=write_progress(root,phase,source,completed,total){
+        let _=append_journal(root,serde_json::json!({"action":"progress_update_deferred","at":chrono::Utc::now().to_rfc3339(),"error":error}));
+    }
+}
+fn report_copy_progress(root:&Path,source:&Path,completed:usize,total:usize,bytes_copied:u64,file_size:u64,completed_sources:&[String]){
+    if let Err(error)=write_progress_detail(root,"collecting",&source.to_string_lossy(),completed,total,bytes_copied,file_size,completed_sources.to_vec()){
         let _=append_journal(root,serde_json::json!({"action":"progress_update_deferred","at":chrono::Utc::now().to_rfc3339(),"error":error}));
     }
 }
@@ -286,7 +295,11 @@ fn preview_filing_sync(project_root:String,eligible_client_paths:Option<Vec<Stri
   let mut targets:Vec<(String,String)>=clients.into_iter().enumerate().map(|(i,c)|(c.clone(),f.client_paths.get(i).cloned().unwrap_or(c))).collect();targets.sort_by(|a,b|a.1.cmp(&b.1));targets.dedup_by(|a,b|a.1==b.1);
   for (client,relative) in targets{if eligible_client_paths.as_ref().is_some_and(|paths|!paths.contains(&relative)){continue;}let mut issue=if role.is_none(){Some(format!("Choose a role and destination for {}",f.name))}else{None};let source=PathBuf::from(&f.inbox_path);let base=root.join(&relative);if client=="_INGEST"||!valid_client_name(&client)||!valid_client_path(&relative)||!base.is_dir(){issue=Some(format!("Client is unavailable or invalid: {client}"));}
    let mut destination=base.join(role.unwrap_or("01_MEDIA/080_MISCELLANEOUS")).join(&f.name);if issue.is_none()&&!destination.parent().unwrap().is_dir(){issue=Some(format!("Destination folder is missing for {client}"));}
-   if issue.is_none()&&(!source.is_file()||hash(&source).ok().as_deref()!=Some(f.sha256.as_str())){issue=Some("Verified inbox copy is missing or changed".into());}
+   // Keep the final review cheap: collection already verified the inbox copy,
+   // and filing performs the authoritative SHA-256 check immediately before
+   // each copy. A metadata preflight here catches missing/truncated files
+   // without rereading every media byte just to render the review.
+   if issue.is_none()&&!fs::metadata(&source).is_ok_and(|metadata|metadata.is_file()&&metadata.len()==f.size){issue=Some("Verified inbox copy is missing or changed".into());}
    let mut collision=false;let mut n=1;
    loop{let already_used=used.contains(&destination.to_string_lossy().to_string());let same=destination.exists()&&hash(&destination).ok().as_deref()==Some(f.sha256.as_str());if (!destination.exists()||same)&&!already_used{break;}collision=true;let stem=Path::new(&f.name).file_stem().unwrap_or_default().to_string_lossy();let ext=Path::new(&f.name).extension().and_then(|x|x.to_str()).unwrap_or("");let suffix=if ext.is_empty(){String::new()}else{format!(".{ext}")};destination=base.join(role.unwrap_or("01_MEDIA/080_MISCELLANEOUS")).join(format!("{stem} (Ingest {n}){suffix}"));n+=1;}
    if destination.to_string_lossy().encode_utf16().count()>32760{issue=Some("Destination path exceeds the Windows path limit".into());}
@@ -389,7 +402,7 @@ fn collect_with_lease(root: &Path, sources: Vec<String>, _lease: &WriterLease) -
         let free=available_space(&inbox)?;if required>free.saturating_sub(free/20){return Err(format!("Not enough destination space: need {required} bytes, have {free} bytes available"));}
         fs::create_dir_all(&batch_dir).map_err(|e| e.to_string())?;
         append_journal(&root,serde_json::json!({"action":"source_started","at":chrono::Utc::now().to_rfc3339(),"source":source.clone(),"batch_id":id.clone()}))?;
-        let total=candidates.len();let mut completed=0;
+        let total=candidates.len();let mut completed=0;let mut completed_sources:Vec<String>=Vec::new();
         report_progress(&root,"inventorying",&source,0,total);
         for original in candidates {
             if state.files.iter().any(|f|Path::new(&f.inbox_path)==original){continue;}
@@ -400,7 +413,7 @@ fn collect_with_lease(root: &Path, sources: Vec<String>, _lease: &WriterLease) -
             let before = fs::metadata(&original).map_err(|e| e.to_string())?;
             let modified = before.modified().ok().and_then(timestamp_ns);
             let created_time=before.created().ok();let created = created_time.and_then(timestamp_ns);
-            report_progress(&root,"verifying",&source,completed,total);
+            report_progress(&root,"verifying",&original.to_string_lossy(),completed,total);
             let original_hash = hash_with_lease(&original,Some(_lease))?;
             // Retry identity is the original path AND its content, not merely a
             // matching filename/hash on another card. Keep existing decisions/IDs.
@@ -413,18 +426,18 @@ fn collect_with_lease(root: &Path, sources: Vec<String>, _lease: &WriterLease) -
                 let digest=hash_with_lease(existing_copy,Some(_lease)).map_err(|e|format!("Could not verify previously collected copy {}: {e}",existing_copy.display()))?;
                 if digest!=existing.sha256{return Err(format!("Previously collected copy has changed: {}",existing_copy.display()));}
                 append_journal(&root,serde_json::json!({"action":"source_already_collected","at":chrono::Utc::now().to_rfc3339(),"file_id":existing.id,"source":original}))?;
-                completed+=1;
+                completed+=1;completed_sources.push(original.to_string_lossy().into_owned());report_copy_progress(&root,&original,completed,total,0,before.len(),&completed_sources);
                 continue;
             }
             // Probe the original before any copy. Never derive evidence from a destination.
-            report_progress(&root,"metadata",&source,completed,total);
+            report_progress(&root,"metadata",&original.to_string_lossy(),completed,total);
             let recording_metadata = Some(recording_metadata::read(&original, created.as_deref(), modified.as_deref(), || _lease.heartbeat()));
             let timestamp_warning=if in_place{dest=original.clone();None}else{
                 let tmp = dest.with_extension(format!("{}.partial", Uuid::new_v4()));
                 append_journal(&root,serde_json::json!({"action":"transfer_started","at":chrono::Utc::now().to_rfc3339(),"temp_path":tmp,"inbox_path":dest,"file_id":Uuid::new_v4().to_string()}))?;
-                report_progress(&root,"collecting",&source,completed,total);
-                if let Err(e)=copy_with_heartbeat(&original, &tmp,&_lease){let _=fs::remove_file(&tmp);let _=append_journal(&root,serde_json::json!({"action":"transfer_completed","at":chrono::Utc::now().to_rfc3339(),"temp_path":tmp}));return Err(e);}
-                report_progress(&root,"verifying",&source,completed,total);
+                report_copy_progress(&root,&original,completed,total,0,before.len(),&completed_sources);
+                if let Err(e)=copy_with_heartbeat(&original, &tmp,&_lease,|bytes|report_copy_progress(&root,&original,completed,total,bytes,before.len(),&completed_sources)){let _=fs::remove_file(&tmp);let _=append_journal(&root,serde_json::json!({"action":"transfer_completed","at":chrono::Utc::now().to_rfc3339(),"temp_path":tmp}));return Err(e);}
+                report_progress(&root,"verifying",&original.to_string_lossy(),completed,total);
                 let after = fs::metadata(&original).map_err(|e| e.to_string())?;
                 if before.len()!=after.len() || before.modified().ok()!=after.modified().ok() || original_hash!=hash_with_lease(&tmp,Some(_lease))? || original_hash!=hash_with_lease(&original,Some(_lease))? {
                     let _ = fs::remove_file(&tmp);let _=append_journal(&root,serde_json::json!({"action":"transfer_completed","at":chrono::Utc::now().to_rfc3339(),"temp_path":tmp})); return Err(format!("Source changed during collection; retry: {}", original.display()));
@@ -438,7 +451,7 @@ fn collect_with_lease(root: &Path, sources: Vec<String>, _lease: &WriterLease) -
             state.files.push(IngestFile { id:file_id, batch_id:id.clone(), collected_at:Some(chrono::Utc::now().to_rfc3339()), newly_collected:true, name: original.file_name().unwrap_or_default().to_string_lossy().into_owned(), source: source.clone(), source_name:src.file_name().unwrap_or_default().to_string_lossy().into_owned(), relative_path: rel.to_string_lossy().into_owned(), inbox_path: dest.to_string_lossy().into_owned(), role: role.into(), size: before.len(), sha256: original_hash.clone(), source_modified: modified, source_created: created, recording_metadata, timestamp_warning, status: "Verified".into(), group_id: None, group_name: None, client: None, clients:Vec::new(),client_paths:Vec::new(),destinations:Vec::new(),duplicate_of,counterpart_id:None });
             write_manifest(&root,&state)?;
             append_journal(&root,serde_json::json!({"action":"collected","at":chrono::Utc::now().to_rfc3339(),"file_id":state.files.last().unwrap().id,"sha256":original_hash}))?;
-            completed+=1;report_progress(&root,"collecting",&source,completed,total);
+            completed+=1;completed_sources.push(original.to_string_lossy().into_owned());report_copy_progress(&root,&original,completed,total,before.len(),before.len(),&completed_sources);
         }
         append_journal(&root,serde_json::json!({"action":"source_complete","at":chrono::Utc::now().to_rfc3339(),"source":source.clone(),"batch_id":id,"files":completed}))?;
         if fs::read_dir(&batch_dir).map(|mut d|d.next().is_none()).unwrap_or(false){let _=fs::remove_dir(&batch_dir);}
@@ -509,7 +522,7 @@ fn file_with_lease(root:&Path, state:&mut Manifest, eligible_client_paths:Option
             let mut dest=dir.join(&f.name);let mut n=1;while dest.exists(){if hash_with_lease(&dest,Some(_lease)).ok().as_deref()==Some(f.sha256.as_str()){break;}let stem=Path::new(&f.name).file_stem().unwrap_or_default().to_string_lossy();let ext=Path::new(&f.name).extension().and_then(|x|x.to_str()).unwrap_or("");let suffix=if ext.is_empty(){String::new()}else{format!(".{ext}")};dest=dir.join(format!("{stem} (Ingest {n}){suffix}"));n+=1;}
             if dest.to_string_lossy().encode_utf16().count()>32760{return Err(format!("Destination path is too long: {}",dest.display()));}
             let free=available_space(&dir)?;if f.size>free.saturating_sub(free/50){return Err(format!("Not enough destination space for {}",f.name));}
-            if !dest.exists(){let tmp=dest.with_extension(format!("{}.partial",Uuid::new_v4()));append_journal(&root,serde_json::json!({"action":"transfer_started","at":chrono::Utc::now().to_rfc3339(),"temp_path":tmp.to_string_lossy(),"file_id":f.id,"client":client.clone()}))?;if let Err(e)=copy_with_heartbeat(&source,&tmp,&_lease){let _=fs::remove_file(&tmp);let _=append_journal(&root,serde_json::json!({"action":"transfer_completed","at":chrono::Utc::now().to_rfc3339(),"temp_path":tmp.to_string_lossy()}));return Err(e);}if hash_with_lease(&tmp,Some(_lease))?!=f.sha256{let _=fs::remove_file(&tmp);let _=append_journal(&root,serde_json::json!({"action":"transfer_completed","at":chrono::Utc::now().to_rfc3339(),"temp_path":tmp.to_string_lossy()}));return Err(format!("Filing verification failed for {}",f.name));}if let Some(t)=f.source_modified.as_deref().and_then(time_from_ns){if let Err(e)=filetime::set_file_mtime(&tmp,filetime::FileTime::from_system_time(t)){state.files[i].timestamp_warning=Some(format!("Could not preserve filed modification time: {e}"));}}if let Some(raw)=f.source_created.as_deref(){if let Some(t)=time_from_ns(raw){if let Some(w)=preserve_creation_time(&tmp,Some(t)){state.files[i].timestamp_warning=Some(w);}}}if let Err(e)=fs::rename(&tmp,&dest){let _=fs::remove_file(&tmp);return Err(e.to_string());}append_journal(&root,serde_json::json!({"action":"transfer_completed","at":chrono::Utc::now().to_rfc3339(),"temp_path":tmp.to_string_lossy()}))?;}
+            if !dest.exists(){let tmp=dest.with_extension(format!("{}.partial",Uuid::new_v4()));append_journal(&root,serde_json::json!({"action":"transfer_started","at":chrono::Utc::now().to_rfc3339(),"temp_path":tmp.to_string_lossy(),"file_id":f.id,"client":client.clone()}))?;if let Err(e)=copy_with_heartbeat(&source,&tmp,&_lease,|_|{}){let _=fs::remove_file(&tmp);let _=append_journal(&root,serde_json::json!({"action":"transfer_completed","at":chrono::Utc::now().to_rfc3339(),"temp_path":tmp.to_string_lossy()}));return Err(e);}if hash_with_lease(&tmp,Some(_lease))?!=f.sha256{let _=fs::remove_file(&tmp);let _=append_journal(&root,serde_json::json!({"action":"transfer_completed","at":chrono::Utc::now().to_rfc3339(),"temp_path":tmp.to_string_lossy()}));return Err(format!("Filing verification failed for {}",f.name));}if let Some(t)=f.source_modified.as_deref().and_then(time_from_ns){if let Err(e)=filetime::set_file_mtime(&tmp,filetime::FileTime::from_system_time(t)){state.files[i].timestamp_warning=Some(format!("Could not preserve filed modification time: {e}"));}}if let Some(raw)=f.source_created.as_deref(){if let Some(t)=time_from_ns(raw){if let Some(w)=preserve_creation_time(&tmp,Some(t)){state.files[i].timestamp_warning=Some(w);}}}if let Err(e)=fs::rename(&tmp,&dest){let _=fs::remove_file(&tmp);return Err(e.to_string());}append_journal(&root,serde_json::json!({"action":"transfer_completed","at":chrono::Utc::now().to_rfc3339(),"temp_path":tmp.to_string_lossy()}))?;}
             if fs::metadata(&dest).map_err(|e|e.to_string())?.len()!=f.size || hash_with_lease(&dest,Some(_lease))?!=f.sha256 {
                 return Err(format!("Final NAS copy could not be verified: {}",dest.display()));
             }

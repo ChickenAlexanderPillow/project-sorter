@@ -25,8 +25,8 @@ const roleDestinations: Record<string, string> = {
   Music: '01_MEDIA/060_MUSIC', Stills: '01_MEDIA/050_STILLS', Graphics: '01_MEDIA/070_GRAPHICS', Miscellaneous: '01_MEDIA/080_MISCELLANEOUS', Stock: '01_MEDIA/090_STOCK',
 };
 const roleOptions: Record<string, string[]> = {
-  video: ['Full-resolution video', 'Proxy video', 'Stock'], audio: ['Raw audio', 'Clean audio', 'Music', 'Stock'],
-  image: ['Stills', 'Graphics', 'Stock'], other: ['Miscellaneous', 'Stock'],
+  video: ['Full-resolution video', 'Proxy video', 'Stock', 'Miscellaneous'], audio: ['Raw audio', 'Clean audio', 'Music', 'Stock'],
+  image: ['Stills', 'Graphics', 'Stock', 'Miscellaneous'], other: ['Miscellaneous', 'Stock'],
 };
 const defaultCopyRole = (path: string) => {
   const kind = mediaKind(path);
