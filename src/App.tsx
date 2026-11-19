@@ -9,20 +9,24 @@ import { LazyStore } from "@tauri-apps/plugin-store";
 import { cursorPosition, getCurrentWindow, LogicalSize } from "@tauri-apps/api/window";
 import { type DragDropEvent } from "@tauri-apps/api/webview";
 import { writeText } from "@tauri-apps/plugin-clipboard-manager";
-import { openPath } from "@tauri-apps/plugin-opener";
+import { openPath, openUrl } from "@tauri-apps/plugin-opener";
 import { check, type Update } from "@tauri-apps/plugin-updater";
 import { InlineVideoPlayer } from "./components/InlineVideoPlayer";
-import { ArrowUpDown, ArrowUpRight, Bell, Check, ChevronDown, ChevronRight, ChevronsUpDown, Clapperboard, CloudUpload, FolderInput, FolderKanban, Link2, LoaderCircle, Minus, Plus, RefreshCw, Search, Settings, Settings2, Square, Trash2, TriangleAlert, Wrench, X } from "lucide-react";
+import { ArrowUpDown, ArrowUpRight, Bell, Check, ChevronDown, ChevronRight, ChevronsUpDown, Clapperboard, CloudUpload, Copy, FolderInput, FolderKanban, Link2, LoaderCircle, Minus, Plus, RefreshCw, Search, Settings, Settings2, Square, Trash2, TriangleAlert, Wrench, X } from "lucide-react";
 import { MariyaSeasonSelect, useMariyaSeasons } from "./components/MariyaSeasonSelect";
 import { IngestWorkspace } from "./components/IngestWorkspace";
 import { isNativeFileDragActive } from "./components/nativeFileDrag";
 import { ClientWorkspace } from "./components/ClientWorkspace";
+import { createStudioSession, type StudioSession } from "./components/studioSessions";
 import { ClientScrollArea } from "./components/ClientScrollArea";
 import { CopyReviewLinkButton } from "./components/CopyReviewLinkButton";
 import { VersionHistory } from "./components/VersionHistory";
 import { ClientLabel, parseClientLabel } from "./components/ClientLabel";
 import pepperIcon from "../src-tauri/icons/128x128.png";
 import "./App.css";
+import { IntegrationBrand } from "./components/IntegrationBrand";
+import { SettingsDialog, type SettingsSection } from "./components/SettingsDialog";
+import { StudioMailPeopleSettings, StudioMailSettings } from "./components/StudioMailSettings";
 
 type ClientStatus = "OK" | "Missing folders" | "Not a client";
 type ClientSort = { column: "name" | "status"; direction: "asc" | "desc" };
@@ -135,6 +139,8 @@ function ExportStatusTooltip({
 type ClientInfo = {
   name: string;
   path: string;
+  client_type?: string | null;
+  huddle_template?: string | null;
   season?: string | null;
   status: ClientStatus;
   cachePublished?: boolean;
@@ -180,6 +186,7 @@ type FrameIoRecord = { state: string; share_url: string | null; last_error: stri
 type FrameIoProgress = { approval_path: string; state: string; uploaded: number; total: number; message: string | null; share_url: string | null };
 type FrameIoOption = { id: string; name: string; workspace_name: string | null };
 type FrameIoStorage = { usedBytes: number; limitBytes: number };
+type FrameIoStorageSnapshot = FrameIoStorage & { accountId: string; clientId: string };
 type NotificationEntry = { id: string; message: string; tone: "info" | "success" | "error"; createdAt: number; unread: boolean };
 
 type ExportStatus = {
@@ -393,6 +400,9 @@ export default function App() {
   const [projectCreateError, setProjectCreateError] = useState("");
   const [clients, setClients] = useState<ClientInfo[]>([]);
   const [pepperContextMenu, setPepperContextMenu] = useState<PepperContextMenu | null>(null);
+  const [studioRequests, setStudioRequests] = useState<Record<string, number>>({});
+  const [creatingStudioClients, setCreatingStudioClients] = useState<Set<string>>(() => new Set());
+  const creatingStudioClientsRef = useRef(new Set<string>());
   const [expandedClients, setExpandedClients] = useState<Set<string>>(() => new Set());
   const [selectedVersionByClient, setSelectedVersionByClient] = useState<Record<string, string>>({});
   const [frameIoConfig, setFrameIoConfig] = useState({
@@ -401,8 +411,10 @@ export default function App() {
     accountId: import.meta.env.VITE_FRAMEIO_ACCOUNT_ID ?? "",
     projectId: import.meta.env.VITE_FRAMEIO_PROJECT_ID ?? "",
   });
-  const [showFrameIoConfig, setShowFrameIoConfig] = useState(false);
-  const [frameIoStorage, setFrameIoStorage] = useState<FrameIoStorage | null>(null);
+  const [settingsSection, setSettingsSection] = useState<SettingsSection>("general");
+  const [frameIoStorageSnapshot, setFrameIoStorageSnapshot] = useState<FrameIoStorageSnapshot | null>(null);
+  const frameIoStorage = frameIoStorageSnapshot?.accountId === frameIoConfig.accountId && frameIoStorageSnapshot?.clientId === frameIoConfig.clientId ? frameIoStorageSnapshot : null;
+  const frameIoStorageRequestRef = useRef(0);
   const [frameIoStorageLoading, setFrameIoStorageLoading] = useState(false);
   const [frameIoStorageError, setFrameIoStorageError] = useState<string | null>(null);
   const [frameIoAccounts, setFrameIoAccounts] = useState<FrameIoOption[]>([]);
@@ -410,6 +422,9 @@ export default function App() {
   const [frameIoLoadingChoices, setFrameIoLoadingChoices] = useState(false);
   const [frameIoSetupError, setFrameIoSetupError] = useState<string | null>(null);
   const [frameIoAuthBusy, setFrameIoAuthBusy] = useState(false);
+  const [restreamStatus, setRestreamStatus] = useState<"connected"|"disconnected">("disconnected");
+  const [restreamBusy, setRestreamBusy] = useState(false);
+  const [restreamError, setRestreamError] = useState("");
   const [frameIoProgress, setFrameIoProgress] = useState<Record<string, FrameIoProgress>>({});
   const [frameIoBusyPath, setFrameIoBusyPath] = useState<string | null>(null);
   const [pendingFrameIoUpload, setPendingFrameIoUpload] = useState<{ path: string; clientKey: string; version: number; projectName: string; projectPath: string } | null>(null);
@@ -560,6 +575,7 @@ export default function App() {
   const lastLogTsRef = useRef(0);
   const [dragActive, setDragActive] = useState(false);
   const [checkingForUpdates, setCheckingForUpdates] = useState(false);
+  const [settingsUpdateStatus, setSettingsUpdateStatus] = useState("");
   const [pendingUpdate, setPendingUpdate] = useState<Update | null>(null);
   const [installingUpdate, setInstallingUpdate] = useState(false);
   const updateNotes = pendingUpdate?.body
@@ -571,15 +587,18 @@ export default function App() {
   const checkForUpdates = async (showResult = true) => {
     if (checkingForUpdates) return;
     setCheckingForUpdates(true);
+    if (showResult) setSettingsUpdateStatus("");
     try {
       const update = await check();
       if (!update) {
         if (showResult) {
+          setSettingsUpdateStatus("Pepper is up to date.");
           showToast("Pepper is up to date.", "info");
         }
         return;
       }
 
+      setShowAdvancedMenu(false);
       setPendingUpdate(update);
     } catch (err) {
       // Update failures should never prevent Pepper from opening or working offline.
@@ -591,6 +610,7 @@ export default function App() {
         console.warn("Update check failed", err);
       }
       if (showResult) {
+        setSettingsUpdateStatus(noReleasePublished ? "No Pepper release has been published yet." : "Could not check for updates. Try again.");
         showToast(
           noReleasePublished
             ? "No Pepper release has been published yet."
@@ -665,6 +685,12 @@ export default function App() {
       });
       const savedFrameIoClientId = savedFrameIo?.clientId ?? import.meta.env.VITE_FRAMEIO_CLIENT_ID ?? "";
       const savedFrameIoAccountId = savedFrameIo?.accountId ?? import.meta.env.VITE_FRAMEIO_ACCOUNT_ID ?? "";
+      const savedStorage = await CONFIG_STORE.get<FrameIoStorageSnapshot>("frameIoStorageSnapshot").catch(() => null);
+      if (savedStorage?.accountId === savedFrameIoAccountId && savedStorage?.clientId === savedFrameIoClientId
+        && Number.isFinite(savedStorage.usedBytes) && savedStorage.usedBytes >= 0
+        && Number.isFinite(savedStorage.limitBytes) && savedStorage.limitBytes >= 0) {
+        setFrameIoStorageSnapshot(savedStorage);
+      }
       if (savedFrameIoClientId) {
         void invoke<FrameIoOption[]>("frameio_list_accounts", { clientId: savedFrameIoClientId })
           .then((accounts) => {
@@ -907,20 +933,26 @@ export default function App() {
   };
 
   const loadFrameIoStorage = async (accountId = frameIoConfig.accountId) => {
+    const request = ++frameIoStorageRequestRef.current;
     if (!accountId || !frameIoConfig.clientId) {
-      setFrameIoStorage(null);
       setFrameIoStorageError(null);
+      setFrameIoStorageLoading(false);
       return;
     }
     setFrameIoStorageLoading(true);
     setFrameIoStorageError(null);
     try {
       const storage = await invoke<FrameIoStorage>("frameio_get_storage", { clientId: frameIoConfig.clientId, accountId });
-      setFrameIoStorage(storage);
+      if (request !== frameIoStorageRequestRef.current) return;
+      const snapshot = { ...storage, accountId, clientId: frameIoConfig.clientId };
+      setFrameIoStorageSnapshot(snapshot);
+      // Cache failures must not discard a successful refresh.
+      void CONFIG_STORE.set("frameIoStorageSnapshot", snapshot).then(() => CONFIG_STORE.save()).catch(() => undefined);
     } catch (err) {
-      setFrameIoStorage(null);
-      setFrameIoStorageError(String(err));
-    } finally { setFrameIoStorageLoading(false); }
+      if (request === frameIoStorageRequestRef.current) setFrameIoStorageError(String(err));
+    } finally {
+      if (request === frameIoStorageRequestRef.current) setFrameIoStorageLoading(false);
+    }
   };
 
   const loadFrameIoChoices = async () => {
@@ -937,7 +969,6 @@ export default function App() {
         setFrameIoProjects(projects);
       } else {
         setFrameIoProjects([]);
-        setFrameIoStorage(null);
       }
     } catch (err) {
       setFrameIoSetupError(String(err));
@@ -965,8 +996,27 @@ export default function App() {
   };
 
   const openFrameIoSettings = () => {
-    setShowFrameIoConfig(true);
+    setSettingsSection("integrations");
+    setShowAdvancedMenu(true);
+    void invoke<"connected"|"disconnected">("restream_connection_status").then(setRestreamStatus).catch(()=>{});
     if (frameIoConfig.clientId) void loadFrameIoChoices().catch(() => undefined);
+  };
+  useEffect(() => {
+    const open = () => openFrameIoSettings();
+    window.addEventListener('pepper-open-restream-settings', open);
+    return () => window.removeEventListener('pepper-open-restream-settings', open);
+  }, [frameIoConfig.clientId]);
+
+  const connectRestream = async () => {
+    setRestreamBusy(true); setRestreamError("");
+    try {
+      const url = await invoke<string>("restream_start_auth");
+      await openUrl(url);
+      await invoke("restream_finish_auth");
+      setRestreamStatus("connected");
+      showToast("Restream connected on this computer.", "success");
+    } catch (error) { await invoke("restream_cancel_auth").catch(()=>undefined); setRestreamError(String(error)); }
+    finally { setRestreamBusy(false); }
   };
 
   const connectFrameIo = async () => {
@@ -1141,6 +1191,7 @@ export default function App() {
   }, [availableProjectRoots, projectSearch]);
 
   const activeProject = availableProjectRoots.find((project) => project.path === projectRoot);
+  const frameIoIssues = [...new Set([frameIoSetupError, frameIoStorageError].filter((issue): issue is string => Boolean(issue)))];
   const frameIoConfigured = Boolean(frameIoConfig.clientId && frameIoConfig.scopes
     && frameIoConfig.accountId === PEPPER_FRAMEIO_ACCOUNT_ID
     && frameIoConfig.projectId);
@@ -1829,6 +1880,41 @@ export default function App() {
     });
   };
 
+  const handleQuickCreateSession = async (client: ClientInfo) => {
+    if (creatingStudioClientsRef.current.has(client.path)) return;
+    creatingStudioClientsRef.current.add(client.path);
+    setCreatingStudioClients(new Set(creatingStudioClientsRef.current));
+    let created: StudioSession;
+    try {
+      // Check the client folder before creating a remote session.
+      await invoke('restream_client_sessions', { clientPath: client.path });
+      created = await createStudioSession(parseClientLabel(client.name).name);
+    } catch (error) {
+      showToast(`Could not confirm session creation. Check Studio before retrying. ${String(error)}`, "error", 9000);
+      creatingStudioClientsRef.current.delete(client.path);
+      setCreatingStudioClients(new Set(creatingStudioClientsRef.current));
+      return;
+    }
+    try {
+      let saveError = '';
+      try { await invoke('restream_associate_session', { clientPath: client.path, session: created }); }
+      catch (error) { saveError = String(error); }
+      setStudioRequests(current => ({ ...current, [client.path]: (current[client.path] ?? 0) + 1 }));
+      if (projectRootRef.current === projectRoot) setExpandedClients(new Set([client.name]));
+      let clipboardError = '';
+      try { await writeText(created.url); }
+      catch (error) { clipboardError = String(error); }
+      if (saveError || clipboardError) {
+        showToast(`Session created.${saveError ? ` Could not save it to the client folder: ${saveError}. Link it from Studio instead of creating another.` : ''}${clipboardError ? ` Could not copy the link: ${clipboardError}.` : ' Link copied to clipboard.'} ${created.url}`, "error", 15000);
+      } else {
+        showToast('Session created. Link copied to clipboard.', "success");
+      }
+    } finally {
+      creatingStudioClientsRef.current.delete(client.path);
+      setCreatingStudioClients(new Set(creatingStudioClientsRef.current));
+    }
+  };
+
   const handleAddClient = async () => {
     if (creatingClient) return;
     if (!projectRoot) {
@@ -2288,6 +2374,7 @@ export default function App() {
             title="Settings"
             onClick={() => {
               setShowNotificationMenu(false);
+              setSettingsSection("general");
               setShowAdvancedMenu((current) => !current);
             }}
           >
@@ -2322,108 +2409,6 @@ export default function App() {
           </button>
         </div>
       </header>
-          {showAdvancedMenu && (
-            <div className="advanced-overlay" onClick={() => setShowAdvancedMenu(false)}>
-              <div
-                className="advanced-popover fixed"
-                id="pepper-settings"
-                role="dialog"
-                aria-label="Settings"
-                onClick={(event) => event.stopPropagation()}
-              >
-                <label className="toggle compact">
-                  <input
-                    type="checkbox"
-                    checked={advancedMode || advancedModeRequested}
-                    onChange={(event) => {
-                      if (!event.target.checked) {
-                        setAdvancedMode(false);
-                        setAdvancedModeRequested(false);
-                        setAdvancedPassword("");
-                        setAdvancedPasswordError("");
-                      } else {
-                        setAdvancedModeRequested(true);
-                        setAdvancedPasswordError("");
-                      }
-                    }}
-                  />
-                  Advanced mode
-                </label>
-                {advancedModeRequested && !advancedMode && (
-                  <form className="advanced-password-form" onSubmit={(event) => {
-                    event.preventDefault();
-                    if (advancedPassword === "fidelio") {
-                      setAdvancedMode(true);
-                      setAdvancedModeRequested(false);
-                      setAdvancedPassword("");
-                      setAdvancedPasswordError("");
-                    } else setAdvancedPasswordError("Incorrect password");
-                  }}>
-                    <input type="password" autoComplete="current-password" value={advancedPassword} onChange={(event) => setAdvancedPassword(event.target.value)} placeholder="Advanced mode password" aria-label="Advanced mode password" />
-                    <button type="submit" className="ghost" disabled={!advancedPassword}>Confirm</button>
-                    {advancedPasswordError && <small role="alert">{advancedPasswordError}</small>}
-                  </form>
-                )}
-                {advancedMode && <>
-                <label className="toggle compact">
-                  <input
-                    type="checkbox"
-                    checked={alwaysOnTop}
-                    onChange={(event) => {
-                      const checked = event.target.checked;
-                      setAlwaysOnTop(checked);
-                      saveConfigValue("alwaysOnTop", checked);
-                      getCurrentWindow()
-                        .setAlwaysOnTop(checked)
-                        .catch(() => undefined);
-                    }}
-                  />
-                  Float on top
-                </label>
-                <label className="toggle compact">
-                  <input
-                    type="checkbox"
-                    checked={showNonClients}
-                    onChange={(event) => {
-                      const checked = event.target.checked;
-                      setShowNonClients(checked);
-                      saveConfigValue("showNonClients", checked);
-                    }}
-                  />
-                  Show non-client folders
-                </label>
-                </>}
-                <div className="advanced-utility-row">
-                  <button
-                    type="button"
-                    className="ghost advanced-utility-button"
-                    aria-label="Frame.io settings"
-                    title={frameIoConfigured ? "Frame.io settings — destination configured" : "Frame.io settings — setup required"}
-                    onClick={() => {
-                      setShowAdvancedMenu(false);
-                      openFrameIoSettings();
-                    }}
-                  >
-                    <Settings2 size={16} aria-hidden="true" />
-                  </button>
-                  <button
-                    type="button"
-                    className="ghost advanced-utility-button"
-                    aria-label="Check for updates"
-                    title={checkingForUpdates ? "Checking for updates" : "Check for updates"}
-                    disabled={checkingForUpdates}
-                    onClick={() => void checkForUpdates()}
-                  >
-                    <RefreshCw size={15} className={checkingForUpdates ? "spinning" : ""} aria-hidden="true" />
-                  </button>
-                </div>
-                <div className="advanced-actions">
-                  {advancedMode && <button type="button" className="ghost" onClick={() => setShowUndoConfirm(true)} disabled={!lastBatch.length}>Undo last</button>}
-                  {advancedMode && <button type="button" className="ghost" onClick={() => void handleLogOpen()} disabled={!projectRoot}>View log</button>}
-                </div>
-              </div>
-            </div>
-          )}
       {error && <div className="banner error">{error}</div>}
       {(processingToast ?? toast) && (
         <div className={`toast ${(processingToast ?? toast)!.tone}`}>
@@ -2943,9 +2928,11 @@ export default function App() {
                     onContextMenu={(event) => openPepperContextMenu(event, label.name, [
                       { label: "Open client folder", action: () => void handleOpenFolder(client.path) },
                       { label: "Copy client name", action: () => copyFromContextMenu(client.name, "Client name") },
+                      ...(client.client_type === "HUDDLE" && client.huddle_template === "VIDEO_CALL" && client.status !== "Not a client" ? [{ label: creatingStudioClients.has(client.path) ? "Creating session?" : "Create session", action: () => void handleQuickCreateSession(client), disabled: creatingStudioClients.has(client.path) || clientIsCached || busy, separatorBefore: true }] : []),
                       { label: "Refresh project", action: () => void refreshClients(projectRoot, true, true, true) },
                       ...(advancedMode && client.status !== "Not a client" ? [
                         ...(published ? [{ label: "Unpublish and return to pending", action: () => void handleUnpublish(client), separatorBefore: true, disabled: Boolean(busy || publishingClientPath) }] : []),
+                        ...(label.type === "HUDDLE" ? [{ label: client.huddle_template === "VIDEO_CALL" ? "Interview type: Video Call" : "Set interview type: Video Call", action: () => { void invoke("set_client_huddle_template", { clientPath: client.path, huddleTemplate: "VIDEO_CALL" }).then(() => { showToast("Huddle interview type saved as Video Call.", "success"); void refreshClients(projectRoot, true, true, true); }).catch(error => showToast(`Could not save interview type: ${String(error)}`, "error", 7000)); }, separatorBefore: true, disabled: client.huddle_template === "VIDEO_CALL" }] : []),
                         { label: manuallyPublished ? "Remove published override" : "Mark as published", action: () => void toggleManualPublished(client), separatorBefore: true, disabled: !manuallyPublished && isFinalised(client) },
                         { label: warningsSuppressed ? "Show status warnings and Fix action" : "Hide status warnings and Fix action", action: () => void toggleStatusWarnings(client) },
                       ] : []),
@@ -3087,7 +3074,7 @@ export default function App() {
                 </div>
                 {expanded && !client.exportStatusLoading && (
                   <div className="client-details">
-                    <ClientWorkspace key={client.path} projectRoot={projectRoot} clientPath={client.path} onContextMenu={openPepperContextMenu} reviewDefault={sortedApprovalVersions.length>0||published} hasApprovals={sortedApprovalVersions.length>0} finalPath={published&&exports.final_filename?`${client.path.replace(/[\\/]+$/, "")}\\04_FINAL\\${exports.final_filename}`:null}>
+                    <ClientWorkspace studioRequest={studioRequests[client.path] ?? 0} key={client.path} projectRoot={projectRoot} clientPath={client.path} clientType={client.client_type} huddleTemplate={client.huddle_template} onContextMenu={openPepperContextMenu} reviewDefault={sortedApprovalVersions.length>0||published} hasApprovals={sortedApprovalVersions.length>0} finalPath={published&&exports.final_filename?`${client.path.replace(/[\\/]+$/, "")}\\04_FINAL\\${exports.final_filename}`:null}>
                     {sortedApprovalVersions.length === 0 ? (
                       pendingApprovalEntry
                         ? <VersionHistory label={`${label.name} approval versions`}>{pendingApprovalEntry}</VersionHistory>
@@ -3325,64 +3312,157 @@ export default function App() {
         </div>
       </footer>}
 
-      {showFrameIoConfig && (
-        <div className="modal-backdrop" onClick={() => setShowFrameIoConfig(false)}>
-          <div className="modal frameio-config-modal" onClick={(event) => event.stopPropagation()}>
-            <div className="frameio-config-header">
-              <div>
-                <h2>Frame.io</h2>
-                <p>Send Pepper’s watermarked approval copies to a shared review project.</p>
+      {showAdvancedMenu && (
+        <SettingsDialog section={settingsSection} onClose={() => setShowAdvancedMenu(false)} onNavigate={(section) => {
+          if (section === "integrations") openFrameIoSettings();
+          else setSettingsSection(section);
+        }}>
+          {settingsSection === "general" && <>
+            {advancedMode && <section className="settings-group">
+              <h4>Workspace</h4>
+                <label className="settings-toggle">
+                  <input
+                    type="checkbox"
+                    checked={alwaysOnTop}
+                    onChange={(event) => {
+                      const checked = event.target.checked;
+                      setAlwaysOnTop(checked);
+                      saveConfigValue("alwaysOnTop", checked);
+                      getCurrentWindow()
+                        .setAlwaysOnTop(checked)
+                        .catch(() => undefined);
+                    }}
+                  />
+                  <span><strong>Float on top</strong><small>Keep Pepper above other windows.</small></span>
+                </label>
+                <label className="settings-toggle">
+                  <input
+                    type="checkbox"
+                    checked={showNonClients}
+                    onChange={(event) => {
+                      const checked = event.target.checked;
+                      setShowNonClients(checked);
+                      saveConfigValue("showNonClients", checked);
+                    }}
+                  />
+                  <span><strong>Show non-client folders</strong><small>Include other folders in the client list.</small></span>
+                </label>
+
+            </section>}
+            <section className="settings-group">
+              <h4>Application</h4>
+              <div className="settings-row"><div><strong>Pepper updates</strong><small>Check for the latest version of Pepper.</small></div>
+                <button type="button" className="ghost" disabled={checkingForUpdates} onClick={() => void checkForUpdates()}><RefreshCw size={14} className={checkingForUpdates ? "spinning" : ""} />{checkingForUpdates ? "Checking…" : "Check for updates"}</button>
               </div>
-              <span className={`frameio-state-badge ${frameIoConfigured ? "ready" : "idle"}`}>
-                {frameIoConfigured ? "Destination configured" : "Setup required"}
-              </span>
-            </div>
-            <section className="frameio-config-section">
-              <div className="frameio-config-section-heading">
-                <strong>Upload destination</strong>
-                <span>Choose where Pepper should place review files.</span>
-              </div>
-              <div className="frameio-config-grid">
-                <label>Account<select value={frameIoConfig.accountId} onChange={(event) => void selectFrameIoAccount(event.target.value)} disabled={frameIoLoadingChoices || frameIoAccounts.length === 0}><option value="">{frameIoAccounts.length ? "Select an account" : "Connect Adobe to load accounts"}</option>{frameIoAccounts.map((account) => <option key={account.id} value={account.id}>{account.name}</option>)}</select></label>
-                <label>Project<select value={frameIoConfig.projectId} onChange={(event) => void saveFrameIoConfig({ ...frameIoConfig, projectId: event.target.value })} disabled={!frameIoConfig.accountId || frameIoLoadingChoices || frameIoProjects.length === 0}><option value="">{frameIoProjects.length ? "Select a project" : frameIoConfig.accountId ? "No projects returned for this account" : "Choose an account first"}</option>{frameIoProjects.map((project) => <option key={project.id} value={project.id}>{project.workspace_name ? `${project.workspace_name} — ` : ""}{project.name}</option>)}</select></label>
-              </div>
-              <p className="frameio-help frameio-config-destination">Uploads use Callum’s Account. Choose the review project; workspace names are shown when Frame.io returns them.</p>
+              <p className="settings-feedback" role="status">{settingsUpdateStatus}</p>
             </section>
-            <section className="frameio-storage-section" aria-live="polite">
-              <div className="frameio-storage-heading">
-                <div><strong>Account storage</strong><span>Frame.io account quota</span></div>
-                <button type="button" className="frameio-storage-refresh" disabled={frameIoStorageLoading || !frameIoConfig.accountId} onClick={() => void loadFrameIoStorage()} title="Refresh storage"><RefreshCw size={13} className={frameIoStorageLoading ? "spinning" : ""} /> Refresh</button>
-              </div>
-              {frameIoStorageLoading && <p className="frameio-storage-note">Loading storage usage…</p>}
-              {!frameIoStorageLoading && frameIoStorage && (() => {
+          </>}
+          {settingsSection === "advanced" && <>
+            <section className="settings-group"><h4>Access</h4>
+                <label className="settings-toggle">
+                  <input
+                    type="checkbox"
+                    checked={advancedMode || advancedModeRequested}
+                    onChange={(event) => {
+                      if (!event.target.checked) {
+                        setAdvancedMode(false);
+                        setAdvancedModeRequested(false);
+                        setAdvancedPassword("");
+                        setAdvancedPasswordError("");
+                      } else {
+                        setAdvancedModeRequested(true);
+                        setAdvancedPasswordError("");
+                      }
+                    }}
+                  />
+                  <span><strong>Advanced mode</strong><small>Unlock manual status and maintenance controls.</small></span>
+                </label>
+                {advancedModeRequested && !advancedMode && (
+                  <form className="advanced-password-form" onSubmit={(event) => {
+                    event.preventDefault();
+                    if (advancedPassword === "fidelio") {
+                      setAdvancedMode(true);
+                      setAdvancedModeRequested(false);
+                      setAdvancedPassword("");
+                      setAdvancedPasswordError("");
+                    } else setAdvancedPasswordError("Incorrect password");
+                  }}>
+                    <input type="password" autoComplete="current-password" value={advancedPassword} onChange={(event) => setAdvancedPassword(event.target.value)} placeholder="Advanced mode password" aria-label="Advanced mode password" />
+                    <button type="submit" className="ghost" disabled={!advancedPassword}>Confirm</button>
+                    {advancedPasswordError && <small role="alert">{advancedPasswordError}</small>}
+                  </form>
+                )}
+
+            </section>
+            {advancedMode && <section className="settings-group"><h4>Maintenance</h4>
+              <div className="settings-row"><div><strong>Last operation</strong><small>{lastSummary || "No operations to undo."}</small></div><button type="button" className="ghost" onClick={() => { setShowAdvancedMenu(false); setShowUndoConfirm(true); }} disabled={!lastBatch.length}>Undo last</button></div>
+              <div className="settings-row"><div><strong>Project log</strong><small>View the current project's operation history.</small></div><button type="button" className="ghost" onClick={() => void handleLogOpen()} disabled={!projectRoot}>View log <ArrowUpRight size={13} /></button></div>
+            </section>}
+          </>}
+          {settingsSection === "integrations" && <div className="settings-integrations">
+            <StudioMailSettings />
+            <section className="integration-provider" aria-labelledby="integration-frameio-title">
+              <header className="integration-heading">
+                <IntegrationBrand provider="frameio" />
+                {frameIoIssues.length > 0 && <span className="integration-status integration-issues" role="status" title={frameIoIssues.join("\n")}><TriangleAlert size={12} aria-hidden="true" />{frameIoIssues.length} {frameIoIssues.length === 1 ? "Issue" : "Issues"}</span>}
+              </header>
+              {frameIoAccounts.length === 0 && <div className="settings-actions integration-connect">
+                <button type="button" className="ghost" disabled={!frameIoConfig.clientId || !frameIoConfig.scopes || frameIoLoadingChoices || frameIoAuthBusy} onClick={() => void connectFrameIo()}>{frameIoAuthBusy ? "Waiting for Adobe..." : "Connect Adobe"}</button>
+              </div>}
+              <div className="integration-storage" aria-live="polite">
+                <button type="button" className="integration-refresh" disabled={frameIoStorageLoading || !frameIoConfig.accountId} onClick={() => void loadFrameIoStorage()} aria-label="Refresh Frame.io storage" title="Refresh storage"><RefreshCw size={13} className={frameIoStorageLoading ? "spinning" : ""} /></button>
+              {frameIoStorage && (() => {
                 const remaining = Math.max(0, frameIoStorage.limitBytes - frameIoStorage.usedBytes);
                 const percentage = frameIoStorage.limitBytes > 0 ? Math.min(100, frameIoStorage.usedBytes / frameIoStorage.limitBytes * 100) : 0;
                 return <>
-                  <div className="frameio-storage-numbers"><strong>{formatStorage(remaining)} remaining</strong><span>{formatStorage(frameIoStorage.usedBytes)} of {formatStorage(frameIoStorage.limitBytes)} used</span></div>
+                  <div className="integration-storage-numbers"><strong>{formatStorage(remaining)} free</strong><span>{formatStorage(frameIoStorage.usedBytes)} of {formatStorage(frameIoStorage.limitBytes)} used</span></div>
                   <div className="frameio-storage-track" role="progressbar" aria-label="Frame.io storage used" aria-valuenow={Math.round(percentage)} aria-valuemin={0} aria-valuemax={100}><span style={{ width: `${percentage}%` }} /></div>
                 </>;
               })()}
               {!frameIoStorageLoading && !frameIoStorage && <p className="frameio-storage-note">{frameIoStorageError ?? (frameIoConfig.accountId ? "Storage usage is unavailable." : "Select an account to view its storage quota.")}</p>}
-            </section>
-            <details className="frameio-advanced-settings">
-              <summary>Advanced Adobe OAuth settings</summary>
+
+              </div>
+              <details className="integration-options">
+                <summary aria-label="Frame.io connection options">Connection options</summary>
+                <div className="frameio-config-grid">
+                <label>Account<select value={frameIoConfig.accountId} onChange={(event) => void selectFrameIoAccount(event.target.value)} disabled={frameIoLoadingChoices || frameIoAccounts.length === 0}><option value="">{frameIoAccounts.length ? "Select an account" : "Connect Adobe to load accounts"}</option>{frameIoAccounts.map((account) => <option key={account.id} value={account.id}>{account.name}</option>)}</select></label>
+                <label>Project<select value={frameIoConfig.projectId} onChange={(event) => void saveFrameIoConfig({ ...frameIoConfig, projectId: event.target.value })} disabled={!frameIoConfig.accountId || frameIoLoadingChoices || frameIoProjects.length === 0}><option value="">{frameIoProjects.length ? "Select a project" : frameIoConfig.accountId ? "No projects returned for this account" : "Choose an account first"}</option>{frameIoProjects.map((project) => <option key={project.id} value={project.id}>{project.workspace_name ? `${project.workspace_name} — ` : ""}{project.name}</option>)}</select></label>
+              </div>
+
+            <div className="settings-actions">
+              {frameIoAccounts.length > 0 && <button type="button" className="ghost" disabled={frameIoLoadingChoices} onClick={() => void loadFrameIoChoices().catch(() => undefined)}>Refresh accounts</button>}
+              {frameIoAuthBusy && <button type="button" className="ghost" onClick={() => void cancelFrameIoAuth()}>Cancel sign-in</button>}
+              {frameIoAccounts.length > 0 && <button type="button" className="ghost" disabled={!frameIoConfig.clientId || !frameIoConfig.scopes || frameIoLoadingChoices || frameIoAuthBusy} onClick={() => void connectFrameIo()}>{frameIoAuthBusy ? "Waiting for Adobe…" : "Reconnect Adobe"}</button>}
+            </div>
+              <details className="integration-options integration-developer">
+                <summary>Developer settings</summary>
               <div className="frameio-advanced-fields">
                 <label>Client ID<input value={frameIoConfig.clientId} onChange={(event) => void saveFrameIoConfig({ ...frameIoConfig, clientId: event.target.value })} placeholder="From Adobe Developer Console" /></label>
                 <label>OAuth scopes<input value={frameIoConfig.scopes} onChange={(event) => void saveFrameIoConfig({ ...frameIoConfig, scopes: event.target.value })} placeholder="Scopes enabled for this credential" /></label>
                 <p className="frameio-help">Pepper uses the Adobe Native App redirect URI assigned to this credential. Credentials stay in this computer’s secure credential store.</p>
               </div>
-            </details>
-            <p className="frameio-help">Share links require downloads to be enabled on the current Frame.io plan.</p>
-            {frameIoLoadingChoices && <p className="frameio-help">Loading accounts and projects…</p>}
-            {frameIoSetupError && <p className="frameio-setup-error">{frameIoSetupError}</p>}
-            <div className="modal-actions">
-              <button type="button" className="ghost" disabled={frameIoAuthBusy} onClick={() => setShowFrameIoConfig(false)}>Close</button>
-              {frameIoAccounts.length > 0 && <button type="button" className="ghost" disabled={frameIoLoadingChoices} onClick={() => void loadFrameIoChoices().catch(() => undefined)}>Refresh accounts</button>}
-              {frameIoAuthBusy && <button type="button" className="ghost" onClick={() => void cancelFrameIoAuth()}>Cancel sign-in</button>}
-              <button type="button" className="primary" disabled={!frameIoConfig.clientId || !frameIoConfig.scopes || frameIoLoadingChoices || frameIoAuthBusy} onClick={() => void connectFrameIo()}>{frameIoAuthBusy ? "Waiting for Adobe…" : frameIoAccounts.length ? "Reconnect Adobe" : "Connect Adobe & load accounts"}</button>
-            </div>
-          </div>
-        </div>
+              </details>
+
+              </details>
+              {frameIoSetupError && <p className="frameio-setup-error" role="alert">{frameIoSetupError}</p>}
+            </section>
+            <section className="integration-provider" aria-labelledby="integration-restream-title">
+              <header className="integration-heading">
+                <IntegrationBrand provider="restream" />
+                {restreamError && <span className="integration-status integration-issues" role="status" title={restreamError}><TriangleAlert size={12} aria-hidden="true" />1 Issue</span>}
+              </header>
+              {restreamError && <div className="restream-error-row"><p className="frameio-setup-error" role="alert">{restreamError}</p><button type="button" className="frameio-storage-refresh" onClick={()=>void writeText(restreamError).then(()=>showToast("Restream error copied to clipboard.","success")).catch(error=>showToast(`Could not copy error: ${String(error)}`,"error",6000))}><Copy size={13}/> Copy error</button></div>}
+              {restreamStatus === "connected" ? <details className="integration-options">
+                <summary aria-label="Restream connection options">Connection options</summary>
+<div className="settings-actions">
+                {restreamStatus === "connected" && <button type="button" className="ghost" disabled={restreamBusy} onClick={()=>void invoke("restream_disconnect").then(()=>setRestreamStatus("disconnected")).catch(e=>setRestreamError(String(e)))}>Disconnect</button>}
+                <button type="button" className="primary" disabled={restreamBusy} onClick={()=>void connectRestream()}>{restreamBusy ? "Waiting for Restream…" : "Reconnect"}</button>
+              </div>
+              </details> : <div className="settings-actions integration-connect"><button type="button" className="ghost" disabled={restreamBusy} onClick={() => void connectRestream()}>{restreamBusy ? "Waiting for Restream..." : "Connect"}</button></div>}
+            </section>
+          </div>}
+          {settingsSection === "people" && <StudioMailPeopleSettings />}
+        </SettingsDialog>
       )}
 
       {pendingFrameIoUpload && (

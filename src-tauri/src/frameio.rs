@@ -263,6 +263,7 @@ pub fn frameio_open_external_url(_app: AppHandle, url: String) -> Result<(), Str
         || host == "frame.io"
         || host.ends_with(".frame.io")
         || host == "f.io";
+    let allowed_host = allowed_host || host == "oauth.restream.io";
     if parsed.scheme() != "https" || !allowed_host {
         return Err("Pepper can only open Adobe sign-in and Frame.io links.".into());
     }

@@ -13,6 +13,8 @@ use tauri::{Emitter, Manager};
 use walkdir::WalkDir;
 
 mod frameio;
+mod restream;
+mod studio_mail;
 mod ingest;
 mod media_browser;
 mod client_files;
@@ -24,6 +26,10 @@ mod file_locations;
 struct ClientInfo {
     name: String,
     path: String,
+    #[serde(default)]
+    client_type: Option<String>,
+    #[serde(default)]
+    huddle_template: Option<String>,
     season: Option<String>,
     status: String,
     missing: Vec<String>,
@@ -1714,6 +1720,10 @@ fn affected_clients(event: &Event, root: &Path) -> (bool, HashSet<String>) {
 }
 
 fn scan_client_folders(name: &str, path: &Path) -> ClientInfo {
+    let metadata = fs::read(path.join(".pepper-client.json")).ok()
+        .and_then(|data| serde_json::from_slice::<serde_json::Value>(&data).ok());
+    let client_type = metadata.as_ref().and_then(|v|v.get("client_type")).and_then(|v|v.as_str()).map(str::to_owned);
+    let huddle_template = metadata.as_ref().and_then(|v|v.get("huddle_template")).and_then(|v|v.as_str()).map(str::to_owned);
     let season = path.parent()
         .and_then(|parent| parent.file_name())
         .and_then(|value| value.to_str())
@@ -1723,6 +1733,8 @@ fn scan_client_folders(name: &str, path: &Path) -> ClientInfo {
         return ClientInfo {
             name: name.to_string(),
             path: path.to_string_lossy().to_string(),
+            client_type,
+            huddle_template,
             season,
             status: "Not a client".to_string(),
             missing: Vec::new(),
@@ -1783,6 +1795,8 @@ fn scan_client_folders(name: &str, path: &Path) -> ClientInfo {
     ClientInfo {
         name: name.to_string(),
         path: path.to_string_lossy().to_string(),
+        client_type,
+        huddle_template,
         season,
         status: status.to_string(),
         missing,
@@ -2288,6 +2302,45 @@ fn set_watch_root(
 async fn create_client(project_root:String,client_name:String,client_type:String,huddle_template:Option<String>,season:Option<String>)->Result<(),String>{
     tauri::async_runtime::spawn_blocking(move||create_client_sync(project_root,client_name,client_type,huddle_template,season)).await.map_err(|error|error.to_string())?
 }
+
+#[tauri::command]
+fn set_client_huddle_template(client_path:String,huddle_template:String)->Result<(),String>{
+    if !matches!(huddle_template.as_str(),"VIDEO_CALL"|"PHYSICAL") { return Err("Choose a supported Huddle interview type".into()); }
+    let root=PathBuf::from(&client_path);
+    if !root.is_dir(){return Err("Client folder is unavailable".into());}
+    let metadata_path=root.join(".pepper-client.json");
+    let lock_path=root.join(".pepper-client-metadata.lock");
+    let lock=std::fs::OpenOptions::new().write(true).create_new(true).open(&lock_path)
+        .map_err(|e|format!("Client metadata is being updated elsewhere; retry shortly ({e})"))?;
+    let update=(||{
+        let mut metadata=if metadata_path.exists(){
+            serde_json::from_slice::<serde_json::Value>(&fs::read(&metadata_path).map_err(|e|e.to_string())?)
+                .map_err(|e|format!("Client metadata is invalid and was left unchanged: {e}"))?
+        }else{serde_json::json!({"schema_version":1})};
+        let existing_type=metadata.get("client_type").and_then(|v|v.as_str());
+        let legacy_huddle=root.file_name().and_then(|v|v.to_str()).map(|v|v.to_ascii_uppercase().ends_with("_HUDDLE")).unwrap_or(false);
+        if existing_type!=Some("HUDDLE")&&!legacy_huddle{return Err("This action is only available for Huddle clients".into())}
+        let object=metadata.as_object_mut().ok_or("Client metadata must be a JSON object")?;
+        object.insert("schema_version".into(),serde_json::json!(1));
+        object.insert("client_type".into(),serde_json::json!("HUDDLE"));
+        object.insert("huddle_template".into(),serde_json::json!(huddle_template));
+        let temp=root.join(format!(".pepper-client-{}.tmp",uuid::Uuid::new_v4()));
+        fs::write(&temp,serde_json::to_vec_pretty(&metadata).map_err(|e|e.to_string())?).map_err(|e|e.to_string())?;
+        replace_client_metadata(&temp,&metadata_path)?;
+        Ok(())
+    })();
+    drop(lock);let _=fs::remove_file(lock_path);update
+}
+
+#[cfg(not(windows))]
+fn replace_client_metadata(from:&Path,to:&Path)->Result<(),String>{fs::rename(from,to).map_err(|e|e.to_string())}
+#[cfg(windows)]
+fn replace_client_metadata(from:&Path,to:&Path)->Result<(),String>{
+    use std::os::windows::ffi::OsStrExt;
+    use windows::Win32::Storage::FileSystem::{MoveFileExW,MOVEFILE_REPLACE_EXISTING,MOVEFILE_WRITE_THROUGH};
+    let from:Vec<u16>=from.as_os_str().encode_wide().chain(Some(0)).collect();let to:Vec<u16>=to.as_os_str().encode_wide().chain(Some(0)).collect();
+    unsafe{MoveFileExW(windows::core::PCWSTR(from.as_ptr()),windows::core::PCWSTR(to.as_ptr()),MOVEFILE_REPLACE_EXISTING|MOVEFILE_WRITE_THROUGH)}.map_err(|e|e.to_string())
+}
 fn create_client_sync(
     project_root: String,
     client_name: String,
@@ -2317,6 +2370,10 @@ fn create_client_sync(
     for dir in TEMPLATE_DIRS.iter() {
         ensure_dir(&client_root.join(dir)).map_err(|e| e.to_string())?;
     }
+
+    let metadata = serde_json::json!({"schema_version":1,"client_type":client_type,"huddle_template":if client_type=="HUDDLE" { huddle_template.as_deref() } else { None }});
+    fs::write(client_root.join(".pepper-client.json"), serde_json::to_vec_pretty(&metadata).map_err(|e|e.to_string())?)
+        .map_err(|e|format!("Unable to save client type metadata: {e}"))?;
 
     if client_type == "EXHIBITOR" || client_type == "PRODUCT" || client_type == "HUDDLE" {
         let template_source =
@@ -2788,6 +2845,7 @@ pub fn run() {
         .plugin(tauri_plugin_store::Builder::default().build())
         .plugin(tauri_plugin_clipboard_manager::init())
         .manage(frameio::Runtime::default())
+        .manage(restream::Runtime::default())
         .setup(|app| {
             use tauri_plugin_deep_link::DeepLinkExt;
             #[cfg(windows)]
@@ -2835,6 +2893,7 @@ pub fn run() {
             migrate_project_finals,
             set_watch_root,
             create_client,
+            set_client_huddle_template,
             file_locations::open_folder,
             file_locations::open_file_location,
             project_has_sort_logs,
@@ -2850,7 +2909,25 @@ pub fn run() {
             frameio::frameio_list_accounts,
             frameio::frameio_get_storage,
             frameio::frameio_list_projects,
-            frameio::frameio_upload
+            frameio::frameio_upload,
+            restream::restream_start_auth,
+            restream::restream_finish_auth,
+            restream::restream_cancel_auth,
+            restream::restream_disconnect,
+            restream::restream_connection_status,
+            restream::restream_create_studio,
+            restream::restream_get_studio,
+            restream::restream_list_event_recordings,
+            restream::restream_download_recording,
+            restream::restream_list_studios,
+            restream::restream_client_sessions,
+            restream::restream_associate_session,
+            restream::restream_delete_studio,
+            studio_mail::studio_mail_status,
+            studio_mail::studio_mail_save_credentials,
+            studio_mail::studio_mail_recipients,
+            studio_mail::studio_mail_save_recipients,
+            studio_mail::studio_mail_send_link
         ])
         .manage(Mutex::new(WatchState {
             watcher: None,
@@ -2865,6 +2942,23 @@ pub fn run() {
 mod tests {
     use super::*;
     use std::fs;
+
+    #[test]
+    fn legacy_huddle_can_be_marked_video_call_in_shared_metadata() {
+        let temp=tempfile::tempdir().unwrap();
+        let client=temp.path().join("Interview_HUDDLE");fs::create_dir(&client).unwrap();
+        set_client_huddle_template(client.to_string_lossy().into_owned(),"VIDEO_CALL".into()).unwrap();
+        let metadata:serde_json::Value=serde_json::from_slice(&fs::read(client.join(".pepper-client.json")).unwrap()).unwrap();
+        assert_eq!(metadata["client_type"],"HUDDLE");
+        assert_eq!(metadata["huddle_template"],"VIDEO_CALL");
+    }
+
+    #[test]
+    fn interview_type_marking_rejects_non_huddle_clients() {
+        let temp=tempfile::tempdir().unwrap();
+        let client=temp.path().join("Other_PRODUCT");fs::create_dir(&client).unwrap();
+        assert!(set_client_huddle_template(client.to_string_lossy().into_owned(),"VIDEO_CALL".into()).is_err());
+    }
 
     #[test]
     fn mariya_clients_use_selected_season_and_default_to_latest() {

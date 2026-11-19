@@ -3845,6 +3845,9 @@ button.ghost,
 .frameio-storage-refresh { display: inline-flex; align-items: center; gap: 5px; padding: 4px 6px; border-radius: 4px; background: transparent; color: #b4bbc5; box-shadow: none; font-size: 10px; }
 .frameio-storage-refresh:hover:not(:disabled) { background: #333333; color: #f2f2f2; box-shadow: none; }
 .frameio-storage-refresh:disabled { opacity: .6; }
+
+.restream-error-row { display:flex; align-items:center; gap:8px; }
+.restream-error-row .frameio-setup-error { flex:1; min-width:0; margin:0; }
 .frameio-storage-refresh .spinning { animation: spin .8s linear infinite; }
 @keyframes spin { to { transform: rotate(360deg); } }
 

@@ -1,0 +1,136 @@
+.pepper-settings {
+  width: min(780px, calc(100vw - 40px));
+  height: min(560px, calc(100dvh - 72px));
+  max-width: none;
+  max-height: none;
+  padding: 0;
+  margin: auto;
+  border: 1px solid var(--pepper-line);
+  border-radius: 8px;
+  background: var(--pepper-surface);
+  color: var(--pepper-text);
+  box-shadow: 0 24px 80px #0008;
+  overflow: hidden;
+  font-size: 12px;
+  user-select: none;
+}
+.pepper-settings::backdrop { background: #0009; }
+.settings-header { height: 55px; padding: 0 18px 0 22px; display: flex; align-items: center; justify-content: space-between; border-bottom: 1px solid var(--pepper-line); }
+.settings-header h2 { margin: 0; font-size: 14px; font-weight: 600; }
+.pepper-settings button { font: inherit; font-weight: 500; box-shadow: none; transform: none; }
+.pepper-settings button:focus-visible, .pepper-settings summary:focus-visible { outline: 2px solid var(--pepper-focus) !important; outline-offset: 2px; }
+.pepper-settings button:disabled { opacity: .45; }
+.settings-close { display: grid; place-items: center; width: 28px; height: 28px; padding: 0; border-radius: 4px; background: transparent; color: var(--pepper-muted); }
+.settings-close:hover { background: var(--pepper-hover); color: var(--pepper-text); }
+.settings-layout { display: grid; grid-template-columns: 164px minmax(0, 1fr); height: calc(100% - 55px); }
+.settings-nav { display: flex; flex-direction: column; gap: 4px; padding: 16px 10px; background: var(--pepper-bg); border-right: 1px solid var(--pepper-line); }
+.settings-nav button { display: flex; align-items: center; gap: 10px; min-height: 36px; padding: 8px 12px; border: 1px solid transparent; border-radius: 5px; background: transparent; color: var(--pepper-muted); text-align: left; }
+.settings-nav button:hover { background: var(--pepper-surface-raised); color: var(--pepper-text); }
+.settings-nav button[aria-current] { background: var(--pepper-selection); border-color: var(--pepper-line); color: var(--pepper-text); }
+.settings-content { min-width: 0; overflow: auto; padding: 24px; scrollbar-gutter: stable; }
+.settings-page-heading { margin-bottom: 20px; }
+.settings-page-heading h3 { margin: 0 0 6px; color: var(--pepper-text); font-size: 18px; font-weight: 600; }
+.settings-page-heading p { margin: 0; color: var(--pepper-muted); font-size: 11px; line-height: 1.5; }
+.settings-group { margin: 0 0 26px; }
+.settings-group h4 { margin: 0; padding-bottom: 10px; border-bottom: 1px solid var(--pepper-line); color: var(--pepper-muted); font-size: 10px; font-weight: 600; letter-spacing: .07em; text-transform: uppercase; }
+.settings-row, .settings-toggle { display: flex; gap: 16px; align-items: center; justify-content: space-between; min-height: 72px; padding: 14px 0; border-bottom: 1px solid #ffffff0a; }
+.settings-row > div, .settings-toggle > span { min-width: 0; display: grid; gap: 5px; }
+.settings-row strong, .settings-toggle strong { font-weight: 500; font-size: 12px; }
+.settings-row small, .settings-toggle small { color: var(--pepper-muted); font-size: 11px; line-height: 1.5; overflow-wrap: anywhere; }
+.pepper-settings .ghost, .pepper-settings .primary { display: inline-flex; align-items: center; justify-content: center; gap: 6px; padding: 7px 10px; min-height: 32px; border: 1px solid var(--pepper-line); border-radius: 4px; background: var(--pepper-surface-raised); color: var(--pepper-text); font-size: 11px; }
+.pepper-settings .primary { background: #dedede; color: #202020; border-color: #dedede; }
+.pepper-settings .ghost:hover { background: var(--pepper-hover); }
+.settings-row > button { flex-shrink: 0; }
+.settings-toggle { flex-direction: row-reverse; cursor: pointer; }
+.settings-toggle input { appearance: none; flex: 0 0 30px; width: 30px; height: 18px; min-height: 0; margin: 0; padding: 2px; border: 1px solid #646464; border-radius: 12px; background: #333; cursor: pointer; transition: background .15s; }
+.settings-toggle input::before { content: ""; display: block; height: 12px; width: 12px; border-radius: 50%; background: #a2a2a2; transition: transform .15s; }
+.settings-toggle input:checked { background: #c8c8c8; border-color: #c8c8c8; }
+.settings-toggle input:checked::before { background: #282828; transform: translateX(12px); }
+.settings-toggle input:focus-visible { outline: 2px solid var(--pepper-focus) !important; outline-offset: 3px; }
+.settings-toggle > span { margin-right: auto; }
+.pepper-settings .advanced-password-form { display: flex; flex-wrap: wrap; gap: 8px; padding: 12px 0; }
+.pepper-settings .advanced-password-form input { min-width: 120px; flex: 1; }
+.pepper-settings .advanced-password-form small { flex-basis: 100%; color: #ef9999; }
+.settings-connection { margin: -8px 0 20px; }
+.pepper-settings .frameio-config-section { padding: 0 0 18px; }
+.pepper-settings .frameio-config-section-heading { margin-bottom: 14px; }
+.pepper-settings .frameio-config-section-heading span { font-size: 11px; }
+.pepper-settings .frameio-config-grid { gap: 12px; }
+.pepper-settings .frameio-config-grid label, .pepper-settings .frameio-advanced-fields label { display: grid; gap: 7px; font-size: 11px; color: var(--pepper-muted); }
+.pepper-settings input:not([type=checkbox]), .pepper-settings select { width: 100%; min-height: 34px; padding: 7px 9px; border: 1px solid var(--pepper-line); border-radius: 4px; background: var(--pepper-bg); color: var(--pepper-text); font: inherit; font-size: 11px; user-select: text; }
+.pepper-settings input:not([type=checkbox]):focus, .pepper-settings select:focus { border-color: var(--pepper-focus); }
+.settings-actions { display: flex; justify-content: flex-start; flex-wrap: wrap; gap: 8px; margin: 0 0 20px; }
+.pepper-settings .frameio-storage-section { margin: 0 0 20px; padding: 16px 0; border: 0; border-top: 1px solid var(--pepper-line); border-bottom: 1px solid var(--pepper-line); border-radius: 0; background: transparent; }
+.pepper-settings .frameio-advanced-settings { margin: 20px 0 14px; background: transparent; }
+.pepper-settings .frameio-help { margin: 10px 0; font-size: 11px; line-height: 1.5; }
+.pepper-settings .frameio-state-badge { font-size: 10px; background: var(--pepper-surface-raised); border-color: var(--pepper-line); color: var(--pepper-muted); }
+.pepper-settings .frameio-state-badge.ready { background: var(--pepper-selection); border-color: #5c5c5c; color: var(--pepper-text); }
+.settings-feedback { margin: 10px 0 0; color: var(--pepper-muted); font-size: 11px; line-height: 1.5; }
+.integration-provider { padding: 0 0 22px; }
+.integration-provider + .integration-provider { padding: 22px 0 0; border-top: 1px solid var(--pepper-line); }
+.integration-heading { display: flex; align-items: center; gap: 10px; min-height: 26px; margin-bottom: 12px; }
+.integration-heading > svg { flex-shrink: 0; color: var(--pepper-muted); }
+.integration-heading > div { display: grid; gap: 3px; }
+.integration-heading h4 { margin: 0; font-size: 13px; font-weight: 600; }
+.integration-heading span { font-size: 10px; color: var(--pepper-muted); }
+.integration-heading .integration-status { margin-left: auto; padding-left: 8px; }
+.integration-issues { display: inline-flex; align-items: center; gap: 5px; }
+.integration-brand { display: flex; align-items: center; gap: 8px; height: 24px; color: var(--pepper-text); }
+.integration-brand-frameio svg { width: 19px; height: 22px; }
+.integration-heading .integration-brand-frameio span { color: inherit; font-size: 15px; font-weight: 600; letter-spacing: -.4px; }
+.integration-brand-restream svg { width: 100px; height: 14px; }
+.integration-brand-gmail { color: var(--pepper-text); }
+.integration-brand-gmail svg { width: 20px; height: 16px; color: var(--pepper-muted); }
+.integration-heading .integration-brand-gmail span { color: inherit; font-size: 13px; font-weight: 600; letter-spacing: -.2px; }
+.pepper-settings .integration-provider .frameio-config-grid { gap: 10px; }
+.integration-storage { position: relative; margin: 8px 0 12px; padding-right: 28px; }
+.integration-storage-numbers { display: flex; justify-content: space-between; gap: 10px; align-items: baseline; color: var(--pepper-muted); font-size: 10px; }
+.integration-storage-numbers strong { color: var(--pepper-text); font-size: 11px; font-weight: 500; }
+.integration-refresh { position: absolute; right: 0; top: -3px; display: grid; place-items: center; width: 24px; height: 24px; padding: 0; border-radius: 4px; background: transparent; color: var(--pepper-muted); }
+.integration-refresh:hover { background: var(--pepper-hover); }
+.integration-storage .frameio-storage-track { height: 3px; margin-top: 7px; }
+.integration-options > summary { width: fit-content; padding: 6px 0; color: var(--pepper-muted); font-size: 11px; cursor: pointer; }
+.integration-options > summary:hover { color: var(--pepper-text); }
+.integration-options[open] > summary { margin-bottom: 14px; }
+.integration-options[open] { padding-bottom: 2px; }
+.integration-options .frameio-config-grid { margin-bottom: 14px; }
+.integration-options .frameio-advanced-fields { padding: 0; }
+.integration-options .settings-actions { margin-bottom: 14px; }
+.integration-provider .settings-actions { gap: 6px; }
+.integration-provider:last-child .settings-actions { margin: 0; }
+.integration-provider .primary { background: var(--pepper-surface-raised); border-color: var(--pepper-line); color: var(--pepper-text); }
+.integration-connect { margin: 12px 0 0; }
+.studio-mail-settings { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 10px; margin: 12px 0 8px; }
+.studio-mail-settings label { display: grid; gap: 5px; color: var(--pepper-muted); font-size: 10px; }
+.studio-mail-settings input { min-width: 0; min-height: 30px; padding: 6px 8px; border: 1px solid var(--pepper-line); border-radius: var(--pepper-radius-control, 4px); background: var(--pepper-surface); color: var(--pepper-text); font-size: 11px; }
+.studio-mail-settings button { width: fit-content; }
+.studio-mail-actions { display: flex; align-items: center; gap: 8px; }
+.studio-mail-settings .settings-feedback { grid-column: 1 / -1; margin: 0; }
+.studio-mail-recipient { display: block; color: var(--pepper-muted); font-size: 10px; }
+.studio-mail-people { margin-top: 18px; padding-top: 14px; border-top: 1px solid var(--pepper-line); }
+.studio-mail-people-heading { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-bottom: 10px; }
+.studio-mail-people-heading h5 { margin: 0; color: var(--pepper-text); font-size: 11px; font-weight: 600; }
+.studio-mail-people-heading button { display: inline-flex; align-items: center; gap: 5px; min-height: 27px; padding: 5px 8px; font-size: 10px; }
+.studio-mail-contact-list { display: grid; gap: 8px; }
+.studio-mail-contact { display: grid; grid-template-columns: minmax(100px, .8fr) minmax(150px, 1.4fr) 28px; align-items: end; gap: 8px; }
+.studio-mail-contact label { display: grid; gap: 4px; color: var(--pepper-muted); font-size: 10px; }
+.studio-mail-contact input { min-width: 0; min-height: 30px; padding: 6px 8px; border: 1px solid var(--pepper-line); border-radius: var(--pepper-radius-control, 4px); background: var(--pepper-surface); color: var(--pepper-text); font-size: 11px; }
+.studio-mail-contact-remove { width: 28px; height: 28px; margin-bottom: 1px; color: var(--pepper-muted); }
+.studio-mail-contact-remove:hover:not(:disabled) { color: #d99a91; }
+.studio-mail-people-footer { display: flex; align-items: center; gap: 10px; margin-top: 10px; }
+.studio-mail-people-footer .settings-feedback { margin: 0; }
+@media (max-width: 620px) { .studio-mail-settings { grid-template-columns: 1fr; } }
+@media (max-width: 620px) {
+  .pepper-settings { width: calc(100vw - 24px); height: calc(100dvh - 40px); }
+  .settings-layout { grid-template-columns: 1fr; grid-template-rows: auto minmax(0, 1fr); }
+  .settings-nav { flex-direction: row; gap: 4px; padding: 8px; border-right: 0; border-bottom: 1px solid var(--pepper-line); }
+  .settings-nav button { justify-content: center; flex: 1; padding: 7px 5px; gap: 5px; font-size: 11px; }
+  .settings-nav button svg { width: 14px; }
+  .settings-content { padding: 20px 16px; }
+  .settings-row { flex-wrap: wrap; gap: 10px; }
+  .pepper-settings .frameio-config-grid { grid-template-columns: 1fr; }
+  .integration-storage-numbers { flex-wrap: wrap; gap: 4px; }
+  .studio-mail-contact { grid-template-columns: minmax(0, 1fr) 28px; }
+  .studio-mail-contact label:nth-child(2) { grid-column: 1; grid-row: 2; }
+  .studio-mail-contact-remove { grid-column: 2; grid-row: 1 / span 2; }
+}

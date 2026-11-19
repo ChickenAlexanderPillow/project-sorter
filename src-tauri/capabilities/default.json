@@ -21,6 +21,12 @@
         }
       ]
     },
+    {
+      "identifier": "opener:allow-open-url",
+      "allow": [
+        { "url": "https://*.restream.io/**" }
+      ]
+    },
     "dialog:default",
     "store:default",
     "clipboard-manager:allow-write-text",

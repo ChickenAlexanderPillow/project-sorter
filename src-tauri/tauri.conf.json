@@ -33,7 +33,7 @@
   "plugins": {
     "deep-link": {
       "desktop": {
-        "schemes": ["adobe+4694cbd42914a67015f420c3d5241c8540f26611"]
+          "schemes": ["adobe+4694cbd42914a67015f420c3d5241c8540f26611"]
       }
     },
     "updater": {

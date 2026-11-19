@@ -2,9 +2,10 @@ import { useEffect, useRef, useState } from "react";
 import { Check, Copy } from "lucide-react";
 import "./CopyReviewLinkButton.css";
 
-export function CopyReviewLinkButton({ url, version, onCopy }: {
+export function CopyReviewLinkButton({ url, version, label = `V${version} review link`, onCopy }: {
   url: string;
   version: number;
+  label?: string;
   onCopy: (url: string) => Promise<boolean>;
 }) {
   const [copied, setCopied] = useState(false);
@@ -42,8 +43,8 @@ export function CopyReviewLinkButton({ url, version, onCopy }: {
   return <button
     type="button"
     className={`frameio-icon-button copy review-copy-button${copied ? " copied" : ""}`}
-    title={copied ? "Copied" : "Copy review link"}
-    aria-label={copied ? `V${version} review link copied` : `Copy V${version} review link`}
+    title={copied ? "Copied" : `Copy ${label}`}
+    aria-label={copied ? `${label} copied` : `Copy ${label}`}
     disabled={pending}
     onClick={() => void copy()}
   >

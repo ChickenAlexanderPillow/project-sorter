@@ -37,6 +37,7 @@ notify = "6"
 reqwest = { version = "0.13", features = ["json", "stream", "form", "query"] }
 tokio = { version = "1", features = ["fs", "io-util", "time"] }
 keyring = { version = "3", features = ["windows-native", "apple-native", "sync-secret-service"] }
+lettre = { version = "0.11", default-features = false, features = ["builder", "smtp-transport", "tokio1-native-tls"] }
 base64 = "0.22"
 sha2 = "0.10"
 filetime = "0.2"
