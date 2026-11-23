@@ -160,7 +160,9 @@ fn atomic_replace_once(from:&Path,to:&Path)->std::io::Result<()>{fs::rename(from
 fn hash(path: &Path) -> Result<String, String> { hash_with_lease(path, None) }
 fn hash_with_lease(path: &Path, lease: Option<&WriterLease>) -> Result<String, String> {
     let mut f = fs::File::open(path).map_err(|e| e.to_string())?;
-    let mut h = Sha256::new(); let mut buf = [0u8; 1024*1024];
+    // Keep large transfer buffers off Tokio's blocking-thread stack. This path
+    // is shared by Import Media and Project Health copies.
+    let mut h = Sha256::new(); let mut buf = vec![0u8; 1024*1024];
     loop { let n = f.read(&mut buf).map_err(|e| e.to_string())?; if n == 0 { break; } h.update(&buf[..n]); if let Some(lease)=lease { lease.heartbeat()?; } }
     Ok(format!("{:x}", h.finalize()))
 }
@@ -178,9 +180,9 @@ fn preserve_creation_time(path:&Path,time:Option<std::time::SystemTime>)->Option
 }
 #[cfg(not(windows))]
 fn preserve_creation_time(_path:&Path,time:Option<std::time::SystemTime>)->Option<String>{if time.is_some(){Some("Destination filesystem creation time could not be set; original value is retained in the manifest".into())}else{Some("Source creation time is unavailable".into())}}
-fn copy_with_heartbeat(source:&Path,dest:&Path,lease:&WriterLease,mut copied:impl FnMut(u64))->Result<(),String>{
+fn copy_with_heartbeat(source:&Path,dest:&Path,lease:&WriterLease,mut copied:impl FnMut(u64))->Result<String,String>{
     let mut input=fs::File::open(source).map_err(|e|e.to_string())?;let mut output=fs::File::create(dest).map_err(|e|e.to_string())?;
-    let mut buf=[0u8;1024*1024];let mut total=0u64;loop{let n=input.read(&mut buf).map_err(|e|e.to_string())?;if n==0{break;}output.write_all(&buf[..n]).map_err(|e|e.to_string())?;total+=n as u64;copied(total);lease.heartbeat()?;}output.sync_all().map_err(|e|e.to_string())
+    let mut h=Sha256::new();let mut buf=vec![0u8;1024*1024];let mut total=0u64;loop{let n=input.read(&mut buf).map_err(|e|e.to_string())?;if n==0{break;}h.update(&buf[..n]);output.write_all(&buf[..n]).map_err(|e|e.to_string())?;total+=n as u64;copied(total);lease.heartbeat()?;}output.sync_all().map_err(|e|e.to_string())?;Ok(format!("{:x}",h.finalize()))
 }
 fn is_ingest_temporary(path:&Path)->bool{if path.extension().and_then(|x|x.to_str())!=Some("partial"){return false;}path.file_stem().and_then(|x|x.to_str()).and_then(|s|s.rsplit_once('.').map(|(_,id)|id.to_string())).and_then(|id|Uuid::parse_str(&id).ok()).is_some()}
 #[cfg(windows)]
@@ -436,10 +438,28 @@ fn collect_with_lease(root: &Path, sources: Vec<String>, _lease: &WriterLease) -
                 let tmp = dest.with_extension(format!("{}.partial", Uuid::new_v4()));
                 append_journal(&root,serde_json::json!({"action":"transfer_started","at":chrono::Utc::now().to_rfc3339(),"temp_path":tmp,"inbox_path":dest,"file_id":Uuid::new_v4().to_string()}))?;
                 report_copy_progress(&root,&original,completed,total,0,before.len(),&completed_sources);
-                if let Err(e)=copy_with_heartbeat(&original, &tmp,&_lease,|bytes|report_copy_progress(&root,&original,completed,total,bytes,before.len(),&completed_sources)){let _=fs::remove_file(&tmp);let _=append_journal(&root,serde_json::json!({"action":"transfer_completed","at":chrono::Utc::now().to_rfc3339(),"temp_path":tmp}));return Err(e);}
+                // The transfer loop is chunked for bounded memory use. Persisting
+                // progress for every 1 MiB chunk causes thousands of fsyncs and
+                // atomic replacements on multi-gigabyte camera files, so keep
+                // the UI responsive while writing progress at a bounded rate.
+                let mut last_report_bytes=0u64;
+                let mut last_report_at=std::time::Instant::now();
+                let copied_hash=match copy_with_heartbeat(&original, &tmp,&_lease,|bytes|{
+                    if bytes.saturating_sub(last_report_bytes)>=16*1024*1024
+                        || last_report_at.elapsed()>=std::time::Duration::from_millis(750) {
+                        report_copy_progress(&root,&original,completed,total,bytes,before.len(),&completed_sources);
+                        last_report_bytes=bytes;
+                        last_report_at=std::time::Instant::now();
+                    }
+                }){Ok(digest)=>digest,Err(e)=>{let _=fs::remove_file(&tmp);let _=append_journal(&root,serde_json::json!({"action":"transfer_completed","at":chrono::Utc::now().to_rfc3339(),"temp_path":tmp}));return Err(format!("Could not copy {} from removable media: {e}",original.display()));}};
+                report_copy_progress(&root,&original,completed,total,before.len(),before.len(),&completed_sources);
                 report_progress(&root,"verifying",&original.to_string_lossy(),completed,total);
-                let after = fs::metadata(&original).map_err(|e| e.to_string())?;
-                if before.len()!=after.len() || before.modified().ok()!=after.modified().ok() || original_hash!=hash_with_lease(&tmp,Some(_lease))? || original_hash!=hash_with_lease(&original,Some(_lease))? {
+                let after = match fs::metadata(&original) {Ok(metadata)=>metadata,Err(e)=>{let _=fs::remove_file(&tmp);let _=append_journal(&root,serde_json::json!({"action":"transfer_completed","at":chrono::Utc::now().to_rfc3339(),"temp_path":tmp}));return Err(format!("Source became unavailable during collection; the original was preserved: {} ({e})",original.display()));}};
+                let copy_recheck=hash_with_lease(&tmp,Some(_lease));
+                // The initial source hash and the hash computed while streaming
+                // must match. The temporary file is still read back separately
+                // so successful collection verifies bytes actually written.
+                if before.len()!=after.len() || before.modified().ok()!=after.modified().ok() || copied_hash!=original_hash || copy_recheck.as_deref()!=Ok(original_hash.as_str()) {
                     let _ = fs::remove_file(&tmp);let _=append_journal(&root,serde_json::json!({"action":"transfer_completed","at":chrono::Utc::now().to_rfc3339(),"temp_path":tmp})); return Err(format!("Source changed during collection; retry: {}", original.display()));
                 }
                 let mut warning = match before.modified() {Ok(time)=>filetime::set_file_mtime(&tmp,filetime::FileTime::from_system_time(time)).err().map(|e|format!("Could not preserve source modification time: {e}")),Err(_)=>Some("Source modification time is unavailable".into())};
@@ -522,7 +542,7 @@ fn file_with_lease(root:&Path, state:&mut Manifest, eligible_client_paths:Option
             let mut dest=dir.join(&f.name);let mut n=1;while dest.exists(){if hash_with_lease(&dest,Some(_lease)).ok().as_deref()==Some(f.sha256.as_str()){break;}let stem=Path::new(&f.name).file_stem().unwrap_or_default().to_string_lossy();let ext=Path::new(&f.name).extension().and_then(|x|x.to_str()).unwrap_or("");let suffix=if ext.is_empty(){String::new()}else{format!(".{ext}")};dest=dir.join(format!("{stem} (Ingest {n}){suffix}"));n+=1;}
             if dest.to_string_lossy().encode_utf16().count()>32760{return Err(format!("Destination path is too long: {}",dest.display()));}
             let free=available_space(&dir)?;if f.size>free.saturating_sub(free/50){return Err(format!("Not enough destination space for {}",f.name));}
-            if !dest.exists(){let tmp=dest.with_extension(format!("{}.partial",Uuid::new_v4()));append_journal(&root,serde_json::json!({"action":"transfer_started","at":chrono::Utc::now().to_rfc3339(),"temp_path":tmp.to_string_lossy(),"file_id":f.id,"client":client.clone()}))?;if let Err(e)=copy_with_heartbeat(&source,&tmp,&_lease,|_|{}){let _=fs::remove_file(&tmp);let _=append_journal(&root,serde_json::json!({"action":"transfer_completed","at":chrono::Utc::now().to_rfc3339(),"temp_path":tmp.to_string_lossy()}));return Err(e);}if hash_with_lease(&tmp,Some(_lease))?!=f.sha256{let _=fs::remove_file(&tmp);let _=append_journal(&root,serde_json::json!({"action":"transfer_completed","at":chrono::Utc::now().to_rfc3339(),"temp_path":tmp.to_string_lossy()}));return Err(format!("Filing verification failed for {}",f.name));}if let Some(t)=f.source_modified.as_deref().and_then(time_from_ns){if let Err(e)=filetime::set_file_mtime(&tmp,filetime::FileTime::from_system_time(t)){state.files[i].timestamp_warning=Some(format!("Could not preserve filed modification time: {e}"));}}if let Some(raw)=f.source_created.as_deref(){if let Some(t)=time_from_ns(raw){if let Some(w)=preserve_creation_time(&tmp,Some(t)){state.files[i].timestamp_warning=Some(w);}}}if let Err(e)=fs::rename(&tmp,&dest){let _=fs::remove_file(&tmp);return Err(e.to_string());}append_journal(&root,serde_json::json!({"action":"transfer_completed","at":chrono::Utc::now().to_rfc3339(),"temp_path":tmp.to_string_lossy()}))?;}
+            if !dest.exists(){let tmp=dest.with_extension(format!("{}.partial",Uuid::new_v4()));append_journal(&root,serde_json::json!({"action":"transfer_started","at":chrono::Utc::now().to_rfc3339(),"temp_path":tmp.to_string_lossy(),"file_id":f.id,"client":client.clone()}))?;if let Err(e)=copy_with_heartbeat(&source,&tmp,&_lease,|_|{}){let _=fs::remove_file(&tmp);let _=append_journal(&root,serde_json::json!({"action":"transfer_completed","at":chrono::Utc::now().to_rfc3339(),"temp_path":tmp.to_string_lossy()}));return Err(e);}if let Some(t)=f.source_modified.as_deref().and_then(time_from_ns){if let Err(e)=filetime::set_file_mtime(&tmp,filetime::FileTime::from_system_time(t)){state.files[i].timestamp_warning=Some(format!("Could not preserve filed modification time: {e}"));}}if let Some(raw)=f.source_created.as_deref(){if let Some(t)=time_from_ns(raw){if let Some(w)=preserve_creation_time(&tmp,Some(t)){state.files[i].timestamp_warning=Some(w);}}}if let Err(e)=fs::rename(&tmp,&dest){let _=fs::remove_file(&tmp);return Err(e.to_string());}append_journal(&root,serde_json::json!({"action":"transfer_completed","at":chrono::Utc::now().to_rfc3339(),"temp_path":tmp.to_string_lossy()}))?;}
             if fs::metadata(&dest).map_err(|e|e.to_string())?.len()!=f.size || hash_with_lease(&dest,Some(_lease))?!=f.sha256 {
                 return Err(format!("Final NAS copy could not be verified: {}",dest.display()));
             }

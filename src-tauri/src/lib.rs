@@ -2,6 +2,7 @@ use libc::EXDEV;
 use chrono::Datelike;
 use notify::{Event, RecommendedWatcher, RecursiveMode, Watcher};
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::io::{self, Read, Write};
@@ -165,7 +166,7 @@ const FINAL_PROMOTION_RECORD: &str = ".pepper-final.json";
 const FINAL_PROMOTION_ATTEMPT: &str = ".pepper-publish-attempt.json";
 const PRODUCTION_PROJECTS_ROOT: &str = r"Z:\The Huddle\Production";
 const APPROVAL_PROGRESS_STALE_AFTER: Duration = Duration::from_secs(300);
-const APPROVAL_CANDIDATE_STALE_AFTER: Duration = Duration::from_secs(600);
+const UNVERSIONED_EXPORT_HANDOFF_WINDOW: Duration = Duration::from_secs(600);
 
 fn approval_progress_marker_is_active(marker_path: &Path) -> bool {
     fs::metadata(marker_path)
@@ -326,8 +327,7 @@ fn approval_progress_for_client(client_name: &str, client_path: &Path) -> Option
             }
             let metadata = entry.metadata().ok()?;
             let modified = metadata.modified().ok()?;
-            let age = std::time::SystemTime::now().duration_since(modified).ok()?;
-            (age <= APPROVAL_CANDIDATE_STALE_AFTER).then_some((modified, filename))
+            Some((modified, filename))
         })
         .collect();
     candidates.sort_by(|left, right| right.0.cmp(&left.0));
@@ -580,42 +580,30 @@ fn scan_video_versions(directory: &Path) -> Result<Vec<ExportVersion>, String> {
         directory,
         &directory.join("APPROVAL/PENDING"),
     )?);
-    // A recent source export is not a deliverable until its approval copy has
-    // been created. Keep it out of the version list during the watcher handoff;
-    // scan_approval_progress adds it as a pending spinner once processing starts.
+    // A source export is not a deliverable until its approval copy has been
+    // created. Keep it pending regardless of whether the watcher has created
+    // APPROVAL yet; scan_approval_progress exposes it with the pending spinner.
     let approval_dir = directory.join("APPROVAL");
-    if approval_dir.is_dir() {
-        files.retain(|file| {
-            let relative_path = Path::new(&file.relative_path);
-            let components: Vec<String> = relative_path
-                .components()
-                .map(|component| component.as_os_str().to_string_lossy().to_string())
-                .collect();
-            let is_source_root = components.len() == 1;
-            let is_pending_source = components.len() == 3
-                && components[0].eq_ignore_ascii_case("APPROVAL")
-                && components[1].eq_ignore_ascii_case("PENDING");
-            if !is_source_root && !is_pending_source {
-                return true;
-            }
-            let source = directory.join(&file.relative_path);
-            let Ok(modified) = fs::metadata(&source).and_then(|metadata| metadata.modified()) else {
-                return true;
-            };
-            let Ok(age) = std::time::SystemTime::now().duration_since(modified) else {
-                return true;
-            };
-            if age > APPROVAL_CANDIDATE_STALE_AFTER {
-                return true;
-            }
-            let stem = Path::new(&file.filename)
-                .file_stem()
-                .and_then(|value| value.to_str())
-                .unwrap_or_default();
-            let expected = format!("{stem}_APPROVAL_1080p_WM_TC.mp4");
-            approval_dir.join(expected).is_file()
-        });
-    }
+    files.retain(|file| {
+        let relative_path = Path::new(&file.relative_path);
+        let components: Vec<String> = relative_path
+            .components()
+            .map(|component| component.as_os_str().to_string_lossy().to_string())
+            .collect();
+        let is_source_root = components.len() == 1;
+        let is_pending_source = components.len() == 3
+            && components[0].eq_ignore_ascii_case("APPROVAL")
+            && components[1].eq_ignore_ascii_case("PENDING");
+        if !is_source_root && !is_pending_source {
+            return true;
+        }
+        let stem = Path::new(&file.filename)
+            .file_stem()
+            .and_then(|value| value.to_str())
+            .unwrap_or_default();
+        let expected = format!("{stem}_APPROVAL_1080p_WM_TC.mp4");
+        approval_dir.join(expected).is_file()
+    });
     let versioned_bases: HashSet<String> = files
         .iter()
         .filter_map(|file| {
@@ -639,7 +627,7 @@ fn scan_video_versions(directory: &Path) -> Result<Vec<ExportVersion>, String> {
                 .and_then(|metadata| metadata.modified())
                 .ok()?;
             let age = std::time::SystemTime::now().duration_since(modified).ok()?;
-            (age <= APPROVAL_CANDIDATE_STALE_AFTER).then(|| file.relative_path.clone())
+            (age <= UNVERSIONED_EXPORT_HANDOFF_WINDOW).then(|| file.relative_path.clone())
         })
         .collect();
     // While the watcher is qualifying a new raw export, keep the previous
@@ -1107,6 +1095,38 @@ fn files_match(left: &Path, right: &Path) -> io::Result<bool> {
     }
 }
 
+fn copy_with_sha256(source: &Path, destination: &Path) -> io::Result<(u64, String)> {
+    let mut input = fs::File::open(source)?;
+    let mut output = fs::File::create(destination)?;
+    let mut digest = Sha256::new();
+    let mut buffer = vec![0u8; 1024 * 1024];
+    let mut copied = 0u64;
+    loop {
+        let read = input.read(&mut buffer)?;
+        if read == 0 {
+            break;
+        }
+        output.write_all(&buffer[..read])?;
+        digest.update(&buffer[..read]);
+        copied += read as u64;
+    }
+    Ok((copied, format!("{:x}", digest.finalize())))
+}
+
+fn sha256_file(path: &Path) -> io::Result<String> {
+    let mut file = fs::File::open(path)?;
+    let mut digest = Sha256::new();
+    let mut buffer = vec![0u8; 1024 * 1024];
+    loop {
+        let read = file.read(&mut buffer)?;
+        if read == 0 {
+            break;
+        }
+        digest.update(&buffer[..read]);
+    }
+    Ok(format!("{:x}", digest.finalize()))
+}
+
 type FinalComparisonKey = (PathBuf, VideoFingerprint, PathBuf, VideoFingerprint);
 static FINAL_COMPARISONS: OnceLock<Mutex<HashMap<FinalComparisonKey, bool>>> = OnceLock::new();
 
@@ -1180,7 +1200,7 @@ fn promote_latest_export_for_client(
     .map_err(|error| format!("Unable to record FINAL publish attempt: {error}"))?;
     let source_before =
         fs::metadata(&source).map_err(|error| format!("Unable to read export: {error}"))?;
-    let copied = match fs::copy(&source, &stage) {
+    let (copied, source_digest) = match copy_with_sha256(&source, &stage) {
         Ok(copied) => copied,
         Err(error) => {
             let _ = fs::remove_file(&stage);
@@ -1197,7 +1217,8 @@ fn promote_latest_export_for_client(
         {
             return Ok(false);
         }
-        files_match(&source, &stage).map_err(|error| error.to_string())
+        let staged_digest = sha256_file(&stage).map_err(|error| error.to_string())?;
+        Ok(source_digest == staged_digest)
     })();
     match validation {
         Ok(true) => {}

@@ -1990,7 +1990,7 @@ export default function App() {
       } catch (err) {
         setPublishFailedClientPaths((current) => new Set(current).add(client.path));
         setError(`Publish failed: ${String(err)}`);
-        void refreshClients(undefined, false, true).catch((refreshError) => console.warn("Could not refresh failed publish status", refreshError));
+        void refreshClients(projectRoot, false, true, false, [client.name]).catch((refreshError) => console.warn("Could not refresh failed publish status", refreshError));
         return;
       }
       setPublishFailedClientPaths((current) => {
@@ -2001,7 +2001,7 @@ export default function App() {
       showToast(message, "success");
       setPublishingStage("refreshing");
       try {
-        await refreshClients(undefined, false, true);
+        await refreshClients(projectRoot, false, true, false, [client.name]);
       } catch (err) {
         setError(`Published, but project status could not refresh: ${String(err)}`);
       }
