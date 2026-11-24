@@ -24,6 +24,17 @@ const signature = (tasks: Task[]) => JSON.stringify(tasks);
 const makeTask = (): Task => ({ id: crypto.randomUUID(), text: '', completed: false, references: [] });
 const isDraft = (task: Task) => !task.completed && !task.text.trim() && !(task.references || []).length;
 const orderTasks = (tasks: Task[]) => [...tasks.filter(task => !task.completed), ...tasks.filter(task => task.completed)];
+const prepareLoadedTasks = (saved: Task[]) => {
+  let loadedTasks = orderTasks(saved.map(task => ({ ...task, references: task.references || [] })));
+  const originalSignature = signature(loadedTasks);
+  const legacyMarkers = loadedTasks.filter(task => !task.text.trim() && task.references.length > 0 && task.references.every(reference => reference.timecode.trim()));
+  for (const markerTask of legacyMarkers) {
+    const path = markerTask.references[0]?.relative_path;
+    const owner = loadedTasks.find(task => task.id !== markerTask.id && task.references.some(reference => reference.relative_path === path && !reference.timecode.trim()));
+    if (owner) loadedTasks = loadedTasks.map(task => task.id === owner.id ? { ...task, references: [...task.references, ...markerTask.references] } : task).filter(task => task.id !== markerTask.id);
+  }
+  return { tasks: normalizeTasks(orderTasks(loadedTasks)), originalSignature };
+};
 const normalizeTasks = (tasks: Task[]) => {
   const draft = [...tasks].reverse().find(isDraft) || makeTask();
   return [...tasks.filter(task => !task.completed && !isDraft(task)), draft, ...tasks.filter(task => task.completed)];
@@ -77,28 +88,53 @@ export function ClientEditNotes({ clientPath, activePreviewId, activePreviewPath
   const nativeBusy = useRef(false);
   const cursor = useRef<{ id: string; position: number } | null>(null);
   const lastSaved = useRef<string | null>(null);
+  const tasksRef = useRef(tasks);
+  const saveInFlight = useRef(false);
+  tasksRef.current = tasks;
 
   useEffect(() => {
     let current = true;
     setLoaded(false); setTasks([]); setError(''); setStatus('saved'); setMention(null); setMentionFile(null);
     void invoke<Task[]>('client_edit_notes_load', { clientPath }).then(saved => {
       if (!current) return;
-      let loadedTasks = orderTasks(saved.map(task => ({ ...task, references: task.references || [] })));
-      const originalSignature = signature(loadedTasks);
-      const legacyMarkers = loadedTasks.filter(task => !task.text.trim() && task.references.length > 0 && task.references.every(reference => reference.timecode.trim()));
-      for (const markerTask of legacyMarkers) {
-        const path = markerTask.references[0]?.relative_path;
-        const owner = loadedTasks.find(task => task.id !== markerTask.id && task.references.some(reference => reference.relative_path === path && !reference.timecode.trim()));
-        if (owner) loadedTasks = loadedTasks.map(task => task.id === owner.id ? { ...task, references: [...task.references, ...markerTask.references] } : task).filter(task => task.id !== markerTask.id);
-      }
-      const ordered = orderTasks(loadedTasks);
-      lastSaved.current = originalSignature; setTasks(normalizeTasks(ordered)); setLoaded(true);
+      const prepared = prepareLoadedTasks(saved);
+      lastSaved.current = prepared.originalSignature; setTasks(prepared.tasks); setLoaded(true);
     }).catch(reason => { if (current) { setError(String(reason)); setStatus('error'); } });
     void invoke<Listing>('client_files_list', { clientPath, category: 'all' })
       .then(listing => { if (current) setFiles(listing.files.filter(file => file.kind !== 'project')); })
       .catch(() => { /* Notes remain usable when media folders are unavailable. */ });
     return () => { current = false; if (timer.current) clearTimeout(timer.current); };
   }, [clientPath]);
+
+  // Refresh shared notes while this tab is open. Never replace local state while
+  // there are edits waiting to save or a save is in progress, so remote updates
+  // cannot interrupt typing or erase this tab's pending changes.
+  useEffect(() => {
+    if (!loaded) return;
+    let current = true;
+    let polling = false;
+    const refresh = async () => {
+      if (polling || saveInFlight.current || timer.current !== null
+        || signature(savedTasks(tasksRef.current)) !== lastSaved.current) return;
+      polling = true;
+      try {
+        const saved = await invoke<Task[]>('client_edit_notes_load', { clientPath });
+        if (!current || saveInFlight.current || timer.current !== null
+          || signature(savedTasks(tasksRef.current)) !== lastSaved.current) return;
+        const prepared = prepareLoadedTasks(saved);
+        if (prepared.originalSignature !== lastSaved.current) {
+          lastSaved.current = prepared.originalSignature;
+          setTasks(prepared.tasks);
+        }
+      } catch {
+        // Keep the current notes visible during temporary shared-folder errors.
+      } finally {
+        polling = false;
+      }
+    };
+    const interval = window.setInterval(() => { void refresh(); }, 2000);
+    return () => { current = false; window.clearInterval(interval); };
+  }, [clientPath, loaded]);
 
   useEffect(() => {
     if (!mention) return;
@@ -120,9 +156,12 @@ export function ClientEditNotes({ clientPath, activePreviewId, activePreviewPath
     if (lastSaved.current === current) return;
     if (timer.current) clearTimeout(timer.current);
     timer.current = setTimeout(() => {
+      timer.current = null;
+      saveInFlight.current = true;
       setStatus('saving');
       void invoke('client_edit_notes_save', { clientPath, tasks: currentTasks }).then(() => { lastSaved.current = current; setStatus('saved'); setError(''); })
-        .catch(reason => { setError(String(reason)); setStatus('error'); });
+        .catch(reason => { setError(String(reason)); setStatus('error'); })
+        .finally(() => { saveInFlight.current = false; });
     }, 700);
     return () => { if (timer.current) clearTimeout(timer.current); };
   }, [clientPath, loaded, tasks]);
