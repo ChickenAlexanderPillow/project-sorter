@@ -1,12 +1,12 @@
 import { NeutralVideoSkin, Video, VideoPlayer, usePlayer } from "@videojs/react/video";
 import "@videojs/react/video/neutral-skin.css";
-import { useEffect, useLayoutEffect, useRef, useState, type MouseEvent } from "react";
-import { createPortal } from 'react-dom';
+import { useEffect, useLayoutEffect, useRef, type MouseEvent } from "react";
+import { TimelineNotes, type NoteTimelineProps } from './TimelineNotes';
 
 import { MediaTransition } from './MediaTransition';
 import { captureVideoPoster,videoPosters } from './videoPosters';
 
-type InlineVideoPlayerProps = {
+type InlineVideoPlayerProps = NoteTimelineProps & {
   src: string;
   poster?:string;
   posterPath?:string;
@@ -17,7 +17,7 @@ type InlineVideoPlayerProps = {
   onReady?:()=>void;
   seekTo?:number;
   onPlaybackTimeChange?:(currentTime:number,duration:number)=>void;
-  timelineMarkers?:{seconds:number;timecode:string;key:string;onSelect:()=>void}[];
+
 };
 
 const PLAYBACK_RATES = [1, 2, 4];
@@ -50,11 +50,10 @@ export function InlineVideoPlayer(props: InlineVideoPlayerProps) {
   return <MediaTransition source={props.src} onError={props.onError} render={(src,onReady,onError)=><VideoSurface {...props} src={src} onReady={onReady} onError={onError}/>}/>;
 }
 
-function VideoSurface({ src, poster, posterPath, className, onContextMenu, onError, onReady, compact = false, seekTo, onPlaybackTimeChange, timelineMarkers=[] }: InlineVideoPlayerProps) {
+function VideoSurface({ src, poster, posterPath, className, onContextMenu, onError, onReady, compact = false, seekTo, onPlaybackTimeChange, timelineMarkers=[], onAddTimestamp }: InlineVideoPlayerProps) {
   const owner=useRef(Symbol('selected video'));
   const media=useRef<HTMLVideoElement>(null);
   const skin=useRef<HTMLDivElement>(null);
-  const [timeline,setTimeline]=useState<HTMLElement|null>(null);
   const playbackCallback=useRef(onPlaybackTimeChange);
   playbackCallback.current=onPlaybackTimeChange;
   useEffect(()=>{
@@ -68,15 +67,6 @@ function VideoSurface({ src, poster, posterPath, className, onContextMenu, onErr
     const video=media.current;
     if(video&&seekTo!==undefined&&Number.isFinite(seekTo)&&Math.abs(video.currentTime-seekTo)>.05)video.currentTime=Math.max(0,Math.min(seekTo,Number.isFinite(video.duration)?video.duration:seekTo));
   },[seekTo,src]);
-  useEffect(()=>{
-    const root=skin.current;
-    if(!root)return;
-    let active=true;
-    const find=()=>{const next=root.querySelector<HTMLElement>('.media-time-slider');if(active&&next)setTimeline(next);};
-    find();
-    const observer=new MutationObserver(find);observer.observe(root,{childList:true,subtree:true});
-    return()=>{active=false;observer.disconnect();setTimeline(null);};
-  },[src]);
   useLayoutEffect(()=>{
     if(!posterPath)return;
     const key=owner.current;
@@ -107,7 +97,7 @@ function VideoSurface({ src, poster, posterPath, className, onContextMenu, onErr
 
           {!compact && <PlaybackSpeedButton />}
         </NeutralVideoSkin>
-        {timeline&&timelineMarkers.length>0&&createPortal(<div className="pepper-timeline-markers">{timelineMarkers.map(marker=>{const jump=()=>{if(media.current)media.current.currentTime=marker.seconds;marker.onSelect();};return <button key={marker.key} type="button" aria-label={`Jump to ${marker.timecode}`} style={{left:`${Math.max(0,Math.min(100,marker.seconds/(Number(media.current?.duration)||1)*100))}%`}} onPointerDown={event=>{event.preventDefault();event.stopPropagation();jump();}} onClick={event=>{event.preventDefault();event.stopPropagation();if(event.detail===0)jump();}}><i/><span>{marker.timecode}</span></button>})}</div>,timeline)}
+        <TimelineNotes root={skin} timelineMarkers={timelineMarkers} onAddTimestamp={onAddTimestamp}/>
       </div>
     </VideoPlayer>
   );

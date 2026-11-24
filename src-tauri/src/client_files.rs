@@ -232,6 +232,8 @@ pub struct ClientEditNoteReference {
     relative_path: String,
     name: String,
     timecode: String,
+    #[serde(default)]
+    text: String,
 }
 
 #[cfg(not(windows))]

@@ -1,6 +1,6 @@
 import { Fragment, useCallback, useEffect, useRef, useState, type MouseEvent, type PointerEvent } from 'react';
 import { invoke } from '@tauri-apps/api/core';
-import { ArrowUpRight, ChartNoAxesGantt, Clock3, Files, CircleAlert, FileVideo, FolderOpen, Headphones, Image, LoaderCircle, Package, RefreshCw, Search, SquarePen, X } from 'lucide-react';
+import { ArrowUpRight, ChartNoAxesGantt, Files, CircleAlert, FileVideo, FolderOpen, Headphones, Image, LoaderCircle, Package, RefreshCw, Search, SquarePen, X } from 'lucide-react';
 import { selectFilePaths } from './fileSelection';
 import { startNativeFileDrag } from './nativeFileDrag';
 import { mediaRoleIcon } from './MediaTypes';
@@ -8,8 +8,8 @@ import { SourceMediaPreview } from './SourceMediaPreview';
 import { previewPreparation } from './previewPreparation';
 import { videoPosters } from './videoPosters';
 import { useVisibleVideoPaths } from './useVisibleVideoPaths';
-import { PremiereProjectHealth } from './PremiereProjectHealth';
-import { ClientEditNotes, type ClientNotePreview } from './ClientEditNotes';
+import { ProjectHealthIndicator, PremiereProjectHealth } from './PremiereProjectHealth';
+import { ClientEditNotes, type ClientNotePreview, type ClientNoteMarker } from './ClientEditNotes';
 
 import { clientRecordingFiles, clientOverlapGroups, clientAssetCategory, clientFileTooltip, type ClientAsset as Asset, type ClientRecordingAsset } from './clientFileGroups';
 import { RecordingTimeline, RecordingPill, type RecordingPlacement } from './RecordingTimeline';
@@ -54,32 +54,25 @@ export function ClientFiles({projectRoot,clientPath,onContextMenu}:{projectRoot:
   const [hasStills,setHasStills]=useState(false);
   const [hasStock,setHasStock]=useState(false);
   const [notePreview,setNotePreview]=useState<ClientNotePreview|null>(null);
+  const [healthPath,setHealthPath]=useState<string|null>(null);
   const [playback,setPlayback]=useState({currentTime:0,duration:0});
   const [previewSeek,setPreviewSeek]=useState<number|undefined>(undefined);
   const previewPane=useRef<HTMLElement>(null);
   const autoSeekKey=useRef<string|null>(null);
-  useEffect(()=>{setNotePreview(null);},[clientPath]);
-  useEffect(()=>{if(displaySection!=='edit')setNotePreview(null);},[displaySection]);
-  useEffect(()=>{
-    if(!notePreview)return;
-    const outside=(event:globalThis.PointerEvent)=>{
-      const target=event.target as Element;
-      if(previewPane.current?.contains(target)||target.closest('.cen-ref-label'))return;
-      setNotePreview(null);
-    };
-    document.addEventListener('pointerdown',outside);
-    return()=>document.removeEventListener('pointerdown',outside);
-  },[notePreview]);
+  useEffect(()=>{setNotePreview(null);setHealthPath(null);},[clientPath]);
+  useEffect(()=>{if(displaySection!=='edit'){setNotePreview(null);setHealthPath(null);}},[displaySection]);
   const activePreviewKey=notePreview?`${notePreview.taskId}:${notePreview.referenceId}:${notePreview.path}`:null;
-  useEffect(()=>{setPlayback({currentTime:0,duration:0});setPreviewSeek(undefined);autoSeekKey.current=null;},[activePreviewKey]);
+  useEffect(()=>{setPlayback({currentTime:0,duration:0});setPreviewSeek(undefined);autoSeekKey.current=null;},[notePreview?.path]);
   const reportPreviewTime=useCallback((currentTime:number,duration:number)=>{
     setPlayback({currentTime,duration});
     if(!notePreview||duration<=0||autoSeekKey.current===activePreviewKey)return;
     autoSeekKey.current=activePreviewKey;
-    const first=notePreview.markers.map(marker=>timestampSeconds(marker.timecode)).filter((value):value is number=>value!==null&&value<=duration).sort((a,b)=>a-b)[0];
+    const selectedTime=timestampSeconds(notePreview.timecode);
+    const first=selectedTime!==null&&selectedTime<=duration?selectedTime:notePreview.markers.map(marker=>timestampSeconds(marker.timecode)).filter((value):value is number=>value!==null&&value<=duration).sort((a,b)=>a-b)[0];
     if(first!==undefined){setPreviewSeek(first);setPlayback({currentTime:first,duration});}
   },[activePreviewKey,notePreview]);
-  const selectNotePreview=(preview:ClientNotePreview|null)=>{setNotePreview(preview);setPlayback({currentTime:0,duration:0});setPreviewSeek(undefined);};
+  const syncNoteMarkers=useCallback((markers:ClientNoteMarker[])=>setNotePreview(current=>current?{...current,markers}:null),[]);
+  const selectNotePreview=(preview:ClientNotePreview|null)=>{setHealthPath(null);setNotePreview(preview);if(preview?.path!==notePreview?.path){setPlayback({currentTime:0,duration:0});setPreviewSeek(undefined);}else if(preview){const seconds=timestampSeconds(preview.timecode);if(seconds!==null){setPreviewSeek(seconds);setPlayback(current=>({...current,currentTime:seconds}));}}};
   useEffect(()=>{
     let active=true;
     void Promise.all(['stills','stock'].map(category=>invoke<Listing>('client_files_list',{clientPath,category}))).then(([stills,stock])=>{if(active){setHasStills(stills.files.length>0);setHasStock(stock.files.length>0);if(!stills.files.length||!stock.files.length)setSection(current=>current==='stills'&&!stills.files.length||current==='stock'&&!stock.files.length?'edit':current);}}).catch(()=>{});
@@ -154,31 +147,24 @@ export function ClientFiles({projectRoot,clientPath,onContextMenu}:{projectRoot:
     if(opening)return;setOpening(true);setError('');
     try{await invoke('client_files_open_project',{clientPath,path:file.path});}catch(error){setError(String(error));}finally{setOpening(false);}
   };
-  const fileRow=(file:ClientRecordingAsset,placement?:RecordingPlacement)=>{const Icon=file.kind==='project'?SquarePen:file.kind==='audio'?Headphones:file.kind==='image'?Image:FileVideo;const duplicate=(nameCounts.get(`${file.variant}/${file.name.toLowerCase()}`)||0)>1;const parent=duplicate?file.relative_path.replace(/[\\/][^\\/]*$/,''):'';const detail=parent&&parent!==file.name?parent:'';const fileButton=<button type="button" className={`cf-file ${visibleSelection.includes(file.path)?'selected':''} ${placement?'cf-interval-file':''}`} key={file.path} data-preview-path={file.path} data-preview-kind={file.kind} aria-pressed={visibleSelection.includes(file.path)} title={clientFileTooltip(file)} onContextMenu={event=>{if(!visibleSelection.includes(file.path))choose(file);onContextMenu(event,file.name,[...(file.kind==='project'?[{label:projectAction(file.name),action:()=>void openProject(file)}]:[]),{label:'Open file location',action:()=>void openFileLocation(file.path)}]);}} onPointerEnter={()=>{if(file.kind!=='project'){setHoveredPath(file.path);void previewPreparation.prepare(file.path).catch(()=>{});}}} onFocus={()=>{if(file.kind!=='project'){setHoveredPath(file.path);void previewPreparation.prepare(file.path).catch(()=>{});}}} onPointerDown={event=>pointerDown(event,file)} onPointerMove={pointerMove} onPointerUp={()=>{pointer.current=null;}} onPointerCancel={()=>{pointer.current=null;}} onDragStart={event=>event.preventDefault()} onClick={event=>{
+  const fileRow=(file:ClientRecordingAsset,placement?:RecordingPlacement)=>{const Icon=file.kind==='project'?SquarePen:file.kind==='audio'?Headphones:file.kind==='image'?Image:FileVideo;const duplicate=(nameCounts.get(`${file.variant}/${file.name.toLowerCase()}`)||0)>1;const parent=duplicate?file.relative_path.replace(/[\\/][^\\/]*$/,''):'';const detail=parent&&parent!==file.name?parent:'';const fileButton=<button type="button" className={`cf-file ${visibleSelection.includes(file.path)?'selected':''} ${placement?'cf-interval-file':''}`} key={file.path} data-preview-path={file.path} data-preview-kind={file.kind} aria-pressed={visibleSelection.includes(file.path)} title={clientFileTooltip(file)} onContextMenu={event=>{if(!visibleSelection.includes(file.path))choose(file);onContextMenu(event,file.name,[...(file.kind==='project'?[{label:projectAction(file.name),action:()=>void openProject(file)}]:[]),...(file.name.toLowerCase().endsWith('.prproj')?[{label:'Check media',action:()=>{setNotePreview(null);setHealthPath(file.path);}}]:[]),{label:'Open file location',action:()=>void openFileLocation(file.path)}]);}} onPointerEnter={()=>{if(file.kind!=='project'){setHoveredPath(file.path);void previewPreparation.prepare(file.path).catch(()=>{});}}} onFocus={()=>{if(file.kind!=='project'){setHoveredPath(file.path);void previewPreparation.prepare(file.path).catch(()=>{});}}} onPointerDown={event=>pointerDown(event,file)} onPointerMove={pointerMove} onPointerUp={()=>{pointer.current=null;}} onPointerCancel={()=>{pointer.current=null;}} onDragStart={event=>event.preventDefault()} onClick={event=>{
               if(dragged.current){dragged.current=false;return;}
               if(event.detail===0||(!event.shiftKey&&!event.ctrlKey&&!event.metaKey))choose(file,event.shiftKey,event.ctrlKey||event.metaKey);
             }} onDoubleClick={()=>{if(!dragged.current&&file.kind==='project')void openProject(file);}}><Icon size={15}/><span>{file.name}</span>{placement?<RecordingPill {...placement}/>:detail&&<small>{detail}</small>}</button>;
-            return displaySection==='edit'?<div className={`cf-project-row ${visibleSelection.includes(file.path)?'selected':''} ${placement?'cf-interval-file':''}`} key={file.path}>
+    return displaySection==='edit'?<div className={`cf-project-row ${visibleSelection.includes(file.path)?'selected':''} ${placement?'cf-interval-file':''}`} key={file.path}>
               {fileButton}
+              {file.name.toLowerCase().endsWith('.prproj')&&<ProjectHealthIndicator key={`${file.path}:${file.modified_ms}:${revision}`} projectRoot={projectRoot} clientPath={clientPath} projectPath={file.path} onClick={()=>{setNotePreview(null);setHealthPath(current=>current===file.path?null:file.path);}}/>}
               <div className="cf-row-actions" role="group" aria-label={`Actions for ${file.name}`}>
                 <button type="button" title="Open file location" aria-label={`Open file location for ${file.name}`} onClick={()=>void openFileLocation(file.path)}><FolderOpen size={14}/></button>
                 <button type="button" title={projectAction(file.name)} aria-label={`${projectAction(file.name)}: ${file.name}`} disabled={opening} onClick={()=>void openProject(file)}><ArrowUpRight size={14}/><span>Open</span></button>
               </div>
             </div>:fileButton;};
-  const noteMarkers=notePreview?notePreview.markers.map(marker=>({ ...marker, seconds:timestampSeconds(marker.timecode) })).filter((marker):marker is typeof marker & {seconds:number}=>marker.seconds!==null&&marker.seconds<=playback.duration).sort((a,b)=>a.seconds-b.seconds):[];
-  const previewTimelineMarkers=noteMarkers.map(marker=>({seconds:marker.seconds,timecode:marker.timecode,key:`${marker.taskId}:${marker.referenceId}`,onSelect:()=>{setPreviewSeek(marker.seconds);setPlayback(current=>({...current,currentTime:marker.seconds}));}}));
+  const noteMarkers=notePreview?notePreview.markers.map(marker=>({ ...marker, seconds:timestampSeconds(marker.timecode) })).filter((marker):marker is typeof marker & {seconds:number}=>marker.seconds!==null&&(!playback.duration||marker.seconds<=playback.duration)).sort((a,b)=>a.seconds-b.seconds):[];
+  const previewTimelineMarkers=noteMarkers.map(marker=>({seconds:marker.seconds,timecode:marker.timecode,text:marker.text,onEditNote:(text:string)=>notePreview?.editNote(marker.taskId,marker.referenceId,text),key:`${marker.taskId}:${marker.referenceId}`,selected:notePreview?.taskId===marker.taskId&&notePreview?.referenceId===marker.referenceId,onEdit:(value:string)=>{notePreview?.editTimestamp(marker.taskId,marker.referenceId,value);setNotePreview(current=>current?{...current,markers:value?current.markers.map(item=>item.taskId===marker.taskId&&item.referenceId===marker.referenceId?{...item,timecode:value}:item):current.markers.filter(item=>item.taskId!==marker.taskId||item.referenceId!==marker.referenceId)}:null);},onSelect:()=>{notePreview?.revealMarker(marker.taskId,marker.referenceId);setNotePreview(current=>current?{...current,taskId:marker.taskId,referenceId:marker.referenceId,timecode:marker.timecode}:null);setPreviewSeek(marker.seconds);setPlayback(current=>({...current,currentTime:marker.seconds}));}}));
   const notePreviewPane=notePreview&&<aside ref={previewPane} className="cf-preview cf-note-preview" aria-label="Media preview">
     <header className="cf-preview-heading"><strong title={notePreview.path}>{notePreview.name}</strong><button type="button" aria-label="Close media preview" onClick={()=>setNotePreview(null)}><X size={13}/></button></header>
-    <div className="cf-preview-content">{['audio','image','video'].includes(notePreview.kind)?<SourceMediaPreview path={notePreview.path} name={notePreview.name} showHeading={false} seekTo={previewSeek} onPlaybackTimeChange={reportPreviewTime} timelineMarkers={previewTimelineMarkers}/>:<div className="cf-empty"><FileVideo size={24}/><span>Preview unavailable for this file type</span></div>}</div>
-    {(notePreview.kind==='audio'||notePreview.kind==='video')&&<footer className="cf-note-preview-controls">
-      <label><Clock3 size={13}/><output>{timestamp(playback.currentTime)}</output><span>/ {timestamp(playback.duration)}</span></label>
-      <div><span>{notePreview.timecode?`On note · ${notePreview.timecode}`:'Choose a point in the preview'}</span><button type="button" disabled={!playback.duration} onClick={()=>{const value=timestamp(playback.currentTime);notePreview.setTimecode(value);setNotePreview(current=>{
-        if(!current||current.taskId!==notePreview.taskId||current.referenceId!==notePreview.referenceId)return current;
-        const marker={taskId:notePreview.taskId,referenceId:notePreview.referenceId,timecode:value};
-        const markers=current.markers.filter(item=>item.taskId!==marker.taskId||item.referenceId!==marker.referenceId);
-        return {...current,timecode:value,markers:[...markers,marker]};
-      });}}>Use timestamp</button></div>
-    </footer>}
+    <div className="cf-preview-content">{['audio','image','video'].includes(notePreview.kind)?<SourceMediaPreview path={notePreview.path} name={notePreview.name} showHeading={false} seekTo={previewSeek} onPlaybackTimeChange={reportPreviewTime} timelineMarkers={previewTimelineMarkers} onAddTimestamp={seconds=>{const value=timestamp(seconds);if(notePreview.markers.some(marker=>marker.timecode===value))return;const marker=notePreview.addTimestamp(value);setNotePreview(current=>current?{...current,markers:[...current.markers,marker]}:null);}}/>:<div className="cf-empty"><FileVideo size={24}/><span>Preview unavailable for this file type</span></div>}</div>
+
   </aside>;
   return <><section className={`client-files ${displaySection==='edit'?'cf-edit':''}`} aria-label="Client files">
     <header className="cf-toolbar">
@@ -191,9 +177,9 @@ export function ClientFiles({projectRoot,clientPath,onContextMenu}:{projectRoot:
 
       </div>
     </header>
-    <div className="cf-body">
+    <div className={`cf-body ${displaySection==='edit'&&(notePreview||healthPath)?'has-details':''}`}>
     {error&&<div className="cf-error" role="alert"><CircleAlert size={15}/><span>{error}</span></div>}
-    {displaySection==='edit'&&<div className={`cen-top-wrap ${notePreview?'with-preview':''}`}><ClientEditNotes key={clientPath} clientPath={clientPath} activePreviewId={notePreview?`${notePreview.taskId}:${notePreview.referenceId}`:null} onPreviewChange={selectNotePreview}/>{notePreviewPane}</div>}
+    {displaySection==='edit'&&<div className="cen-top-wrap"><ClientEditNotes key={clientPath} clientPath={clientPath} activePreviewId={notePreview?`${notePreview.taskId}:${notePreview.referenceId}`:null} activePreviewPath={notePreview?.path ?? null} onPreviewChange={selectNotePreview} onMarkersChange={syncNoteMarkers}/>{(notePreview||healthPath)&&<aside className="cf-edit-sidepane" aria-label="Edit details">{notePreview?notePreviewPane:null}{healthPath&&listing?.files.find(file=>file.path===healthPath)&&<PremiereProjectHealth key={healthPath} projectRoot={projectRoot} clientPath={clientPath} projectPath={healthPath} onClose={()=>setHealthPath(null)}/>}</aside>}</div>}
     {loading&&!listing?<div className="cf-loading" role="status"><LoaderCircle size={19} className="cf-spin"/><span>Opening {category.name.toLowerCase()}…</span></div>:!listing?null:!listing.files.length?<div className="cf-empty"><category.Icon size={29}/><strong>No {displaySection==='edit'?'editing projects':category.name.toLowerCase()} yet</strong></div>:<div className="cf-layout">
       <div className="cf-list-pane" aria-busy={loading}><div className="cf-list-summary"><span>{query?`${visible.length} of ${listing.files.length}`:listing.files.length} {displaySection==='edit'?(listing.files.length===1?'project':'projects'):(listing.files.length===1?'file':'files')}</span>{listing.truncated&&<span title="Open the folder to see the full collection">First 2,000 shown</span>}</div>
         <div className="cf-list" ref={fileList} tabIndex={0} onKeyDown={event=>{
@@ -204,9 +190,6 @@ export function ClientFiles({projectRoot,clientPath,onContextMenu}:{projectRoot:
           {!visible.length&&<div className="cf-no-results">No matching files</div>}
         </div>
       </div>
-      {displaySection==='edit'&&<aside className="cf-project-sidebar" aria-label="Selected project media check">
-        {selected&&(loading?<div className="cf-loading" role="status"><LoaderCircle size={18} className="cf-spin"/>Loading project?</div>:selected.name.toLowerCase().endsWith('.prproj')?<PremiereProjectHealth key={`${clientPath}/${selected.path}/${selected.modified_ms}/${revision}`} projectRoot={projectRoot} clientPath={clientPath} projectPath={selected.path}/>:<div className="cf-health-unsupported"><h3>Project health</h3><p>Media checks are available for Premiere Pro projects.</p></div>)}
-      </aside>}
       {displaySection!=='edit'&&selected?.kind==='project'&&<aside className="cf-project-sidebar" aria-label={`Project health for ${selected.name}`}>
         {loading?<div className="cf-loading" role="status"><LoaderCircle size={18} className="cf-spin"/>Loading project?</div>:selected.name.toLowerCase().endsWith('.prproj')?<PremiereProjectHealth key={`${clientPath}/${selected.path}/${selected.modified_ms}/${revision}`} projectRoot={projectRoot} clientPath={clientPath} projectPath={selected.path}/>:<div className="cf-health-unsupported"><h3>Project health</h3><p>Media checks are available for Premiere Pro projects.</p></div>}
       </aside>}

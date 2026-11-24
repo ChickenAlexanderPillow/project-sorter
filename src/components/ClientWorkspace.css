@@ -65,13 +65,15 @@
 @media(max-width:760px){.cf-toolbar{flex-wrap:wrap;gap:8px}.cf-layout{grid-template-columns:minmax(140px,.8fr) minmax(0,1fr);gap:10px}.cf-preview{max-width:100%}.cf-sections>button{gap:4px;padding:6px}.cf-tools input{width:90px}}
 /* Project rows share the media list treatment, with actions alongside the filename. */
 .cf-edit .cf-body{height:auto;display:flex;flex-direction:column;gap:10px}
-.cf-edit .cf-layout{display:grid;grid-template-columns:minmax(240px,1fr) minmax(0,1.2fr);flex:none;align-items:start;overflow:hidden}
+.cf-edit .cf-layout{display:block;flex:none;overflow:hidden}
 .cf-edit .cf-list-pane{height:auto;width:100%;max-height:390px}
 .cf-edit .cf-list{flex:1;min-height:0;max-height:364px}
 .cf-edit .cf-empty,.cf-edit .cf-loading{min-height:120px}
 .cf-project-row{display:flex;align-items:center;gap:4px;min-width:0;border-radius:var(--pepper-radius-control)}
 .cf-project-row:hover{background:#292929}
 .cf-project-row.selected,.cf-project-row.selected:hover{background:#343434}
+.cf-health-indicator{display:grid;place-items:center;width:26px;height:26px;min-height:26px;border:0;background:transparent;color:#a98d57;cursor:pointer}
+.cf-health-indicator:hover{color:#e2bb68;background:#3b352a}
 .cf-project-row>.cf-file{flex:1;min-width:0;width:auto}
 .cf-project-row>.cf-file,.cf-project-row>.cf-file:hover:not(:disabled),.cf-project-row>.cf-file.selected,.cf-project-row>.cf-file.selected:hover:not(:disabled){background:transparent}
 .cf-row-actions{display:flex;align-items:center;gap:2px;flex-shrink:0;padding-right:5px}
@@ -110,13 +112,6 @@
 .cen-task-row input:focus{color:#f0f0f0}
 .cen-task-row.completed input{color:#858585;text-decoration:line-through}
 .cen-ref-list{display:flex;flex-wrap:wrap;gap:4px;padding:0 0 4px}
-.cen-ref-chip{display:inline-flex;align-items:center;max-width:100%;overflow:hidden;border:1px solid #414141;border-radius:4px;background:#2a2a2a}
-.cen-ref-label{display:flex;align-items:center;gap:5px;min-width:0;max-width:270px;padding:4px 6px;border:0;background:transparent;color:#c4c4c4;font-size:9px;text-align:left}
-.cen-ref-label:hover:not(:disabled){background:#373737;color:#fff}
-.cen-ref-label:disabled{opacity:.5}
-.cen-ref-label>svg{flex:none;color:#929292}
-.cen-ref-label>span{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-.cen-ref-label time{color:#999;font-variant-numeric:tabular-nums}
 .cen-ref-drag{display:grid;place-items:center;width:23px;height:23px;min-height:23px;padding:3px;border:0;border-left:1px solid #414141;background:transparent;color:#888;cursor:grab;touch-action:none}
 .cen-ref-drag:hover:not(:disabled){background:#3a3a3a;color:#eee}
 .cen-ref-drag:active{cursor:grabbing}
@@ -196,3 +191,174 @@
 .client-files:not(.cf-edit) .cf-project-sidebar{min-height:0;max-height:100%;overflow:auto;scrollbar-width:thin}
 .cf-overlap-type{font-size:9px;font-weight:500;color:#818181;margin:3px 9px 2px;padding:3px 0}
 .cf-overlap-kind+.cf-overlap-kind{margin-top:8px}
+
+/* Edit uses a single column with one optional detail pane. */
+.cf-edit .cf-body{position:relative;display:block}
+.cf-edit .cen-top-wrap{margin-bottom:14px}
+.cf-edit .cf-body.has-details{display:grid;grid-template-columns:minmax(0,1fr) minmax(280px,38%);column-gap:18px;align-items:start}
+.cf-edit .has-details>.cen-top-wrap{display:contents}
+.cf-edit .has-details .cen-panel{grid-column:1;grid-row:1;margin-bottom:14px}
+.cf-edit .has-details>.cf-layout{grid-column:1;grid-row:2}
+.cf-edit .cf-edit-sidepane{grid-column:2;grid-row:1 / span 3;min-width:0;max-height:520px;overflow:auto;border-left:1px solid #383838;padding-left:14px;scrollbar-width:thin}
+.cf-edit .cf-note-preview{width:100%;height:320px}
+.cen-panel{border:0;border-radius:0;background:transparent;padding:0 0 12px;border-bottom:1px solid #383838}
+.cen-heading{min-height:32px}
+.cen-heading-actions .cen-save-status.saved{animation:cen-saved-fade 2.5s forwards}
+@keyframes cen-saved-fade{0%,60%{opacity:1}100%{opacity:0}}
+.cen-completed-toggle{display:flex;align-items:center;gap:5px;padding:5px 3px;border:0;background:transparent;color:#888;font-size:10px}
+.cen-completed-toggle:hover{color:#ddd}
+.cf-row-actions{margin-left:auto}
+.cf-health-indicator{display:flex;align-items:center;justify-content:center;gap:4px;width:auto;min-width:28px;font-size:10px;padding:4px 6px;border-radius:4px}
+.cf-health-indicator.healthy{color:#8e9d91}
+.cf-health-indicator.missing{color:#dc8f86}
+.cf-health-indicator.attention{color:#d1b078}
+.cf-health-indicator.unknown{color:#888}
+.cf-health-indicator:focus-visible{outline:1px solid var(--pepper-focus);outline-offset:2px}
+.cf-edit .pph-header h3{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;min-width:0}
+.cf-edit .pph-header-actions{flex-shrink:0}
+@media(max-width:760px){.cf-edit .cf-body.has-details{display:flex;flex-direction:column}.cf-edit .has-details>.cen-top-wrap{display:contents}.cf-edit .cf-edit-sidepane{order:2;width:100%;box-sizing:border-box;border-left:0;border-top:1px solid #383838;padding:12px 0;margin-bottom:12px}.cf-edit .has-details>.cf-layout{order:3;width:100%}.cf-edit .has-details .cen-panel{width:100%;box-sizing:border-box}}
+
+.cen-task-row{grid-template-columns:19px minmax(0,1fr) 24px 25px}
+.cen-task-row textarea{display:block;box-sizing:border-box;width:100%;min-height:27px;max-height:160px;resize:none;overflow:auto;padding:5px 2px;border:0;outline:0;background:transparent;color:#d0d0d0;font-family:inherit;font-size:11px;line-height:17px;field-sizing:content}
+.cen-task-row textarea::placeholder{color:#777}
+.cen-task-row.completed textarea{color:#858585;text-decoration:line-through}
+.cen-attach{padding:0;width:23px;height:23px;min-height:23px;border:0;background:transparent;color:#888;opacity:0}
+.cen-task-row:hover .cen-attach,.cen-task-row:focus-within .cen-attach{opacity:1}
+.cen-attach:focus-visible{opacity:1;outline:1px solid var(--pepper-focus)}
+.cen-ref-drag{opacity:0}
+.cen-ref-chip:hover .cen-ref-drag,.cen-ref-chip:focus-within .cen-ref-drag{opacity:1}
+
+.cen-title{display:flex;align-items:center;gap:7px;color:#bbb;padding:3px}
+.cen-title strong{font-size:11px;font-weight:500}
+.cen-task-row{grid-template-columns:18px 19px minmax(0,1fr) 24px 25px;gap:4px}
+.cen-reorder{display:grid;place-items:center;width:18px;height:25px;min-height:25px;padding:0;border:0;background:transparent;color:#777;cursor:grab;opacity:0}
+.cen-task-row:hover .cen-reorder,.cen-task-row:focus-within .cen-reorder{opacity:1}
+.cen-reorder:active{cursor:grabbing}
+.cen-reorder:disabled{visibility:hidden}
+.cen-task-row.reordering{opacity:.4}
+.cen-task-row:has(.cen-reorder):hover{background:#292929}
+.cen-ref-label:active{cursor:grabbing}
+.cf-note-preview-controls{display:grid;grid-template-columns:minmax(0,1fr) auto;align-items:center;gap:8px;padding:9px 11px}
+.cf-note-time{display:flex;align-items:center;gap:7px;color:#999;font-size:11px;font-variant-numeric:tabular-nums}
+.cf-note-time output{color:#ddd}
+.cf-note-preview-controls>div>button{font-size:10px;min-height:28px}
+.cf-note-preview-controls>.cf-note-saved-time{grid-column:1 / -1;display:flex;align-items:center;gap:6px;justify-self:start;min-height:22px;padding:0;border:0;background:transparent;color:#888;font-size:10px}
+.cf-note-saved-time time{font-variant-numeric:tabular-nums;color:#c7b57e}
+.cf-note-saved-time:hover{color:#eee}
+
+.timeline-note-editor{position:absolute;bottom:30px;left:50%;transform:translateX(-50%);display:flex;align-items:center;gap:3px;padding:5px;border:1px solid #555;border-radius:5px;background:#262626;box-shadow:0 4px 12px #0008;pointer-events:auto;z-index:12}
+.timeline-note-editor input{width:105px;min-height:26px;padding:3px 5px;border:1px solid #555;border-radius:3px;background:#202020;color:#ddd;font-size:11px;font-variant-numeric:tabular-nums}
+.timeline-note-editor input[aria-invalid=true]{border-color:#ce8176}
+.timeline-note-editor button{display:grid;place-items:center;width:25px;height:26px;min-height:26px;padding:3px;border:0;background:transparent;color:#aaa}
+.timeline-note-editor button:hover{background:#444;color:#fff}
+
+.media-time-slider:has(.pepper-timeline-markers>button:hover) .media-slider-thumb,
+.media-time-slider:has(.pepper-timeline-markers>button:hover) .media-slider-preview{visibility:hidden!important;opacity:0!important;pointer-events:none!important}
+.pepper-timeline-markers>button>span{max-width:220px;white-space:normal;text-align:left;line-height:1.4}
+.timeline-note-editor{flex-wrap:wrap;width:245px}
+.timeline-note-editor .timeline-note-text{width:100%;box-sizing:border-box}
+
+/* Match Pepper's neutral controls and keep markers distinct from scrubbing. */
+.media-time-slider:has(.pepper-timeline-markers>button:hover) .media-time-slider-thumb,
+.media-time-slider:has(.pepper-timeline-markers>button:hover) .audio-time-slider-thumb{visibility:hidden!important;opacity:0!important;pointer-events:none!important}
+.pepper-timeline-markers>button>i{width:7px;height:9px;border:1px solid #222;border-radius:2px;background:#b7b7b7;box-shadow:0 0 0 1px #777,0 1px 3px #0008}
+.pepper-timeline-markers>button:hover>i,.pepper-timeline-markers>button:focus-visible>i{background:#eee;box-shadow:0 0 0 3px #ffffff1c;scale:1.1}
+.pepper-timeline-markers>button:focus-visible{outline:1px solid #aaa}
+.pepper-timeline-markers>button>span{border-color:#484848;background:#262626;color:#ddd;font-size:10px;box-shadow:0 4px 12px #0007;padding:6px 8px}
+
+/* Note previews are wide enough for a phrase, then wrap naturally. */
+.pepper-timeline-markers>button>span{width:max-content;min-width:100px;max-width:min(280px,65vw);white-space:normal;overflow-wrap:break-word}
+.pepper-video-skin .media-time-slider:has(.pepper-timeline-markers>button:hover)::after{display:none!important}
+.pepper-timeline-markers>button[aria-pressed=true]>i{background:#eee;box-shadow:0 0 0 3px #ffffff1c;scale:1.1}
+.cen-task-row{grid-template-columns:18px 19px minmax(0,1fr) 24px 25px}
+.cen-task-row.selected{background:#292929}
+.cen-task-remove.empty{visibility:hidden!important}
+.cen-completed{margin-top:24px;padding-top:12px;opacity:.75}
+.cen-completed .cen-task-row{min-height:28px}
+.cen-task-row.completing{animation:cen-complete .24s ease forwards;pointer-events:none}
+.cen-task-row.completing .cen-task-toggle{background:#aaa;color:#222;opacity:1;border-color:#aaa}
+.cen-task-row.completing textarea{text-decoration:line-through}
+@keyframes cen-complete{0%{opacity:1;transform:translateX(0)}100%{opacity:0;transform:translateX(5px)}}
+@media(prefers-reduced-motion:reduce){.cen-task-row.completing{animation:none;opacity:.4}}
+
+.cen-task-row textarea[readonly]{cursor:default;caret-color:transparent}
+.cen-task-row textarea:not([readonly]):focus{background:#252525;border-radius:3px;box-shadow:0 0 0 1px #484848}
+
+
+/* Keep note text readable while placing its attachments beside it. */
+.cen-task-row .cen-task-input-wrap{min-width:0}
+.cen-task-main{display:flex;flex-wrap:wrap;align-items:flex-start;gap:0 7px;min-width:0}
+.cen-task-main>textarea{flex:0 1 auto;min-width:min(40px,100%);max-width:100%;min-height:25px;max-height:72px;padding:4px 2px;line-height:17px}
+.cen-task-main>.cen-ref-list{flex:0 1 auto;justify-content:flex-start;align-self:flex-start;min-width:0;width:auto;max-width:100%;padding:0;gap:4px}
+.cen-task-input-wrap>.cen-note-markers{width:100%;min-width:0}
+/* Markers read as indented rows within their parent task. */
+.cen-marker-text::placeholder{color:#707070}
+.cen-marker-remove{display:grid;place-items:center;flex:none;width:23px;min-height:23px;padding:0;border:0;background:transparent;color:#888;opacity:0}
+.cen-marker-row:hover .cen-marker-remove,.cen-marker-row:focus-within .cen-marker-remove{opacity:1}
+.cen-task-row textarea[readonly]{user-select:none}
+.cen-task-row textarea::placeholder{user-select:none}
+
+/* Compact rows with visible media and optional detail. */
+.cen-panel .cen-task-list{max-height:246px;overflow:auto;scrollbar-width:thin;scrollbar-gutter:stable;margin-top:3px;gap:1px}
+.cen-panel .cen-task-list>.cen-task-row{flex:0 0 auto}
+.cen-panel .cen-task-row{min-height:29px;padding:2px 3px;align-items:start}
+.cen-panel .cen-task-toggle{margin-top:5px}
+.cen-panel .cen-completed{margin-top:7px;padding-top:5px;opacity:1;border-top:1px solid #383838;max-height:190px;overflow:auto;scrollbar-width:thin}
+.cen-completed>summary{display:flex;align-items:center;gap:5px;min-height:25px;padding:0 3px;color:#888;font-size:10px;cursor:pointer;list-style:none;user-select:none}
+.cen-completed>summary::-webkit-details-marker{display:none}
+.cen-completed>summary:hover{color:#ccc}
+.cen-completed[open]>summary>svg{transform:rotate(90deg)}
+.cen-completed>summary>small{padding:1px 5px;border-radius:8px;background:#303030;color:#999;font-size:9px}
+.cen-panel .cen-completed .cen-task-row{opacity:1;min-height:27px}
+.cen-completed .cen-task-main>textarea[readonly]{color:#888;text-decoration:line-through}
+.cen-completed .cen-task-main>textarea:not([readonly]){text-decoration:none;color:#ddd}
+.cen-panel .cen-completed .cen-task-toggle.checked{background:transparent;border-color:#666;color:#999}
+
+/* Marker notes stay legible text until explicitly edited. */
+.cen-marker-caption.empty{color:#707070}
+.cen-marker-caption:focus-visible{outline:1px solid #666;border-radius:3px}
+.cen-completed .cen-marker-caption{color:#858585}
+.cen-completed .cen-marker-text{color:#ccc;text-decoration:none}
+
+/* One alignment and one attachment treatment throughout Notes. */
+.cen-task-row.completed{grid-template-columns:18px 19px minmax(0,1fr) 25px}
+.cen-reorder-space{width:18px}
+.cen-task-main{row-gap:0}
+.cen-task-row .cen-task-main>textarea{min-height:24px;padding:3px 0;line-height:18px}
+.cen-task-input-wrap .cen-ref-wrap{display:flex;min-width:0;max-width:230px}
+.cen-task-input-wrap .cen-ref-chip{display:flex;min-width:0;max-width:100%;border:1px solid #444;border-radius:4px;background:#292929;box-shadow:none}
+.cen-task-input-wrap .cen-ref-label{display:flex;align-items:center;gap:5px;min-width:0;max-width:228px;min-height:22px;padding:2px 6px;border:0;background:transparent;color:#bcbcbc;font-size:10px;line-height:17px}
+.cen-task-input-wrap .cen-ref-label>span{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.cen-task-input-wrap .cen-ref-label>svg{flex:none;color:#999}
+.cen-task-input-wrap .cen-ref-label:hover:not(:disabled){background:#333;color:#eee}
+.cen-task-input-wrap .cen-ref-label[aria-pressed=true]{background:#333;color:#eee}
+.cen-task-input-wrap .cen-ref-label:disabled{opacity:.5}
+.cen-note-markers{display:flex;min-width:0;box-sizing:border-box;flex-direction:column;gap:0;margin:0;padding:0;border:0}
+.cen-marker-row{display:flex;align-items:baseline;gap:7px;min-width:0;min-height:23px}
+.cen-note-marker{display:inline-flex;align-items:center;flex:none;gap:5px;min-height:23px;padding:2px 0;border:0;border-radius:0;background:transparent;color:#909090;font-size:10px;font-variant-numeric:tabular-nums;line-height:18px;box-shadow:none}
+.cen-note-marker:hover:not(:disabled),.cen-note-marker[aria-pressed=true]{background:transparent;color:#eee;text-decoration:underline;text-underline-offset:3px}
+.cen-note-marker>svg{flex:none}
+.cen-note-marker:disabled{opacity:.5}
+.cen-marker-caption{display:block;flex:1;min-width:0;padding:2px 0;color:#b5b5b5;font-size:11px;line-height:18px;text-align:left;overflow-wrap:anywhere;cursor:text;user-select:none}
+.cen-marker-row .cen-marker-text{flex:1;min-width:0;width:0;height:23px;padding:2px 0;border:0;border-bottom:1px solid #666;border-radius:0;background:transparent;color:#ddd;font:inherit;font-size:11px;line-height:18px;text-align:left;text-decoration:none}
+.cen-marker-row .cen-marker-text:focus{outline:0;background:transparent;border-color:#aaa}
+
+/* Shared gutters keep task and marker rows on a single visual axis. */
+.cen-panel .cen-task-row{position:relative;grid-template-columns:14px 18px minmax(0,1fr) 24px 25px;column-gap:4px;padding:1px 2px;min-height:28px}
+.cen-panel .cen-task-row.completed{grid-template-columns:14px 18px minmax(0,1fr) 25px}
+.cen-reorder-space{width:14px}
+.cen-reorder{width:14px;height:24px;min-height:24px;opacity:.25;touch-action:none;user-select:none}
+.cen-reorder:focus-visible{opacity:1;outline:1px solid #888;outline-offset:-1px}
+.cen-panel .cen-task-toggle{margin-left:0;margin-top:5px}
+.cen-task-row.selected{background:transparent}
+.cen-task-row.selected:hover,.cen-task-row:focus-within{background:#292929}
+.cen-note-markers{padding-bottom:3px}
+.cen-marker-row{display:grid;grid-template-columns:max-content minmax(0,1fr) 23px;align-items:center;column-gap:6px}
+.cen-note-marker{justify-content:flex-start;text-align:left}
+.cen-marker-row .cen-marker-text{width:100%;box-sizing:border-box}
+.cen-marker-caption{padding-left:0;padding-right:0}
+.cen-task-row.drop-before::before,.cen-task-row.drop-after::after{content:"";position:absolute;left:20px;right:4px;height:2px;border-radius:1px;background:#bbb;pointer-events:none;z-index:2}
+.cen-task-row.drop-before::before{top:-1px}
+.cen-task-row.drop-after::after{bottom:-1px}
+.cen-task-list:has(.reordering){cursor:grabbing;user-select:none}
+.cen-task-list:has(.reordering) .cen-reorder{cursor:grabbing}

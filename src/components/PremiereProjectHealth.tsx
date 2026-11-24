@@ -1,6 +1,6 @@
 import { useEffect, useId, useRef, useState } from 'react';
 import { invoke } from '@tauri-apps/api/core';
-import { Check, Copy, File, FolderOpen, LoaderCircle, RefreshCw, X } from 'lucide-react';
+import { Check, CircleAlert, CircleHelp, Copy, File, FolderOpen, LoaderCircle, RefreshCw, X } from 'lucide-react';
 import { statusFor, type MediaHealthStatus as Status } from './premiereHealthStatus';
 import { mediaKind } from './MediaTypes';
 import { CopyMediaPreview } from './CopyMediaPreview';
@@ -46,7 +46,7 @@ function peerTitle(peers: MachineAvailability[]) {
   return peers.map(peer => `${peer.machine_name} · ${new Date(peer.last_seen).toLocaleString()}`).join('\n');
 }
 
-export function PremiereProjectHealth({ projectRoot, clientPath, projectPath }: { projectRoot: string; clientPath: string; projectPath: string }) {
+export function PremiereProjectHealth({ projectRoot, clientPath, projectPath, onClose }: { projectRoot: string; clientPath: string; projectPath: string; onClose?: () => void }) {
   const [report, setReport] = useState<HealthReport | null>(null);
   const [error, setError] = useState('');
   const [busy, setBusy] = useState(true);
@@ -70,7 +70,7 @@ export function PremiereProjectHealth({ projectRoot, clientPath, projectPath }: 
     let active = true;
     setBusy(true); setError(''); setReport(null); setShowFound(false); setQuery(''); setLocationError('');
     void invoke<HealthReport>('premiere_project_health_scan', { projectRoot, clientPath, path: projectPath })
-      .then(value => { if (active) setReport(value); })
+      .then(value => { if (active) { setReport(value); window.dispatchEvent(new CustomEvent("pepper-health", { detail: { projectPath, report: value } })); } })
       .catch(reason => { if (active) setError(String(reason)); })
       .finally(() => { if (active) setBusy(false); });
     return () => { active = false; };
@@ -156,8 +156,9 @@ export function PremiereProjectHealth({ projectRoot, clientPath, projectPath }: 
 
   return <section className="pph-panel" aria-labelledby={headingId} aria-busy={busy}>
       <header className="pph-header">
-        <h3 id={headingId} title={projectPath}>Project health</h3>
+        <h3 id={headingId} title={projectPath}>{onClose ? projectPath.split(/[\\/]/).pop() : "Project health"}</h3>
         <div className="pph-header-actions">
+          {onClose&&<button type="button" className="pph-rescan" aria-label="Close project issues" onClick={onClose}><X size={14}/></button>}
           <button type="button" className="pph-rescan" disabled={busy || copyOpen} onClick={() => setAttempt(value => value + 1)} title="Rescan project media" aria-label="Rescan project media"><RefreshCw size={14} className={busy ? 'pph-spin' : ''}/></button>
         </div>
       </header>
@@ -236,4 +237,22 @@ function LazyCopyPreview({root,path,name}:{root:React.RefObject<HTMLDivElement|n
   return <div className="pph-copy-preview" ref={element} aria-label={`Preview of ${name}`}>
     {visible ? <CopyMediaPreview key={path} path={path} name={name}/> : <><div className="pph-copy-canvas"><span>{kind?'Preview loads when visible':'No preview available'}</span></div><div className="pph-copy-playback"/></>}
   </div>;
+}
+
+export function ProjectHealthIndicator({projectRoot,clientPath,projectPath,onClick}:{projectRoot:string;clientPath:string;projectPath:string;onClick:()=>void}) {
+  const [report,setReport]=useState<HealthReport|null>(null);
+  const [busy,setBusy]=useState(true);
+  const [failed,setFailed]=useState(false);
+  useEffect(()=>{
+    let active=true;
+    const update=(event:Event)=>{const detail=(event as CustomEvent<{projectPath:string;report:HealthReport}>).detail;if(detail.projectPath===projectPath){setReport(detail.report);setFailed(false);}};
+    window.addEventListener('pepper-health',update);
+    void invoke<HealthReport>('premiere_project_health_scan',{projectRoot,clientPath,path:projectPath}).then(value=>{if(active)setReport(value);}).catch(()=>{if(active)setFailed(true);}).finally(()=>{if(active)setBusy(false);});
+    return()=>{active=false;window.removeEventListener('pepper-health',update);};
+  },[projectRoot,clientPath,projectPath]);
+  const issues=report?.items.filter(item=>statusFor(item.status)!=='found')||[];
+  const missing=issues.some(item=>statusFor(item.status)==='missing');
+  const unknown=failed||!report?.items.length;
+  const label=busy?'Checking media':unknown?'Media check unavailable':issues.length?`${issues.length} media ${issues.length===1?'issue':'issues'}`:'All media on NAS';
+  return <button type="button" className={`cf-health-indicator ${busy||unknown?'unknown':missing?'missing':issues.length?'attention':'healthy'}`} title={label} aria-label={`${projectPath.split(/[\\/]/).pop()}: ${label}`} onClick={onClick}>{busy?<LoaderCircle size={14} className="cf-spin"/>:unknown?<CircleHelp size={14}/>:issues.length?<><CircleAlert size={14}/><span>{issues.length}</span></>:<Check size={14}/>}</button>;
 }
