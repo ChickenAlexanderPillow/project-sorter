@@ -26,14 +26,14 @@ const isDraft = (task: Task) => !task.completed && !task.text.trim() && !(task.r
 const orderTasks = (tasks: Task[]) => [...tasks.filter(task => !task.completed), ...tasks.filter(task => task.completed)];
 const prepareLoadedTasks = (saved: Task[]) => {
   let loadedTasks = orderTasks(saved.map(task => ({ ...task, references: task.references || [] })));
-  const originalSignature = signature(loadedTasks);
   const legacyMarkers = loadedTasks.filter(task => !task.text.trim() && task.references.length > 0 && task.references.every(reference => reference.timecode.trim()));
   for (const markerTask of legacyMarkers) {
     const path = markerTask.references[0]?.relative_path;
     const owner = loadedTasks.find(task => task.id !== markerTask.id && task.references.some(reference => reference.relative_path === path && !reference.timecode.trim()));
     if (owner) loadedTasks = loadedTasks.map(task => task.id === owner.id ? { ...task, references: [...task.references, ...markerTask.references] } : task).filter(task => task.id !== markerTask.id);
   }
-  return { tasks: normalizeTasks(orderTasks(loadedTasks)), originalSignature };
+  const normalizedTasks = normalizeTasks(orderTasks(loadedTasks));
+  return { tasks: normalizedTasks, persistedSignature: signature(savedTasks(normalizedTasks)) };
 };
 const normalizeTasks = (tasks: Task[]) => {
   const draft = [...tasks].reverse().find(isDraft) || makeTask();
@@ -98,7 +98,7 @@ export function ClientEditNotes({ clientPath, activePreviewId, activePreviewPath
     void invoke<Task[]>('client_edit_notes_load', { clientPath }).then(saved => {
       if (!current) return;
       const prepared = prepareLoadedTasks(saved);
-      lastSaved.current = prepared.originalSignature; setTasks(prepared.tasks); setLoaded(true);
+      lastSaved.current = prepared.persistedSignature; setTasks(prepared.tasks); setLoaded(true);
     }).catch(reason => { if (current) { setError(String(reason)); setStatus('error'); } });
     void invoke<Listing>('client_files_list', { clientPath, category: 'all' })
       .then(listing => { if (current) setFiles(listing.files.filter(file => file.kind !== 'project')); })
@@ -122,8 +122,8 @@ export function ClientEditNotes({ clientPath, activePreviewId, activePreviewPath
         if (!current || saveInFlight.current || timer.current !== null
           || signature(savedTasks(tasksRef.current)) !== lastSaved.current) return;
         const prepared = prepareLoadedTasks(saved);
-        if (prepared.originalSignature !== lastSaved.current) {
-          lastSaved.current = prepared.originalSignature;
+        if (prepared.persistedSignature !== lastSaved.current) {
+          lastSaved.current = prepared.persistedSignature;
           setTasks(prepared.tasks);
         }
       } catch {
@@ -132,7 +132,7 @@ export function ClientEditNotes({ clientPath, activePreviewId, activePreviewPath
         polling = false;
       }
     };
-    const interval = window.setInterval(() => { void refresh(); }, 2000);
+    const interval = window.setInterval(() => { void refresh(); }, 1000);
     return () => { current = false; window.clearInterval(interval); };
   }, [clientPath, loaded]);
 
