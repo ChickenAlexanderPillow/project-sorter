@@ -2888,6 +2888,8 @@ pub fn run() {
             media_browser::media_resolve_files,
             media_browser::media_prepare_preview,
             client_files::client_files_list,
+            client_files::client_edit_notes_load,
+            client_files::client_edit_notes_save,
             client_files::client_files_recordings,
             client_files::client_files_open_project,
             premiere_health::premiere_project_health_scan,

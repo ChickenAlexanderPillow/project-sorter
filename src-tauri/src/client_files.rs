@@ -215,6 +215,125 @@ pub async fn client_files_list(
         .map_err(|e| e.to_string())?
 }
 
+const EDIT_NOTES_FILE: &str = ".pepper-edit-notes.json";
+
+#[derive(Clone, Serialize, serde::Deserialize)]
+pub struct ClientEditNoteTask {
+    id: String,
+    text: String,
+    completed: bool,
+    #[serde(default)]
+    references: Vec<ClientEditNoteReference>,
+}
+
+#[derive(Clone, Serialize, serde::Deserialize)]
+pub struct ClientEditNoteReference {
+    id: String,
+    relative_path: String,
+    name: String,
+    timecode: String,
+}
+
+#[cfg(not(windows))]
+fn replace_edit_notes(from: &Path, to: &Path) -> Result<(), String> {
+    std::fs::rename(from, to).map_err(|e| e.to_string())
+}
+
+#[cfg(windows)]
+fn replace_edit_notes(from: &Path, to: &Path) -> Result<(), String> {
+    use std::os::windows::ffi::OsStrExt;
+    use windows::Win32::Storage::FileSystem::{MoveFileExW, MOVEFILE_REPLACE_EXISTING, MOVEFILE_WRITE_THROUGH};
+    let from: Vec<u16> = from.as_os_str().encode_wide().chain(Some(0)).collect();
+    let to: Vec<u16> = to.as_os_str().encode_wide().chain(Some(0)).collect();
+    unsafe { MoveFileExW(windows::core::PCWSTR(from.as_ptr()), windows::core::PCWSTR(to.as_ptr()), MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH) }
+        .map_err(|e| e.to_string())
+}
+
+#[cfg(windows)]
+fn mark_edit_notes_hidden(path: &Path) -> Result<(), String> {
+    use std::os::windows::ffi::OsStrExt;
+    #[link(name = "kernel32")]
+    unsafe extern "system" { fn SetFileAttributesW(path: *const u16, attributes: u32) -> i32; }
+    let path: Vec<u16> = path.as_os_str().encode_wide().chain(Some(0)).collect();
+    if unsafe { SetFileAttributesW(path.as_ptr(), 0x2) } == 0 {
+        Err(std::io::Error::last_os_error().to_string())
+    } else { Ok(()) }
+}
+
+#[cfg(not(windows))]
+fn mark_edit_notes_hidden(_path: &Path) -> Result<(), String> { Ok(()) }
+
+fn client_edit_notes(client_path: &Path) -> Result<Vec<ClientEditNoteTask>, String> {
+    if !client_path.is_absolute() || !client_path.is_dir() {
+        return Err("This client's folder is unavailable.".into());
+    }
+    let root = client_path.canonicalize().map_err(|e| e.to_string())?;
+    let path = root.join(EDIT_NOTES_FILE);
+    if std::fs::symlink_metadata(&path).is_ok_and(|metadata| metadata.file_type().is_symlink()) {
+        return Err("The editing notes file must not be a symbolic link.".into());
+    }
+    match std::fs::read(&path) {
+        Ok(bytes) => {
+            let data: serde_json::Value = serde_json::from_slice(&bytes)
+                .map_err(|_| "The editing notes file could not be read.".to_string())?;
+            if let Some(tasks) = data.get("tasks") {
+                return serde_json::from_value(tasks.clone()).map_err(|_| "The editing notes file could not be read.".to_string());
+            }
+            let legacy = data.get("text").and_then(|v| v.as_str()).unwrap_or("");
+            Ok(legacy.lines().filter_map(|line| {
+                let text = line.trim_start().strip_prefix("- ").or_else(|| line.trim_start().strip_prefix("* ")).unwrap_or(line).trim();
+                (!text.is_empty()).then(|| ClientEditNoteTask { id: uuid::Uuid::new_v4().to_string(), text: text.to_string(), completed: false, references: Vec::new() })
+            }).collect())
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(Vec::new()),
+        Err(error) => Err(format!("Could not read editing notes: {error}")),
+    }
+}
+
+fn save_client_edit_notes(client_path: &Path, tasks: &[ClientEditNoteTask]) -> Result<(), String> {
+    if !client_path.is_absolute() || !client_path.is_dir() {
+        return Err("This client's folder is unavailable.".into());
+    }
+    let root = client_path.canonicalize().map_err(|e| e.to_string())?;
+    let path = root.join(EDIT_NOTES_FILE);
+    if std::fs::symlink_metadata(&path).is_ok_and(|metadata| metadata.file_type().is_symlink()) {
+        return Err("The editing notes file must not be a symbolic link.".into());
+    }
+    let tasks: Vec<_> = tasks.iter().filter(|task| !task.text.trim().is_empty() || !task.references.is_empty()).cloned().collect();
+    if tasks.is_empty() {
+        match std::fs::remove_file(path) {
+            Ok(()) => return Ok(()),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+            Err(error) => return Err(format!("Could not clear editing notes: {error}")),
+        }
+    }
+    let bytes = serde_json::to_vec_pretty(&serde_json::json!({"version": 1, "tasks": tasks}))
+        .map_err(|e| e.to_string())?;
+    let temp = root.join(format!(".pepper-edit-notes-{}.tmp", uuid::Uuid::new_v4()));
+    std::fs::write(&temp, bytes).map_err(|e| format!("Could not save editing notes: {e}"))?;
+    if let Err(error) = mark_edit_notes_hidden(&temp) {
+        let _ = std::fs::remove_file(&temp);
+        return Err(format!("Could not hide editing notes: {error}"));
+    }
+    if let Err(error) = replace_edit_notes(&temp, &path) {
+        let _ = std::fs::remove_file(&temp);
+        return Err(format!("Could not save editing notes: {error}"));
+    }
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn client_edit_notes_load(client_path: String) -> Result<Vec<ClientEditNoteTask>, String> {
+    tauri::async_runtime::spawn_blocking(move || client_edit_notes(Path::new(&client_path)))
+        .await.map_err(|e| e.to_string())?
+}
+
+#[tauri::command]
+pub async fn client_edit_notes_save(client_path: String, tasks: Vec<ClientEditNoteTask>) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || save_client_edit_notes(Path::new(&client_path), &tasks))
+        .await.map_err(|e| e.to_string())?
+}
+
 fn validated_project(client_path: &Path, path: &Path) -> Result<PathBuf, String> {
     if !client_path.is_absolute() || !path.is_absolute() || !project_file(path) || !path.is_file() {
         return Err("Choose an available editing project.".into());

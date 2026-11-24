@@ -1,6 +1,6 @@
-import { Fragment, useEffect, useRef, useState, type MouseEvent, type PointerEvent } from 'react';
+import { Fragment, useCallback, useEffect, useRef, useState, type MouseEvent, type PointerEvent } from 'react';
 import { invoke } from '@tauri-apps/api/core';
-import { ArrowUpRight, ChartNoAxesGantt, Files, CircleAlert, FileVideo, FolderOpen, Headphones, Image, LoaderCircle, Package, RefreshCw, Search, SquarePen } from 'lucide-react';
+import { ArrowUpRight, ChartNoAxesGantt, Clock3, Files, CircleAlert, FileVideo, FolderOpen, Headphones, Image, LoaderCircle, Package, RefreshCw, Search, SquarePen, X } from 'lucide-react';
 import { selectFilePaths } from './fileSelection';
 import { startNativeFileDrag } from './nativeFileDrag';
 import { mediaRoleIcon } from './MediaTypes';
@@ -9,6 +9,7 @@ import { previewPreparation } from './previewPreparation';
 import { videoPosters } from './videoPosters';
 import { useVisibleVideoPaths } from './useVisibleVideoPaths';
 import { PremiereProjectHealth } from './PremiereProjectHealth';
+import { ClientEditNotes, type ClientNotePreview } from './ClientEditNotes';
 
 import { clientRecordingFiles, clientOverlapGroups, clientAssetCategory, clientFileTooltip, type ClientAsset as Asset, type ClientRecordingAsset } from './clientFileGroups';
 import { RecordingTimeline, RecordingPill, type RecordingPlacement } from './RecordingTimeline';
@@ -23,6 +24,14 @@ const PROJECT_ACTIONS:Record<string,string>={prproj:'Open in Premiere',aep:'Open
 const projectAction=(name:string)=>PROJECT_ACTIONS[name.split('.').pop()?.toLowerCase()||'']||'Open project';
 const PROJECT_APPS:Record<string,string>={prproj:'Premiere Pro',aep:'After Effects',aepx:'After Effects',sesx:'Audition',blend:'Blender',drp:'DaVinci Resolve'};
 const projectApp=(name:string)=>PROJECT_APPS[name.split('.').pop()?.toLowerCase()||'']||'Editing project';
+const timestamp=(seconds:number)=>{const value=Math.max(0,seconds),hours=Math.floor(value/3600),minutes=Math.floor(value%3600/60),whole=Math.floor(value%60),millis=Math.floor((value-Math.floor(value))*1000);return `${String(hours).padStart(2,'0')}:${String(minutes).padStart(2,'0')}:${String(whole).padStart(2,'0')}.${String(millis).padStart(3,'0')}`;};
+const timestampSeconds=(value:string):number|null=>{
+  const decimal=value.match(/^(\d+):(\d{2}):(\d{2})\.(\d{1,3})$/);
+  if(decimal)return Number(decimal[1])*3600+Number(decimal[2])*60+Number(decimal[3])+Number(`0.${decimal[4]}`);
+  const frames=value.match(/^(\d+):(\d{2}):(\d{2}):(\d{1,2})$/);
+  if(frames)return Number(frames[1])*3600+Number(frames[2])*60+Number(frames[3])+Number(frames[4])/25;
+  return null;
+};
 
 export function ClientFiles({projectRoot,clientPath,onContextMenu}:{projectRoot:string;clientPath:string;onContextMenu:FileContextMenu}){
   const [section,setSection]=useState<Section>('edit');
@@ -44,6 +53,33 @@ export function ClientFiles({projectRoot,clientPath,onContextMenu}:{projectRoot:
   const [displaySection,setDisplaySection]=useState<Section>('edit');
   const [hasStills,setHasStills]=useState(false);
   const [hasStock,setHasStock]=useState(false);
+  const [notePreview,setNotePreview]=useState<ClientNotePreview|null>(null);
+  const [playback,setPlayback]=useState({currentTime:0,duration:0});
+  const [previewSeek,setPreviewSeek]=useState<number|undefined>(undefined);
+  const previewPane=useRef<HTMLElement>(null);
+  const autoSeekKey=useRef<string|null>(null);
+  useEffect(()=>{setNotePreview(null);},[clientPath]);
+  useEffect(()=>{if(displaySection!=='edit')setNotePreview(null);},[displaySection]);
+  useEffect(()=>{
+    if(!notePreview)return;
+    const outside=(event:globalThis.PointerEvent)=>{
+      const target=event.target as Element;
+      if(previewPane.current?.contains(target)||target.closest('.cen-ref-label'))return;
+      setNotePreview(null);
+    };
+    document.addEventListener('pointerdown',outside);
+    return()=>document.removeEventListener('pointerdown',outside);
+  },[notePreview]);
+  const activePreviewKey=notePreview?`${notePreview.taskId}:${notePreview.referenceId}:${notePreview.path}`:null;
+  useEffect(()=>{setPlayback({currentTime:0,duration:0});setPreviewSeek(undefined);autoSeekKey.current=null;},[activePreviewKey]);
+  const reportPreviewTime=useCallback((currentTime:number,duration:number)=>{
+    setPlayback({currentTime,duration});
+    if(!notePreview||duration<=0||autoSeekKey.current===activePreviewKey)return;
+    autoSeekKey.current=activePreviewKey;
+    const first=notePreview.markers.map(marker=>timestampSeconds(marker.timecode)).filter((value):value is number=>value!==null&&value<=duration).sort((a,b)=>a-b)[0];
+    if(first!==undefined){setPreviewSeek(first);setPlayback({currentTime:first,duration});}
+  },[activePreviewKey,notePreview]);
+  const selectNotePreview=(preview:ClientNotePreview|null)=>{setNotePreview(preview);setPlayback({currentTime:0,duration:0});setPreviewSeek(undefined);};
   useEffect(()=>{
     let active=true;
     void Promise.all(['stills','stock'].map(category=>invoke<Listing>('client_files_list',{clientPath,category}))).then(([stills,stock])=>{if(active){setHasStills(stills.files.length>0);setHasStock(stock.files.length>0);if(!stills.files.length||!stock.files.length)setSection(current=>current==='stills'&&!stills.files.length||current==='stock'&&!stock.files.length?'edit':current);}}).catch(()=>{});
@@ -129,6 +165,21 @@ export function ClientFiles({projectRoot,clientPath,onContextMenu}:{projectRoot:
                 <button type="button" title={projectAction(file.name)} aria-label={`${projectAction(file.name)}: ${file.name}`} disabled={opening} onClick={()=>void openProject(file)}><ArrowUpRight size={14}/><span>Open</span></button>
               </div>
             </div>:fileButton;};
+  const noteMarkers=notePreview?notePreview.markers.map(marker=>({ ...marker, seconds:timestampSeconds(marker.timecode) })).filter((marker):marker is typeof marker & {seconds:number}=>marker.seconds!==null&&marker.seconds<=playback.duration).sort((a,b)=>a.seconds-b.seconds):[];
+  const previewTimelineMarkers=noteMarkers.map(marker=>({seconds:marker.seconds,timecode:marker.timecode,key:`${marker.taskId}:${marker.referenceId}`,onSelect:()=>{setPreviewSeek(marker.seconds);setPlayback(current=>({...current,currentTime:marker.seconds}));}}));
+  const notePreviewPane=notePreview&&<aside ref={previewPane} className="cf-preview cf-note-preview" aria-label="Media preview">
+    <header className="cf-preview-heading"><strong title={notePreview.path}>{notePreview.name}</strong><button type="button" aria-label="Close media preview" onClick={()=>setNotePreview(null)}><X size={13}/></button></header>
+    <div className="cf-preview-content">{['audio','image','video'].includes(notePreview.kind)?<SourceMediaPreview path={notePreview.path} name={notePreview.name} showHeading={false} seekTo={previewSeek} onPlaybackTimeChange={reportPreviewTime} timelineMarkers={previewTimelineMarkers}/>:<div className="cf-empty"><FileVideo size={24}/><span>Preview unavailable for this file type</span></div>}</div>
+    {(notePreview.kind==='audio'||notePreview.kind==='video')&&<footer className="cf-note-preview-controls">
+      <label><Clock3 size={13}/><output>{timestamp(playback.currentTime)}</output><span>/ {timestamp(playback.duration)}</span></label>
+      <div><span>{notePreview.timecode?`On note · ${notePreview.timecode}`:'Choose a point in the preview'}</span><button type="button" disabled={!playback.duration} onClick={()=>{const value=timestamp(playback.currentTime);notePreview.setTimecode(value);setNotePreview(current=>{
+        if(!current||current.taskId!==notePreview.taskId||current.referenceId!==notePreview.referenceId)return current;
+        const marker={taskId:notePreview.taskId,referenceId:notePreview.referenceId,timecode:value};
+        const markers=current.markers.filter(item=>item.taskId!==marker.taskId||item.referenceId!==marker.referenceId);
+        return {...current,timecode:value,markers:[...markers,marker]};
+      });}}>Use timestamp</button></div>
+    </footer>}
+  </aside>;
   return <><section className={`client-files ${displaySection==='edit'?'cf-edit':''}`} aria-label="Client files">
     <header className="cf-toolbar">
       <nav className="cf-sections" aria-label="File categories">{SECTIONS.filter(item=>item.id==='stills'?hasStills:item.id==='stock'?hasStock:true).map(({id,name,Icon})=><button type="button" key={id} aria-pressed={section===id} onClick={()=>{if(id!==section){setLoading(true);setSection(id);setQuery('');}}}><Icon size={15}/><span>{name}</span></button>)}</nav>
@@ -142,6 +193,7 @@ export function ClientFiles({projectRoot,clientPath,onContextMenu}:{projectRoot:
     </header>
     <div className="cf-body">
     {error&&<div className="cf-error" role="alert"><CircleAlert size={15}/><span>{error}</span></div>}
+    {displaySection==='edit'&&<div className={`cen-top-wrap ${notePreview?'with-preview':''}`}><ClientEditNotes key={clientPath} clientPath={clientPath} activePreviewId={notePreview?`${notePreview.taskId}:${notePreview.referenceId}`:null} onPreviewChange={selectNotePreview}/>{notePreviewPane}</div>}
     {loading&&!listing?<div className="cf-loading" role="status"><LoaderCircle size={19} className="cf-spin"/><span>Opening {category.name.toLowerCase()}…</span></div>:!listing?null:!listing.files.length?<div className="cf-empty"><category.Icon size={29}/><strong>No {displaySection==='edit'?'editing projects':category.name.toLowerCase()} yet</strong></div>:<div className="cf-layout">
       <div className="cf-list-pane" aria-busy={loading}><div className="cf-list-summary"><span>{query?`${visible.length} of ${listing.files.length}`:listing.files.length} {displaySection==='edit'?(listing.files.length===1?'project':'projects'):(listing.files.length===1?'file':'files')}</span>{listing.truncated&&<span title="Open the folder to see the full collection">First 2,000 shown</span>}</div>
         <div className="cf-list" ref={fileList} tabIndex={0} onKeyDown={event=>{
@@ -152,7 +204,10 @@ export function ClientFiles({projectRoot,clientPath,onContextMenu}:{projectRoot:
           {!visible.length&&<div className="cf-no-results">No matching files</div>}
         </div>
       </div>
-      {selected&&(displaySection==='edit'||selected.kind==='project')&&<aside className="cf-project-sidebar" aria-label={`Project health for ${selected.name}`}>
+      {displaySection==='edit'&&<aside className="cf-project-sidebar" aria-label="Selected project media check">
+        {selected&&(loading?<div className="cf-loading" role="status"><LoaderCircle size={18} className="cf-spin"/>Loading project?</div>:selected.name.toLowerCase().endsWith('.prproj')?<PremiereProjectHealth key={`${clientPath}/${selected.path}/${selected.modified_ms}/${revision}`} projectRoot={projectRoot} clientPath={clientPath} projectPath={selected.path}/>:<div className="cf-health-unsupported"><h3>Project health</h3><p>Media checks are available for Premiere Pro projects.</p></div>)}
+      </aside>}
+      {displaySection!=='edit'&&selected?.kind==='project'&&<aside className="cf-project-sidebar" aria-label={`Project health for ${selected.name}`}>
         {loading?<div className="cf-loading" role="status"><LoaderCircle size={18} className="cf-spin"/>Loading project?</div>:selected.name.toLowerCase().endsWith('.prproj')?<PremiereProjectHealth key={`${clientPath}/${selected.path}/${selected.modified_ms}/${revision}`} projectRoot={projectRoot} clientPath={clientPath} projectPath={selected.path}/>:<div className="cf-health-unsupported"><h3>Project health</h3><p>Media checks are available for Premiere Pro projects.</p></div>}
       </aside>}
       {selected&&displaySection!=='edit'&&selected.kind!=='project'&&<aside className="cf-preview">
