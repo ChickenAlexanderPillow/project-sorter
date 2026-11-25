@@ -1,4 +1,4 @@
-import { AudioLines, Clapperboard, FileVideo, Folder, Headphones, Image, Layers, Mic, MonitorPlay, Music2, Package, ScanLine, SquarePen } from "lucide-react";
+import { AudioLines, Check, Clapperboard, FileVideo, Folder, Headphones, Image, Layers, Mic, MonitorPlay, Music2, Package, ScanLine, SquarePen, type LucideIcon } from "lucide-react";
 
 export const MEDIA_ROLE_ICONS = {
   'Proxy video': MonitorPlay,
@@ -23,7 +23,7 @@ export function mediaRoleIcon(path:string, role:string) {
   return SquarePen;
 }
 
-export type SourceMedia = {path:string; name:string; kind:string; size:number; role:string};
+export type SourceMedia = {path:string; name:string; kind:string; size:number; role:string; created?:string|null; modified?:string|null};
 export function mediaKind(path:string) {
   const ext = path.split('.').pop()?.toLowerCase();
   if (ext && ['mp4','mov','mxf','mkv','avi','webm','m4v','r3d','mpg','mpeg'].includes(ext)) return 'video';
@@ -38,5 +38,26 @@ export function MediaTypeRail({items,onChange,disabled=false}:{items:{path:strin
   const images=items.filter(item=>mediaKind(item.path)==='image');
   const options=videos.length ? [{role:'Proxy video',label:'Proxy',Icon:MEDIA_ROLE_ICONS['Proxy video']},{role:'Full-resolution video',label:'Full resolution',Icon:MEDIA_ROLE_ICONS['Full-resolution video']},{role:'Stock',label:'Stock',Icon:MEDIA_ROLE_ICONS.Stock},{role:'Miscellaneous',label:'Misc',Icon:MEDIA_ROLE_ICONS.Miscellaneous}] : audio.length ? [{role:'Raw audio',label:'Raw',Icon:MEDIA_ROLE_ICONS['Raw audio']},{role:'Clean audio',label:'Clean',Icon:MEDIA_ROLE_ICONS['Clean audio']},{role:'Music',label:'Music',Icon:MEDIA_ROLE_ICONS.Music}] : images.length ? [{role:'Stills',label:'Stills',Icon:Image},{role:'Graphics',label:'Graphics',Icon:MEDIA_ROLE_ICONS.Graphics},{role:'Stock',label:'Stock',Icon:MEDIA_ROLE_ICONS.Stock},{role:'Miscellaneous',label:'Misc',Icon:MEDIA_ROLE_ICONS.Miscellaneous}] : [];
   const relevant=videos.length?videos:audio.length?audio:images;
-  return <div className="ig-media-type-control">{options.length?<div className="ig-type-rail" role="group" aria-label={videos.length?'Video type':audio.length?'Audio type':'Still type'}>{options.map(({role,label,Icon})=><button type="button" key={role} aria-pressed={relevant.every(item=>item.role===role)} disabled={disabled} onClick={()=>onChange(role)}><Icon size={15}/><span>{label}</span></button>)}</div>:null}</div>;
+  return <MediaClassificationGrid options={options} selectedRole={relevant.every(item=>item.role===relevant[0]?.role)?relevant[0]?.role:undefined} disabled={disabled} onChange={onChange} label={videos.length?'Video type':audio.length?'Audio type':'Still type'}/>;
+}
+
+type ClassificationOption = {role:string;label:string;Icon:LucideIcon};
+
+// Balance complete rows: 3 -> 3, 4 -> 2+2, 5 -> 3+2, 7 -> 3+2+2.
+export function MediaClassificationGrid({options,selectedRole,onChange,disabled=false,label}:{options:ClassificationOption[];selectedRole?:string;onChange:(role:string)=>void;disabled?:boolean;label:string}) {
+  if(!options.length)return null;
+  const rows=Math.ceil(options.length/3);
+  let remaining=options.length, index=0;
+  const cells=Array.from({length:rows},(_,row)=>{
+    const count=Math.ceil(remaining/(rows-row));
+    remaining-=count;
+    return options.slice(index,index+=count).map(option=>({...option,span:6/count}));
+  }).flat();
+  return <div className="ig-media-type-control"><div className="ig-type-rail" data-columns={Math.ceil(options.length/rows)} role="group" aria-label={label}>
+    {cells.map(({role,label:optionLabel,Icon,span})=>{
+      const active=selectedRole===role;
+      const StateIcon=active?Check:Icon;
+      return <button type="button" key={role} style={{gridColumn:`span ${span}`}} aria-pressed={active} disabled={disabled} onClick={()=>onChange(role)} title={optionLabel}><StateIcon size={15} aria-hidden="true"/><span>{optionLabel}</span></button>;
+    })}
+  </div></div>;
 }

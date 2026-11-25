@@ -22,6 +22,7 @@ mod client_files;
 mod premiere_health;
 mod file_drag;
 mod file_locations;
+mod takehome;
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 struct ClientInfo {
@@ -432,7 +433,7 @@ const VIDEO_EXTENSIONS: [&str; 9] = [
 const CLIENT_TEMPLATE_PROJECT_SOURCE: &str = r#"Z:\The Huddle\Templates\Copied_Huddle Master Template 2026_4K_2\Huddle Master Template 2026_4K_2.prproj"#;
 const CLIENT_SCENE_SWITCHING_TEMPLATE_SOURCE: &str = r#"Z:\The Huddle\Templates\Copied_Huddle Master Template Scenes Switching 2026 4K_1\Huddle Master Template Scenes Switching 2026 4K_1.prproj"#;
 const CLIENT_TYPES: [&str; 5] = ["EXHIBITOR", "HUDDLE", "PRODUCT", "MARIYAMEETS", "SOCIAL"];
-const TEMPLATE_DIRS: [&str; 14] = [
+const TEMPLATE_DIRS: [&str; 15] = [
     "01_MEDIA",
     "01_MEDIA/010_VIDEO_PROXY",
     "01_MEDIA/020_VIDEO_RAW",
@@ -446,6 +447,7 @@ const TEMPLATE_DIRS: [&str; 14] = [
     "02_EDIT",
     "03_EXPORTS",
     "03_EXPORTS/APPROVAL",
+    "03_EXPORTS/CLIPS",
     "04_FINAL",
 ];
 const OPTIONAL_LEGACY_DIRS: [&str; 3] = ["070_GRAPHICS", "080_MISCELLANEOUS", "090_STOCK"];
@@ -1807,6 +1809,8 @@ fn scan_client_folders(name: &str, path: &Path) -> ClientInfo {
     }
 
     let has_all_required = REQUIRED_DIRS.iter().all(|dir| child_dirs.contains(*dir));
+    // CLIPS is a repairable optional folder on older client trees.
+    missing.retain(|folder| folder != "03_EXPORTS/CLIPS");
     let status = if has_all_required && missing.is_empty() {
         "OK"
     } else {
@@ -2200,6 +2204,96 @@ async fn promote_latest_export(
     })
     .await
     .map_err(|error| error.to_string())?
+}
+
+#[derive(Debug, Serialize, Clone)]
+struct ClipInfo {
+    name: String,
+    path: String,
+    size: u64,
+    modified_ms: u128,
+    published: bool,
+    current: bool,
+}
+
+#[tauri::command]
+async fn list_client_clips(client_path: String) -> Result<Vec<ClipInfo>, String> {
+    tauri::async_runtime::spawn_blocking(move || list_client_clips_sync(Path::new(&client_path)))
+        .await.map_err(|error| error.to_string())?
+}
+
+fn list_client_clips_sync(client: &Path) -> Result<Vec<ClipInfo>, String> {
+    let clips_dir = client.join("03_EXPORTS/CLIPS");
+    let entries = fs::read_dir(&clips_dir).map_err(|error| format!("Unable to scan clips folder {}: {error}", clips_dir.display()))?;
+    let published: serde_json::Value = fs::read(client.join("04_FINAL/.pepper-clips.json")).ok().and_then(|bytes| serde_json::from_slice(&bytes).ok()).unwrap_or_default();
+    let mut clips = Vec::new();
+    for entry in entries {
+        let entry = entry.map_err(|error| format!("Unable to read clips folder entry: {error}"))?;
+        if !entry.file_type().map_err(|error| error.to_string())?.is_file() { continue; }
+        let path = entry.path();
+        let ext = path.extension().and_then(|value| value.to_str()).unwrap_or("").to_ascii_lowercase();
+        if !VIDEO_EXTENSIONS.contains(&ext.as_str()) { continue; }
+        let meta = fs::metadata(&path).map_err(|error| error.to_string())?;
+        let name = entry.file_name().to_string_lossy().to_string();
+        let prior = published.get(&name);
+        let digest = sha256_file(&path).map_err(|error| error.to_string())?;
+        let current = prior.and_then(|v| v.get("sha256")).and_then(|v| v.as_str()) == Some(digest.as_str())
+            && client.join("04_FINAL/CLIPS").join(&name).is_file();
+        clips.push(ClipInfo { name, path: path.to_string_lossy().to_string(), size: meta.len(), modified_ms: meta.modified().ok().and_then(|v| v.duration_since(std::time::UNIX_EPOCH).ok()).map(|v| v.as_millis()).unwrap_or(0), published: prior.is_some(), current });
+    }
+    clips.sort_by(|a,b| b.modified_ms.cmp(&a.modified_ms).then_with(|| a.name.cmp(&b.name)));
+    Ok(clips)
+}
+
+#[tauri::command]
+async fn publish_client_clips(client_path: String, clip_names: Vec<String>) -> Result<String, String> {
+    tauri::async_runtime::spawn_blocking(move || publish_client_clips_sync(Path::new(&client_path), &clip_names)).await.map_err(|error| error.to_string())?
+}
+
+fn publish_client_clips_sync(client: &Path, names: &[String]) -> Result<String, String> {
+    static CLIP_PUBLISH_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+    let _publish_guard = CLIP_PUBLISH_LOCK.get_or_init(|| Mutex::new(())).lock().map_err(|_| "Clip publishing lock is unavailable".to_string())?;
+    let final_dir = client.join("04_FINAL");
+    let record: serde_json::Value = fs::read(final_dir.join(FINAL_PROMOTION_RECORD)).ok().and_then(|bytes| serde_json::from_slice(&bytes).ok()).ok_or_else(|| "Publish the main video before publishing clips".to_string())?;
+    let main_name = record.get("final_filename").and_then(|v| v.as_str()).ok_or_else(|| "Main published final record is invalid".to_string())?;
+    if !final_dir.join(main_name).is_file() { return Err("Publish the main video before publishing clips".to_string()); }
+    let source_dir = client.join("03_EXPORTS/CLIPS");
+    let clip_dir = final_dir.join("CLIPS");
+    let mut metadata: serde_json::Value = fs::read(final_dir.join(".pepper-clips.json")).ok().and_then(|bytes| serde_json::from_slice(&bytes).ok()).unwrap_or_else(|| serde_json::json!({}));
+    let mut failed = Vec::new();
+    for name in names {
+        let safe = Path::new(name);
+        if safe.file_name().and_then(|v| v.to_str()) != Some(name.as_str()) { failed.push(format!("{name}: invalid filename")); continue; }
+        let source = source_dir.join(name);
+        let before = match fs::metadata(&source) { Ok(v) if v.is_file() => v, _ => { failed.push(format!("{name}: source file is missing")); continue; } };
+        let ext = safe.extension().and_then(|v| v.to_str()).unwrap_or("").to_ascii_lowercase();
+        if !VIDEO_EXTENSIONS.contains(&ext.as_str()) { failed.push(format!("{name}: unsupported video file")); continue; }
+        let destination = clip_dir.join(name);
+        let source_digest_before = match sha256_file(&source) { Ok(value) => value, Err(error) => { failed.push(format!("{name}: unable to validate source: {error}")); continue; } };
+        let prior_digest = metadata.get(name).and_then(|v| v.get("sha256")).and_then(|v| v.as_str());
+        if prior_digest == Some(source_digest_before.as_str()) && destination.is_file() && sha256_file(&destination).is_ok_and(|value| value == source_digest_before) { continue; }
+        let stage_dir = final_dir.join(".staging");
+        if let Err(error) = fs::create_dir_all(&stage_dir) { failed.push(format!("{name}: {error}")); continue; }
+        let stage = stage_dir.join(format!("clip-{}-{}.part", std::process::id(), chrono::Utc::now().timestamp_nanos_opt().unwrap_or_default()));
+        let copied = copy_with_sha256(&source, &stage);
+        let (size, digest) = match copied { Ok(value) => value, Err(error) => { let _ = fs::remove_file(&stage); failed.push(format!("{name}: copy failed: {error}")); continue; } };
+        let after = fs::metadata(&source);
+        let valid = after.as_ref().is_ok_and(|v| v.len() == before.len() && v.modified().ok() == before.modified().ok())
+            && size == before.len() && digest == source_digest_before && sha256_file(&source).is_ok_and(|v| v == source_digest_before) && sha256_file(&stage).is_ok_and(|v| v == digest);
+        if !valid { let _ = fs::remove_file(&stage); failed.push(format!("{name}: source changed or staged copy verification failed; retry")); continue; }
+        if let Err(error) = fs::create_dir_all(&clip_dir) { let _ = fs::remove_file(&stage); failed.push(format!("{name}: cannot create FINAL/CLIPS: {error}")); continue; }
+        let dest = destination;
+        if dest.exists() {
+            let archive = final_dir.join("_ARCHIVE/CLIPS").join(chrono::Utc::now().format("%Y%m%d_%H%M%S_%3f").to_string());
+            if let Err(error) = fs::create_dir_all(&archive).and_then(|_| fs::rename(&dest, archive.join(name))) { let _ = fs::remove_file(&stage); failed.push(format!("{name}: unable to archive previous copy: {error}")); continue; }
+        }
+        if let Err(error) = fs::rename(&stage, &dest) { failed.push(format!("{name}: unable to activate verified copy: {error}")); continue; }
+        metadata[name] = serde_json::json!({"sha256":digest,"size":size,"published_at":chrono::Utc::now().to_rfc3339()});
+        let temp = final_dir.join(".pepper-clips.json.part");
+        if let Err(error) = fs::write(&temp, serde_json::to_vec_pretty(&metadata).unwrap_or_default()).and_then(|_| fs::rename(&temp, final_dir.join(".pepper-clips.json"))) { failed.push(format!("{name}: published but metadata update failed: {error}")); }
+    }
+    if failed.is_empty() { Ok(format!("Published {} clip{}", names.len(), if names.len() == 1 { "" } else { "s" })) }
+    else { Err(format!("Some clips were not published; successful clips remain published. Retry failed items: {}", failed.join("; "))) }
 }
 
 #[tauri::command]
@@ -2900,6 +2994,14 @@ pub fn run() {
             ingest::ingest_file,
             ingest::ingest_file_ids,
             ingest::ingest_copy_project_media,
+            takehome::takehome_prepare,
+            takehome::takehome_validate,
+            takehome::takehome_status,
+            takehome::takehome_update,
+            takehome::takehome_return_preview,
+            takehome::takehome_return_apply,
+            takehome::takehome_archive_list,
+            takehome::takehome_archive_restore,
             ingest::ingest_lease_status,
             ingest::ingest_recover_stale_lease,
             ingest::ingest_source_availability,
@@ -2912,6 +3014,8 @@ pub fn run() {
             scan_project_root,
             scan_approval_progress,
             promote_latest_export,
+            list_client_clips,
+            publish_client_clips,
             unpublish_final,
             migrate_project_finals,
             set_watch_root,
@@ -2997,6 +3101,7 @@ mod tests {
         assert!(root.join("SEASON 1/Guest_MARIYAMEETS/02_EDIT").is_dir());
         assert!(!root.join("SEASON 10/Guest_MARIYAMEETS").exists());
         create_client_sync(root_string.clone(), "Latest_MARIYAMEETS".into(), "MARIYAMEETS".into(), None, None).unwrap();
+        assert!(root.join("SEASON 10/Latest_MARIYAMEETS/03_EXPORTS/CLIPS").is_dir());
         assert!(root.join("SEASON 10/Latest_MARIYAMEETS").is_dir());
         for invalid in ["SEASON 3", "../SEASON 1", "XX ASSETS"] {
             assert!(create_client_sync(root_string.clone(), "Invalid_MARIYAMEETS".into(), "MARIYAMEETS".into(), None, Some(invalid.into())).is_err());
@@ -3156,6 +3261,30 @@ mod tests {
             .unwrap_err()
             .contains("Unversioned"));
         fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn nested_clips_are_excluded_from_main_export_versions() {
+        let client = test_dir("clips-isolated-from-approval");
+        let exports = client.join("03_EXPORTS");
+        fs::create_dir_all(exports.join("CLIPS")).unwrap();
+        fs::write(exports.join("Main_V2.mp4"), b"main").unwrap();
+        fs::write(exports.join("CLIPS/Clip_V99.mp4"), b"clip").unwrap();
+        let versions = scan_video_versions(&exports).unwrap();
+        assert_eq!(versions.len(), 1);
+        assert_eq!(versions[0].filename, "Main_V2.mp4");
+    }
+
+    #[test]
+    fn legacy_client_without_clips_folder_remains_valid() {
+        let client = test_dir("legacy-client-no-clips");
+        for dir in ["01_MEDIA", "02_EDIT", "03_EXPORTS", "03_EXPORTS/APPROVAL", "04_FINAL"] {
+            fs::create_dir_all(client.join(dir)).unwrap();
+        }
+        assert!(!client.join("03_EXPORTS/CLIPS").exists());
+        let scanned = scan_client_folders("Legacy", &client);
+        assert_eq!(scanned.status, "OK");
+        assert!(!scanned.missing.iter().any(|value| value == "03_EXPORTS/CLIPS"));
     }
 
     #[test]

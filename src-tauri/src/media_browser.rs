@@ -67,6 +67,8 @@ pub(crate) fn resolve_paths(paths: Vec<String>) -> Result<Vec<MediaEntry>, Strin
                 path: path.to_string_lossy().into_owned(),
                 kind: kind.into(),
                 size: metadata.len(),
+                modified: metadata.modified().ok().and_then(system_time_ns),
+                created: metadata.created().ok().and_then(system_time_ns),
             });
         }
     }
@@ -113,6 +115,14 @@ pub struct MediaEntry {
     pub(crate) path: String,
     kind: String,
     size: u64,
+    modified: Option<String>,
+    created: Option<String>,
+}
+
+fn system_time_ns(time: std::time::SystemTime) -> Option<String> {
+    time.duration_since(std::time::UNIX_EPOCH)
+        .ok()
+        .map(|duration| duration.as_nanos().to_string())
 }
 #[derive(Serialize)]
 pub struct MediaFolder {
@@ -351,6 +361,8 @@ fn browse_folder(path: &Path) -> Result<MediaFolder, String> {
             } else {
                 0
             },
+            modified: metadata.modified().ok().and_then(system_time_ns),
+            created: metadata.created().ok().and_then(system_time_ns),
         });
     }
     entries.sort_by(|a, b| {

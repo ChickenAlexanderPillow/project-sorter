@@ -61,7 +61,7 @@ export function PremiereProjectHealth({ projectRoot, clientPath, projectPath, on
   const [copyRoles, setCopyRoles] = useState<Record<string, string>>({});
   const [copyBusy, setCopyBusy] = useState(false);
   const [copyError, setCopyError] = useState('');
-  const [copyProgress, setCopyProgress] = useState<{ phase: string; source: string } | null>(null);
+  const [copyProgress, setCopyProgress] = useState<{ phase: string; source: string; completed: number; total: number; bytes_copied: number; file_size: number } | null>(null);
   const [copySuccess, setCopySuccess] = useState('');
   const copyListRef = useRef<HTMLDivElement>(null);
   const headingId = useId();
@@ -86,7 +86,7 @@ export function PremiereProjectHealth({ projectRoot, clientPath, projectPath, on
     let timer: ReturnType<typeof setTimeout>;
     const poll = async () => {
       try {
-        const value = await invoke<{ phase: string; source: string } | null>('ingest_progress', { projectRoot });
+        const value = await invoke<{ phase: string; source: string; completed: number; total: number; bytes_copied: number; file_size: number } | null>('ingest_progress', { projectRoot });
         if (active) setCopyProgress(value);
       } catch { /* Copy results remain authoritative when progress is unavailable. */ }
       if (active) timer = setTimeout(() => void poll(), 1000);
@@ -136,6 +136,7 @@ export function PremiereProjectHealth({ projectRoot, clientPath, projectPath, on
   }
 
   const items = report?.items || [];
+  const copyProgressValue = copyProgress && copyProgress.total > 0 ? Math.min(100, Math.round(((copyProgress.completed + (copyProgress.phase === 'collecting' && copyProgress.file_size > 0 ? copyProgress.bytes_copied / copyProgress.file_size : 0)) / copyProgress.total) * 100)) : null;
   const rank: Record<Status, number> = { missing: 0, unavailable: 1, local: 2, moved: 3, copied: 4, unknown: 5, found: 6 };
   const issues = items.filter(item => statusFor(item.status) !== 'found')
     .sort((a, b) => rank[statusFor(a.status)] - rank[statusFor(b.status)]);
@@ -215,6 +216,7 @@ export function PremiereProjectHealth({ projectRoot, clientPath, projectPath, on
             })}
           </div>
           <div className="pph-copy-notice" aria-live="polite">{copyError ? <p className="pph-feedback" role="alert">{copyError}</p> : copyBusy ? <p role="status">{copyProgress && ['collecting', 'verifying', 'filing', 'inventorying'].includes(copyProgress.phase) ? `${copyProgress.phase === 'verifying' ? 'Verifying' : copyProgress.phase === 'filing' ? 'Filing' : copyProgress.phase === 'inventorying' ? 'Checking' : 'Copying'} ${copyProgress.source.split(/[\\/]/).pop() || 'selected files'}...` : 'Preparing and verifying selected files...'}</p> : <p>Originals stay untouched. Relink in Premiere after copying.</p>}</div>
+          {copyBusy && <div className="pph-live-progress" aria-live="polite"><div><strong>{copyProgress && ['collecting', 'verifying', 'filing', 'inventorying'].includes(copyProgress.phase) ? `${copyProgress.phase === 'verifying' ? 'Verifying' : copyProgress.phase === 'filing' ? 'Filing' : copyProgress.phase === 'inventorying' ? 'Checking' : 'Copying'} ${copyProgress.source.split(/[\\/]/).pop() || 'selected files'}` : 'Preparing NAS copy'}</strong>{copyProgressValue !== null && <span>{copyProgressValue}%</span>}</div><div className="pph-live-progress-track" role="progressbar" aria-label="Copy to NAS progress" aria-valuemin={0} aria-valuemax={100} aria-valuenow={copyProgressValue ?? undefined} aria-valuetext={copyProgressValue === null ? "Progress is being prepared" : `${copyProgressValue}% complete`}><span className={copyProgressValue === null ? "indeterminate" : ""} style={copyProgressValue === null ? undefined : {width:`${copyProgressValue}%`}}/></div>{copyProgress?.phase === 'collecting' && copyProgress.file_size > 0 && <small>{(copyProgress.bytes_copied / 1024 ** 2).toFixed(1)} of {(copyProgress.file_size / 1024 ** 2).toFixed(1)} MB this file &middot; {copyProgress.completed} of {copyProgress.total} files</small>}</div>}
           <footer><span className="pph-copy-count" role="status">{selectedCount} of {localItems.length} selected</span><button type="button" className="pph-copy-cancel" autoFocus disabled={copyBusy} onClick={() => setCopyOpen(false)}>Cancel</button><button type="button" className="pph-copy-confirm" disabled={copyBusy || !selectedCount} onClick={() => void copyLocalMedia(localItems)}>{copyBusy ? <><LoaderCircle size={14} className="pph-spin"/>Copying and verifying…</> : <><Copy size={14}/>Copy {selectedCount} {selectedCount === 1 ? 'file' : 'files'} to NAS</>}</button></footer>
       </dialog>}
     </section>;

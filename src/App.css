@@ -3971,13 +3971,40 @@ input[type="radio"] {
   border-radius: 5px;
 }
 
+.advanced-stats-disclosure {
+  border-bottom: 1px solid var(--pepper-line);
+  background: #242424;
+}
+
+.advanced-stats-disclosure > summary {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 34px;
+  padding: 7px 14px;
+  color: var(--pepper-muted);
+  cursor: pointer;
+  font-size: 11px;
+  font-weight: 600;
+  user-select: none;
+}
+
+.advanced-stats-disclosure > summary:hover {
+  color: var(--pepper-text);
+}
+
+.advanced-stats-disclosure > summary:focus-visible {
+  outline: 2px solid var(--pepper-text);
+  outline-offset: -2px;
+}
+
 .advanced-stats {
   display: grid;
   grid-template-columns: repeat(4, minmax(0, 1fr));
   gap: 10px;
   padding: 10px 14px;
-  border-bottom: 1px solid var(--pepper-line);
-  background: #242424;
+  border-bottom: 0;
+  background: transparent;
 }
 
 .advanced-stat {

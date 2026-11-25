@@ -35,6 +35,19 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
+      - name: Generate app icons from the brand source
+        run: node node_modules/@tauri-apps/cli/tauri.js icon "public/Premium White Chili Pepper Icon.png" --output src-tauri/icons
+
+      - name: Set up Python for the Windows taskbar icon
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.x"
+
+      - name: Generate crisp taskbar-size icon frames
+        run: |
+          python -m pip install Pillow
+          python scripts/generate-windows-icon.py
+
       - name: Set automatic build version
         shell: pwsh
         run: |

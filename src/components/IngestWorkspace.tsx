@@ -9,6 +9,9 @@ import "./IngestWorkspace.css";
 import { ClientLabel, parseClientLabel } from "./ClientLabel";
 import { MediaSourceBrowser } from "./MediaSourceBrowser";
 import { defaultRole, mediaKind, mediaRoleIcon, type SourceMedia } from "./MediaTypes";
+import {IngestProgressBar} from "./IngestProgressBar";
+import {advanceCollectProgress,emptyCollectProgress,pendingCollectFiles,recategorizePendingFiles} from "./ingestProgress";
+import { pendingIngestSources } from "./pendingIngestSources";
 import { MediaSources } from "./MediaSources";
 import "./ImportSelection.css";
 
@@ -16,7 +19,7 @@ type IngestFile = { id:string; batch_id:string; collected_at:string|null; newly_
 type Manifest = { schema_version:number; files:IngestFile[]; reviewed_groups:string[] };
 type Client = { name:string; path:string; status:string };
 type Lease = { locked:boolean; owner:string|null; stale:boolean };
-type Progress = { project_root:string; phase:string; source:string; completed:number; total:number; bytes_copied:number; file_size:number; completed_sources:string[] };
+type Progress = { updated_at:string; project_root:string; phase:string; source:string; completed:number; total:number; bytes_copied:number; file_size:number; completed_sources:string[] };
 type ReviewDestination = { file_id:string; name:string; role:string; client:string; destination:string; collision:boolean; issue:string|null };
 type StagedSource = SourceMedia;
 function SourcesIcon({size=16}:{size?:number}) { return <FileAudio size={size}/>; }
@@ -40,6 +43,10 @@ export function IngestWorkspace({projectRoot, projectTitle, clients, onBack, onC
   const [lease, setLease] = useState<Lease>({locked:false, owner:null, stale:false});
   const operation=useRef(false);
   const operationEpoch=useRef(0);
+  const operationStarted=useRef(0);
+  const collectPlan=useRef<SourceMedia[]>([]);
+  const collectProgress=useRef(emptyCollectProgress());
+  const [operationType,setOperationType]=useState<'collect'|'file'|null>(null);
   const [progress, setProgress] = useState<Progress|null>(null);
   const [review, setReview] = useState<ReviewDestination[]|null>(null), [reviewedConflicts, setReviewedConflicts] = useState(false);
   const [confirmationOpen,setConfirmationOpen]=useState(false);
@@ -54,9 +61,24 @@ export function IngestWorkspace({projectRoot, projectTitle, clients, onBack, onC
   useEffect(() => { try { localStorage.setItem(storageKey, JSON.stringify({step, staged})); } catch { /* View persistence is optional. */ } }, [storageKey, step, staged]);
   useEffect(() => {
     let active = true;
-    const poll = async () => { const ownOperation=operation.current, epoch=operationEpoch.current; try { const [nextLease, nextProgress] = await Promise.all([invoke<Lease>("ingest_lease_status", {projectRoot}), invoke<Progress|null>("ingest_progress", {projectRoot})]); if (!active || epoch!==operationEpoch.current) return; if(!ownOperation&&!operation.current)setLease(nextLease); setProgress(nextProgress); } catch { /* Operation errors are reported by the initiating action. */ } };
-    void poll(); const timer = window.setInterval(() => void poll(), 1500); return () => { active = false; window.clearInterval(timer); };
-  }, [projectRoot]);
+    const poll = async () => {
+      const ownOperation=operation.current, epoch=operationEpoch.current;
+      try {
+        const [nextLease,nextProgress]=await Promise.all([invoke<Lease>('ingest_lease_status',{projectRoot}),invoke<Progress|null>('ingest_progress',{projectRoot})]);
+        if(!active||epoch!==operationEpoch.current)return;
+        if(!ownOperation&&!operation.current)setLease(nextLease);
+        if(ownOperation&&(!nextProgress||!Number.isFinite(Date.parse(nextProgress.updated_at))||Date.parse(nextProgress.updated_at)<operationStarted.current))return;
+        if(ownOperation&&operationType==='collect'&&nextProgress){
+          const aggregate=advanceCollectProgress(collectProgress.current,collectPlan.current,nextProgress);
+          collectProgress.current=aggregate;
+          setProgress({...nextProgress,completed_sources:aggregate.completed});
+        }else setProgress(nextProgress);
+      }catch{/* Operation errors are reported by the initiating action. */}
+    };
+    void poll();const timer=window.setInterval(()=>void poll(),busy?750:1500);
+    return()=>{active=false;window.clearInterval(timer);};
+  },[projectRoot,busy,operationType]);
+
   useEffect(() => {
     let active=true;
     const previous=initialView.staged as StagedSource[]|undefined;
@@ -78,6 +100,10 @@ export function IngestWorkspace({projectRoot, projectTitle, clients, onBack, onC
     }).catch(e => { if (active) setError(String(e)); });
     return () => { active = false; };
   }, [loaded, busy, lease.locked, projectRoot]);
+  useEffect(()=>{
+    if(!loaded||busy||resolvingSources)return;
+    setStaged(current=>{const pending=pendingIngestSources(current,manifest.files);return pending.length===current.length?current:pending;});
+  },[loaded,busy,resolvingSources,manifest.files]);
   const mutate = (change:(current:Manifest)=>Manifest) => { if (busy || lease.locked) return; persist(change(manifestRef.current)); };
 
   const readOnly = busy || lease.locked || !loaded || resolvingSources;
@@ -110,20 +136,22 @@ export function IngestWorkspace({projectRoot, projectTitle, clients, onBack, onC
   const addSources = (files:SourceMedia[]) => { setStaged(current => [...current,...files.filter(file=>mediaKind(file.path)&&!current.some(s=>s.path===file.path))]); go(1); };
   const setSourceTypes = (paths:string[],role:string) => {
     setStaged(current=>current.map(item=>paths.includes(item.path)&&Boolean(mediaKind(item.path))?{...item,role}:item));
-    if(manifest.files.some(file=>paths.includes(file.inbox_path)&&file.status!=='Filed'&&Boolean(mediaKind(file.name)))) mutate(m=>({...m,files:m.files.map(file=>paths.includes(file.inbox_path)&&file.status!=='Filed'&&Boolean(mediaKind(file.name))?{...file,role}:file)}));
+    if(manifest.files.some(file=>paths.includes(file.inbox_path)&&file.status!=='Filed'&&Boolean(mediaKind(file.name)))) mutate(m=>({...m,files:recategorizePendingFiles(m.files,m.files.filter(file=>paths.includes(file.inbox_path)&&Boolean(mediaKind(file.name))).map(file=>file.id),role)}));
   };
   const videosNeedType=staged.filter(item=>mediaKind(item.path)==='video'&&!['Proxy video','Full-resolution video','Stock','Miscellaneous'].includes(item.role)).length;
+  const setFileTypes=(ids:string[],role:string)=>mutate(current=>({...current,files:recategorizePendingFiles(current.files,ids,role)}));
   const collect = async () => {
     if(operation.current || videosNeedType || resolvingSources)return;
+    collectPlan.current=[...staged];collectProgress.current={...emptyCollectProgress(),total:staged.length};operationStarted.current=Date.now();setOperationType('collect');
     operation.current=true; operationEpoch.current++; setBusy(true); setProgress(null); setLease({locked:false,owner:null,stale:false}); setError("");
     try {
       await queue.current;
       let next = await invoke<Manifest>("ingest_collect", {projectRoot, sources:staged.map(s => s.path)});
       const oldIds = new Set(manifestRef.current.files.map(f => f.id));
       next = {...next, reviewed_groups:next.reviewed_groups.filter(id => id !== "ungrouped"), files:next.files.map(f => { const source = staged.find(s => s.path === f.source); return !oldIds.has(f.id) && source ? {...f,role:source.role} : f; })};
-      await invoke("ingest_save", {projectRoot, manifest:next}); updateManifest(next); setStaged(current => current.filter(s => !staged.some(done => done.path === s.path))); setSaveState("saved"); setLease({locked:false,owner:null,stale:false}); go(2);
+      await invoke("ingest_save", {projectRoot, manifest:next}); updateManifest(next); setStaged(current => current.filter(s => !staged.some(done => done.path === s.path))); setSaveState("saved"); setLease({locked:false,owner:null,stale:false});
       try { const view = JSON.parse(localStorage.getItem(storageKey) || "{}"); localStorage.setItem(storageKey, JSON.stringify({...view, staged:(view.staged || []).filter((s:StagedSource) => !staged.some(done => done.path === s.path))})); } catch { /* View persistence is optional. */ }
-    } catch (e) { setError(String(e)); await load().catch(() => undefined); } finally { operationEpoch.current++; operation.current=false; setLease({locked:false,owner:null,stale:false}); setBusy(false); }
+    } catch (e) { setError(String(e)); await load().catch(() => undefined); } finally { operationEpoch.current++; operation.current=false; setLease({locked:false,owner:null,stale:false}); setBusy(false);setOperationType(null); }
   };
   const assignFiles = (ids:string[], paths:string[], share=false) => mutate(m=>({...m,files:m.files.map(file=>{
     if(!ids.includes(file.id)||file.status==='Filed')return file;
@@ -134,6 +162,7 @@ export function IngestWorkspace({projectRoot, projectTitle, clients, onBack, onC
   })}));
   const fileMedia = async () => {
     if(operation.current || busy || lease.locked || saveState!=="saved")return;
+    operationStarted.current=Date.now();setOperationType('file');
     operation.current=true; operationEpoch.current++;
     setBusy(true); setProgress(null); setLease({locked:false,owner:null,stale:false}); setFiledNotice(false); setError("");
     try {
@@ -144,27 +173,33 @@ export function IngestWorkspace({projectRoot, projectTitle, clients, onBack, onC
       setError(String(e)); await load().catch(() => undefined);
     } finally {
       operationEpoch.current++; operation.current=false;
-      setLease({locked:false,owner:null,stale:false}); setBusy(false);
+      setLease({locked:false,owner:null,stale:false}); setBusy(false);setOperationType(null);
     }
   };
-  const summary = step===1 ? (staged.length ? `${staged.length} files ready to copy` : manifest.files.length ? `${manifest.files.length} files copied - ${bytes(manifest.files.reduce((n,f)=>n+f.size,0))}` : "Your original media stays untouched") : `${manifest.files.length-unassigned} ${manifest.files.length-unassigned===1?"file":"files"} assigned to clients${unassigned?` - ${unassigned} awaiting a client`:''}`;
-  const hasMedia = staged.length > 0 || manifest.files.some(file => mediaKind(file.name));
-  const sourceSelector = step !== 1 || hasMedia ? <button className="ig-button" disabled={readOnly} onClick={()=>setSourceBrowser(true)}><Plus size={15}/> Add media</button> : null;
+  const pendingFiles=pendingCollectFiles(manifest.files);
+  const summary = step===1 ? (staged.length ? `${staged.length} ${staged.length===1?'file':'files'} ready to copy` : pendingFiles.length ? `${pendingFiles.length} ${pendingFiles.length===1?'file':'files'} copied - ${bytes(pendingFiles.reduce((n,f)=>n+f.size,0))}` : manifest.files.length ? "All media organised" : "Your original media stays untouched") : `${manifest.files.length-unassigned} ${manifest.files.length-unassigned===1?"file":"files"} assigned to clients${unassigned?` - ${unassigned} awaiting a client`:''}`;
+  const overall=operationType==='collect'?collectProgress.current:null;
+  const progressValue=overall?.total?overall.percent:progress&&progress.total>0?Math.min(100,Math.floor(progress.completed/progress.total*100)):null;
+  const progressPhase=progress?.phase==='complete'?'Finishing':operationType==='file'?'Organising':progress?.phase==='verifying'?'Checking':progress?.phase==='metadata'?'Reading metadata':progress?.phase==='collecting'?'Copying':'Preparing';
+  const progressBar=<IngestProgressBar phase={progressPhase} name={progress?.source?basename(progress.source):undefined} percent={progressValue} completed={overall?.count??progress?.completed??0} total={overall?.total??progress?.total??0}/>;
+  const collected=pendingFiles.filter(file=>mediaKind(file.name)).map(file=>({id:file.id,path:file.inbox_path,name:file.name,kind:mediaKind(file.name)!,role:file.role,size:file.size,created:file.source_created,modified:file.source_modified,status:file.status,destinations:file.destinations,original_path:mediaKind(file.source)?file.source:`${file.source}/${file.relative_path}`,source_name:file.source_name||basename(file.source)}));
+  const sourceSelector = step !== 1 || staged.length > 0 || collected.length > 0 ? <button className="ig-button" disabled={readOnly} onClick={()=>setSourceBrowser(true)}><Plus size={15}/> Add media</button> : null;
 
   return <main className="ig-workspace">
     <header className="ig-heading"><button className="ig-text-button" disabled={saveState !== "saved"} onClick={onBack}><ArrowLeft size={15}/> Production</button><span className="ig-heading-divider"/><span className="ig-project">{projectTitle}<small title="Import media"><FolderInput size={15} aria-label="Import media"/></small></span><span className={`ig-save ${saveState}`} role="status">{saveState === "saving" ? <><LoaderCircle size={12} className="ig-spin"/> Saving</> : saveState === "failed" ? <button className="ig-text-button" onClick={() => persist(manifestRef.current)}>Retry save</button> : <><Check size={12}/> Saved</>}</span></header>
     <nav className="ig-steps" aria-label="Import steps">{STEPS.map(({id:next,label, icon:Icon}) => { const unlocked = next <= step || STEPS.filter(item=>item.id<next).every(item=>canAdvance(item.id)); return <button key={label} aria-current={step === next ? "step" : undefined} disabled={!unlocked || !canLeave || !loaded} className={step === next ? "active" : next < step ? "complete" : ""} onClick={() => go(next)}><span className="ig-step-icon"><Icon size={15}/></span><span>{label}</span></button>; })}</nav>
     <div className="ig-body"><div className="ig-step-heading"><div><h1>{step===1?"Bring in your media":"Group media by client"}</h1></div>{sourceSelector}</div>
     {error && !confirmationOpen && <div className="ig-alert" role="alert"><CircleAlert size={16}/><span>{error}</span><button className="ig-icon-button" aria-label="Dismiss error" onClick={() => setError("")}><X size={14}/></button></div>}
+
     {lease.locked && !busy && <div className="ig-alert"><ShieldCheck size={16}/><span>Someone else is working on this import. You can look around while they finish.<details><summary>Session details</summary><pre>{lease.owner}</pre>{lease.stale && <button className="ig-button" onClick={async () => { try { await invoke("ingest_recover_stale_lease", {projectRoot}); setLease({locked:false, owner:null, stale:false}); await load(); } catch(e) { setError(String(e)); } }}>Recover inactive session</button>}</details></span></div>}
     {!loaded ? <div className="ig-loading"><LoaderCircle className="ig-spin" size={20}/> Opening your media…</div> : <>
     <RetainedView active={step===1}>
       {resolvingSources && <p className="ig-quiet-note"><LoaderCircle className="ig-spin" size={15}/> Finding media files...</p>}
-      <MediaSources staged={staged} copied={manifest.files.filter(file=>mediaKind(file.name)).map(file=>({id:file.id,path:file.inbox_path,name:file.name,kind:mediaKind(file.name)!,role:file.role,size:file.size,status:file.status,source_name:file.source_name||basename(file.source)}))} disabled={readOnly} progress={progress} onBrowse={()=>setSourceBrowser(true)} onRemove={path=>setStaged(current=>current.filter(item=>item.path!==path))} onType={setSourceTypes}/>
+      <MediaSources staged={pendingIngestSources(staged,manifest.files)} copied={collected} disabled={readOnly} progress={busy?progress:null} onBrowse={()=>setSourceBrowser(true)} onRemove={path=>setStaged(current=>current.filter(item=>item.path!==path))} onType={setSourceTypes}/>
       {videosNeedType > 0 && <p className="ig-quiet-note"><CircleAlert size={14}/> {videosNeedType} video{videosNeedType===1?' needs':'s need'} a type.</p>}
     </RetainedView>
 
-    <RetainedView active={step===2}>{filedNotice&&<div className="ig-success ig-group-filed-notice"><CheckCheck size={17}/><span><strong>Media organised</strong><small>The selected media is in its client folders. Add late media whenever it arrives.</small></span></div>}<GroupWorkspace projectRoot={projectRoot} files={manifest.files} clients={clientOptions} disabled={readOnly} onAssign={assignFiles} onCreateClient={onCreateClient}/></RetainedView>
+    <RetainedView active={step===2}>{filedNotice&&<div className="ig-success ig-group-filed-notice"><CheckCheck size={17}/><span><strong>Media organised</strong><small>The selected media is in its client folders. Add late media whenever it arrives.</small></span></div>}<GroupWorkspace projectRoot={projectRoot} files={manifest.files} clients={clientOptions} disabled={readOnly} onAssign={assignFiles} onType={setFileTypes} onCreateClient={onCreateClient}/></RetainedView>
     </>}
     </div>
     {sourceBrowser && <MediaSourceBrowser projectRoot={projectRoot} onAdd={addSources} onClose={() => setSourceBrowser(false)}/>}
@@ -178,8 +213,8 @@ export function IngestWorkspace({projectRoot, projectTitle, clients, onBack, onC
         {(issues.length>0||conflicts.length>0)&&<div className="ig-confirm-issues"><h3><CircleAlert size={15}/> Check these files</h3>{review.filter(row=>row.issue||row.collision).map((row,index)=><p key={`${row.file_id}-${index}`}><strong>{row.name}</strong><span>{row.issue||'A file with this name already exists. Pepper will choose an available name.'}</span></p>)}{conflicts.length>0&&<label><input type="checkbox" checked={reviewedConflicts} onChange={event=>setReviewedConflicts(event.target.checked)}/> Use available names for matching files</label>}</div>}
         {filingCount>0&&<p className="ig-confirm-safe"><ShieldCheck size={14}/> Original source media stays untouched.</p>}
       </div>}
-      <footer className="ig-confirm-actions"><button className="ig-button ig-back" disabled={busy} onClick={()=>setConfirmationOpen(false)}>Back to group</button><button className="ig-button ig-primary" disabled={busy||!review||filingCount===0||issues.length>0||(conflicts.length>0&&!reviewedConflicts)} onClick={()=>void fileMedia()}>{busy?<><LoaderCircle className="ig-spin" size={15}/> Organising…</>:<><FolderInput size={15}/> Confirm &amp; organise {filingCount} {filingCount===1?'file':'files'}</>}</button></footer>
+      <footer className="ig-confirm-actions">{busy&&progressBar}<button className="ig-button ig-back" disabled={busy} onClick={()=>setConfirmationOpen(false)}>Back to group</button><button className="ig-button ig-primary" disabled={busy||!review||filingCount===0||issues.length>0||(conflicts.length>0&&!reviewedConflicts)} onClick={()=>void fileMedia()}>{busy?<><LoaderCircle className="ig-spin" size={15}/> Organising…</>:<><FolderInput size={15}/> Confirm &amp; organise {filingCount} {filingCount===1?'file':'files'}</>}</button></footer>
     </section></div>}
-    <footer className="ig-footer"><span className="ig-footer-summary">{busy ? <><LoaderCircle size={14} className="ig-spin"/>{(progress?.phase === "collecting" || progress?.phase === "verifying") ? `${progress.phase === "verifying" ? "Verifying" : "Copying"} ${basename(progress.source)}` : progress?.phase === "filing" ? `Organising ${progress.completed} of ${progress.total} files` : "Getting things ready…"}</> : summary}</span><div>{step > 1 && <button className="ig-button ig-back" disabled={!canLeave} onClick={() => go(1)}><ArrowLeft size={14}/> Collect</button>}{step === 1 && staged.length > 0 ? <button className="ig-button ig-primary" disabled={readOnly || saveState !== "saved" || videosNeedType > 0} onClick={() => void collect()}><Copy size={15}/>{busy ? "Copying…" : "Copy to project"}</button> : step === 1 ? <button className="ig-button ig-primary" disabled={readOnly || !canLeave || !canAdvance(step)} onClick={() => go(2)}>Group media<ArrowRight size={14}/></button> : manifest.files.some(file=>file.status!=="Filed") ? <button className="ig-button ig-primary" disabled={readOnly||!canLeave||!clientsChecked} onClick={()=>go(4)}><Check size={15}/> Review and organise</button> : <button className="ig-button ig-primary" disabled={!canLeave} onClick={onBack}>Return to production<ArrowRight size={14}/></button>}</div></footer>
+    <footer className="ig-footer"><span className={`ig-footer-summary ${busy?'working':''}`}>{busy?progressBar:summary}</span><div>{step > 1 && <button className="ig-button ig-back" disabled={!canLeave} onClick={() => go(1)}><ArrowLeft size={14}/> Collect</button>}{step === 1 && staged.length > 0 ? <button className="ig-button ig-primary" disabled={readOnly || saveState !== "saved" || videosNeedType > 0} onClick={() => void collect()}><Copy size={15}/>{busy ? "Copying…" : "Copy to project"}</button> : step === 1 ? <button className="ig-button ig-primary" disabled={readOnly || !canLeave || !canAdvance(step)} onClick={() => go(2)}>Group media<ArrowRight size={14}/></button> : manifest.files.some(file=>file.status!=="Filed") ? <button className="ig-button ig-primary" disabled={readOnly||!canLeave||!clientsChecked} onClick={()=>go(4)}><Check size={15}/> Review and organise</button> : <button className="ig-button ig-primary" disabled={!canLeave} onClick={onBack}>Return to production<ArrowRight size={14}/></button>}</div></footer>
   </main>;
 }

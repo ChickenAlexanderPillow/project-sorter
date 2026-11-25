@@ -8,6 +8,11 @@
 
 .client-scroll-area.busy { opacity: .7; pointer-events: none; }
 
+.client-scroll-area .client-list {
+  /* Reserved trailing space must not stretch the grid's client rows. */
+  align-content: start;
+}
+
 .client-scroll-area > .table-scroll {
   min-width: 0;
   padding-inline: 10px;

@@ -497,7 +497,7 @@ export default function App() {
   const [lastBatch, setLastBatch] = useState<UndoEntry[]>([]);
   const [showUndoConfirm, setShowUndoConfirm] = useState(false);
   const [showAdvancedMenu, setShowAdvancedMenu] = useState(false);
-  const [advancedMode, setAdvancedMode] = useState(false);
+  const [advancedMode, setAdvancedMode] = useState(import.meta.env.DEV);
   const [advancedModeRequested, setAdvancedModeRequested] = useState(false);
   const [advancedPassword, setAdvancedPassword] = useState("");
   const [advancedPasswordError, setAdvancedPasswordError] = useState("");
@@ -517,12 +517,26 @@ export default function App() {
     const container = tableScrollRef.current;
     const row = Array.from(container?.querySelectorAll<HTMLElement>(".client-row") ?? [])
       .find((candidate) => candidate.dataset.clientName === expandedName);
-    if (!container || !row) return;
+    const content = container?.querySelector<HTMLElement>(".client-list");
+    if (!container || !row || !content) return;
+    const reserveScrollSpace = () => {
+      // Leave enough content below this row to reach the top, including for
+      // the last client and when a workspace tab becomes shorter.
+      const rowTop = row.getBoundingClientRect().top - content.getBoundingClientRect().top;
+      content.style.minHeight = `${Math.ceil(rowTop + container.clientHeight)}px`;
+    };
+    reserveScrollSpace();
+    const observer = new ResizeObserver(reserveScrollSpace);
+    observer.observe(container);
     const frame = window.requestAnimationFrame(() => {
       const rowOffset = row.getBoundingClientRect().top - container.getBoundingClientRect().top - container.clientTop;
       container.scrollTo({ top: container.scrollTop + rowOffset, behavior: "smooth" });
     });
-    return () => window.cancelAnimationFrame(frame);
+    return () => {
+      window.cancelAnimationFrame(frame);
+      observer.disconnect();
+      content.style.removeProperty("min-height");
+    };
   }, [expandedClients]);
   const [dragTarget, setDragTarget] = useState<string | null>(null);
   const hoverClientRef = useRef<string | null>(null);
@@ -2507,7 +2521,9 @@ export default function App() {
             <button type="button" className="media-import-entry" aria-label="Import media" title="Import media" disabled={!projectRoot} onClick={()=>setIngestOpen(true)}><FolderInput size={17}/></button>
           </div>
           {advancedMode && (
-            <div className="advanced-stats" aria-label="Project process statistics">
+            <details className="advanced-stats-disclosure">
+              <summary>Project stats</summary>
+              <div className="advanced-stats" aria-label="Project process statistics">
               <div className="advanced-stat">
                 <span>Clients with valid exports</span>
                 <strong>{advancedStats.updating ? "Updating" : `${advancedStats.exportClientCount} / ${advancedStats.clientCount}`}</strong>
@@ -2548,7 +2564,8 @@ export default function App() {
                 <strong>{advancedStats.updating ? "Updating" : advancedStats.manualOverrideCount}</strong>
                 <small>Overrides set in Advanced mode</small>
               </div>
-            </div>
+              </div>
+            </details>
           )}
           {DEBUG_ENABLED && debugInfo && (
             <div className="debug-info">
@@ -3074,7 +3091,7 @@ export default function App() {
                 </div>
                 {expanded && !client.exportStatusLoading && (
                   <div className="client-details">
-                    <ClientWorkspace studioRequest={studioRequests[client.path] ?? 0} key={client.path} projectRoot={projectRoot} clientPath={client.path} clientType={client.client_type} huddleTemplate={client.huddle_template} onContextMenu={openPepperContextMenu} reviewDefault={sortedApprovalVersions.length>0||published} hasApprovals={sortedApprovalVersions.length>0} finalPath={published&&exports.final_filename?`${client.path.replace(/[\\/]+$/, "")}\\04_FINAL\\${exports.final_filename}`:null}>
+                    <ClientWorkspace studioRequest={studioRequests[client.path] ?? 0} key={client.path} projectRoot={projectRoot} clientPath={client.path} clientType={client.client_type} huddleTemplate={client.huddle_template} advancedMode={advancedMode && client.status !== "Not a client"} onContextMenu={openPepperContextMenu} reviewDefault={sortedApprovalVersions.length>0||published} hasApprovals={sortedApprovalVersions.length>0} finalPath={published&&exports.final_filename?`${client.path.replace(/[\\/]+$/, "")}\\04_FINAL\\${exports.final_filename}`:null}>
                     {sortedApprovalVersions.length === 0 ? (
                       pendingApprovalEntry
                         ? <VersionHistory label={`${label.name} approval versions`}>{pendingApprovalEntry}</VersionHistory>

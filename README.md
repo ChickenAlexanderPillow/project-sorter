@@ -13,6 +13,7 @@ npm run tauri -- dev
 - Add Client (creates template) and Fix Client (creates missing folders only)
 - Client modes: `EXHIBITOR`, `PRODUCT`, `HUDDLE`, `MARIYAMEETS`, `SOCIAL`, or a custom mode
 - Sort Mode: drag files/folders onto a client row, flattening all files into the mode destination
+- Advanced mode take-home drive: make a verified full-client copy, incrementally update it, review changes on return, merge home edits onto the NAS, and browse/restore replaced files from a hidden per-client archive
 - Collision-safe naming (`__2`, `__3`, etc.)
 - Automatic move routing based on file type and client mode
 - CSV logging per project under `_logs/` + Undo last batch (session)
@@ -98,3 +99,5 @@ cargo test
 - Scanning only checks one level deep under the Project Root.
 - Dragging folders is supported; files are flattened into the destination.
 - Undo is best-effort for the last batch in the current session.
+- Take-home packages are tracked by a manifest on the portable drive and in the client. Returning merges new and changed files; NAS-only files are retained and files deleted from the drive are not deleted from the NAS. Replaced NAS files remain in the hidden `.pepper-takehome/archive/` folder.
+- Premiere projects may need media relinking when opened from a different drive because Pepper preserves the client folder structure but does not rewrite Premiere project paths.

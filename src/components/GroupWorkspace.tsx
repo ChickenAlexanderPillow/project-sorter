@@ -4,15 +4,16 @@ import { ChevronRight, CopyPlus, Folder, Headphones, FileVideo, GripVertical, Im
 import { NewIngestClient, type CreateIngestClient } from './NewIngestClient';
 import { ClientLabel, parseClientLabel } from './ClientLabel';
 import { SourceMediaPreview } from './SourceMediaPreview';
-import { mediaKind } from './MediaTypes';
+import { mediaKind, MediaTypeRail } from './MediaTypes';
 import { recordingGroups, type Recording } from './recordingGroups';
 import './GroupWorkspace.css';
 import { RecordingTimeline, RecordingPill } from './RecordingTimeline';
 
-type File = Recording & {inbox_path:string;role:string;status:string;client:string|null;clients:string[];client_paths:string[]};
+type File = Recording & {inbox_path:string;role:string;status:string;client:string|null;clients:string[];client_paths:string[];destinations?:string[]};
 type Client = {name:string;path:string};
-export function GroupWorkspace({projectRoot,files,clients,disabled,onAssign,onCreateClient}:{projectRoot:string;files:File[];clients:Client[];disabled:boolean;onAssign:(ids:string[],paths:string[],share?:boolean)=>void;onCreateClient:CreateIngestClient}) {
-  const [selected,setSelected]=useState<string[]>([]),[preview,setPreview]=useState<File|null>(null);
+export function GroupWorkspace({projectRoot,files,clients,disabled,onAssign,onType,onCreateClient}:{projectRoot:string;files:File[];clients:Client[];disabled:boolean;onAssign:(ids:string[],paths:string[],share?:boolean)=>void;onType?:(ids:string[],role:string)=>void;onCreateClient:CreateIngestClient}) {
+  const [selected,setSelected]=useState<string[]>([]),[previewId,setPreviewId]=useState<string|null>(null);
+  const preview=files.find(file=>file.id===previewId)||null;
   const [dragged,setDragged]=useState<string[]>([]),[over,setOver]=useState<string|null>(null),[query,setQuery]=useState('');
   const [share,setShare]=useState(false),[expanded,setExpanded]=useState<string[]>([]);
   const [collapsedGroups,setCollapsedGroups]=useState<string[]>([]);
@@ -26,11 +27,14 @@ export function GroupWorkspace({projectRoot,files,clients,disabled,onAssign,onCr
   const pending=files.filter(file=>file.status!=='Filed'&&!paths(file).length);
   const groups=recordingGroups(pending);
   const chosen=files.filter(file=>selected.includes(file.id)&&file.status!=='Filed');
+  const classification=preview&&preview.status!=='Filed'&&!preview.destinations?.length
+    ? (selected.includes(preview.id)?chosen.filter(file=>!file.destinations?.length&&mediaKind(file.name)===mediaKind(preview.name)):[preview])
+    : [];
   const choose=(file:File,shift=false)=>{
     if(suppressClick.current){suppressClick.current=false;return;}
-    if(!shift&&selected.includes(file.id)){setSelected(current=>current.filter(id=>id!==file.id));setPreview(null);setShare(false);return;}
-    if(!shift&&preview?.id===file.id){setPreview(null);return;}
-    setPreview(file);if(disabled||file.status==='Filed')return;
+    if(!shift&&selected.includes(file.id)){setSelected(current=>current.filter(id=>id!==file.id));setPreviewId(null);setShare(false);return;}
+    if(!shift&&preview?.id===file.id){setPreviewId(null);return;}
+    setPreviewId(file.id);if(disabled||file.status==='Filed')return;
     const available=files.filter(item=>item.status!=='Filed');
     const first=available.findIndex(item=>item.id===anchor.current),last=available.findIndex(item=>item.id===file.id);
     setSelected(shift&&first>=0?available.slice(Math.min(first,last),Math.max(first,last)+1).map(item=>item.id):[file.id]);
@@ -39,7 +43,7 @@ export function GroupWorkspace({projectRoot,files,clients,disabled,onAssign,onCr
   };
   const assign=(ids:string[],path:string|null)=>{
     if(disabled||!ids.length)return;
-    onAssign(ids,path?[path]:[],path?share:false);setSelected([]);setPreview(null);setShare(false);
+    onAssign(ids,path?[path]:[],path?share:false);setSelected([]);setPreviewId(null);setShare(false);
     if(path)setExpanded(current=>current.includes(path)?current:[...current,path]);
   };
   const beginDrag=(event:React.PointerEvent<HTMLButtonElement>,ids:string[])=>{
@@ -89,7 +93,7 @@ export function GroupWorkspace({projectRoot,files,clients,disabled,onAssign,onCr
     return typed.length>0?<div className="ig-group-media-section" role="group" aria-label={label} key={label}>{typed.map(file=>row(file))}</div>:null;
   });
   const timelineRows=(items:File[])=><RecordingTimeline files={items} className="ig-recording-timeline">{(file,placement)=>row(file,placement)}</RecordingTimeline>;
-  return <div className={`ig-group-layout ${dragged.length?'dragging':''}`} onClick={event=>{const target=event.target as HTMLElement;if(target.closest('.ig-preview-rail,.ig-group-file,.ig-auto-group-heading,button,input,textarea,select,a,[role="button"],video,audio'))return;setSelected([]);setPreview(null);setShare(false);}}><div className="ig-group-main">
+  return <div className={`ig-group-layout ${dragged.length?'dragging':''}`} onClick={event=>{const target=event.target as HTMLElement;if(target.closest('.ig-preview-rail,.ig-group-file,.ig-auto-group-heading,button,input,textarea,select,a,[role="button"],video,audio'))return;setSelected([]);setPreviewId(null);setShare(false);}}><div className="ig-group-main">
     <div ref={ghost} className={`ig-media-drag-ghost ${dragged.length?'visible':''}`} aria-hidden="true"><GripVertical size={14}/><span>{dragged.length===1?files.find(file=>file.id===dragged[0])?.name:`${dragged.length} files`}</span></div>
     <section className={`ig-unassigned ${over==='unassigned'?'drop-over':''}`} data-media-destination="unassigned">
       <header className="ig-group-section-title"><h2>Media groups</h2><span>{pending.length} files</span>{chosen.some(file=>storedPaths(file).length>0)&&<button className="ig-text-button" disabled={disabled} onClick={()=>assign(chosen.map(file=>file.id),null)}>Remove client assignment</button>}</header>
@@ -113,5 +117,5 @@ export function GroupWorkspace({projectRoot,files,clients,disabled,onAssign,onCr
       })}</div>
       {!clients.length&&<div className="ig-assignment-empty">No clients with a mode and all four media folders.</div>}
     </section>
-  </div><PreviewSidebar autoCollapsed={!preview} path={preview?.inbox_path} name={preview?.name} className={`ig-group-preview ${preview?'has-selection':'no-selection'}`}><SourceMediaPreview path={preview?.inbox_path||null} name={preview?.name} showHeading={false}/>{preview&&<div className="ig-source-preview-meta"><span>{preview.role}</span>{preview.timestamp_warning&&<span title={preview.timestamp_warning}>Date needs checking</span>}</div>}</PreviewSidebar></div>;
+  </div><PreviewSidebar autoCollapsed={!preview} path={preview?.inbox_path} name={preview?.name} className={`ig-group-preview ${preview?'has-selection':'no-selection'}`}><SourceMediaPreview path={preview?.inbox_path||null} name={preview?.name} showHeading={false}/>{preview&&<div className="ig-source-preview-meta"><span>{preview.role}</span>{preview.timestamp_warning&&<span title={preview.timestamp_warning}>Date needs checking</span>}</div>}{preview&&<div className="ig-preview-classification"><MediaTypeRail items={(classification.length?classification:[preview]).map(file=>({path:file.inbox_path||file.name,role:file.role}))} disabled={disabled||!onType||!classification.length} onChange={role=>onType?.(classification.map(file=>file.id),role)}/></div>}</PreviewSidebar></div>;
 }

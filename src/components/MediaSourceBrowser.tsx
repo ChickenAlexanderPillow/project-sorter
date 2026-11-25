@@ -1,3 +1,4 @@
+import { MediaFileDates } from "./MediaFileDates";
 import { PreviewSidebar } from "./PreviewSidebar";
 import { useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
@@ -6,7 +7,7 @@ import { defaultRole, type SourceMedia } from "./MediaTypes";
 import { SourceMediaPreview } from "./SourceMediaPreview";
 
 type Location = {name:string;path:string;kind:string;available:boolean;total_bytes:number|null;free_bytes:number|null};
-type Entry = {name:string;path:string;kind:string;size:number};
+type Entry = {name:string;path:string;kind:string;size:number;created?:string|null;modified?:string|null};
 type Listing = {path:string;parent:string|null;entries:Entry[];truncated:boolean};
 const pathKey = (path:string) => /^[a-z]:|^\\\\/i.test(path) ? path.replace(/\\/g,'/').replace(/\/+$/,'').toLowerCase() : path.replace(/\/+$/,'');
 const size = (bytes:number) => bytes >= 1024**3 ? `${(bytes/1024**3).toFixed(1)} GB` : `${(bytes/1024**2).toFixed(1)} MB`;
@@ -91,7 +92,7 @@ export function MediaSourceBrowser({projectRoot,onAdd,onClose}:{projectRoot:stri
               const checked=entries.every(entry=>isSelected(entry.path));
               return <section className="ig-browser-media-section" key={kind}>
                 <header className="ig-media-section-heading"><input type="checkbox" aria-label={`Select all ${label.toLowerCase()}`} disabled={scanning} checked={checked} ref={node=>{if(node)node.indeterminate=!checked&&entries.some(entry=>isSelected(entry.path));}} onChange={e=>{setSelected(e.target.checked?entries:[]);anchor.current=entries[0]?.path||null;}}/><Icon size={15}/><h2>{label}</h2><span>{sectionSelected.length?`${sectionSelected.length} selected`:entries.length}</span></header>
-                {entries.map(entry=><div className={`ig-browser-entry ${isSelected(entry.path)?'selected':''} ${preview?.path===entry.path?'previewing':''}`} key={entry.path} onClick={e=>{if(!(e.target as HTMLElement).closest('button,input'))selectEntry(entry,e.shiftKey);}}><input type="checkbox" disabled={scanning} checked={isSelected(entry.path)} aria-label={`Select ${entry.name}`} onClick={e=>{e.stopPropagation();selectEntry(entry,e.shiftKey,true);}} onChange={()=>{}}/><button className="ig-browser-entry-name" aria-label={`Select ${entry.name}`} onClick={e=>selectEntry(entry,e.shiftKey)}><Icon size={17}/><span>{entry.name}</span></button>{kind==='folder'?<button className="ig-icon-button" aria-label={`Open ${entry.name}`} onClick={()=>void browse(entry.path)}><ChevronRight size={16}/></button>:<small>{size(entry.size)}</small>}</div>)}
+                {entries.map(entry=><div className={`ig-browser-entry ${isSelected(entry.path)?'selected':''} ${preview?.path===entry.path?'previewing':''}`} key={entry.path} onClick={e=>{if(!(e.target as HTMLElement).closest('button,input'))selectEntry(entry,e.shiftKey);}}><input type="checkbox" disabled={scanning} checked={isSelected(entry.path)} aria-label={`Select ${entry.name}`} onClick={e=>{e.stopPropagation();selectEntry(entry,e.shiftKey,true);}} onChange={()=>{}}/><div className="ig-browser-entry-main"><button className="ig-browser-entry-name" aria-label={`Select ${entry.name}`} onClick={e=>selectEntry(entry,e.shiftKey)}><Icon size={17}/><span>{entry.name}</span></button>{kind!=='folder'&&<MediaFileDates className="ig-browser-entry-dates" created={entry.created} modified={entry.modified}/>}</div>{kind==='folder'?<button className="ig-icon-button" aria-label={`Open ${entry.name}`} onClick={()=>void browse(entry.path)}><ChevronRight size={16}/></button>:<small>{size(entry.size)}</small>}</div>)}
               </section>;
             })}
             {!visible.length&&<div className="ig-loading">{query?'No matching media or folders.':'No media in this folder.'}</div>}
