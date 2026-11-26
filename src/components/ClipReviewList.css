@@ -1,0 +1,18 @@
+.clip-review-sidebar{min-width:0}
+.clip-review-sidebar .version-list{max-height:440px;scrollbar-width:thin}
+.clip-review-entry .version-option{min-width:0;min-height:48px}
+.clip-review-name{display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden;overflow-wrap:anywhere;color:#bbb;font-size:11px;font-weight:400;line-height:1.5}
+.clip-review-entry.selected .clip-review-name{color:#eee}
+.clip-review-include{display:grid;place-items:center;align-self:stretch;width:32px;cursor:pointer}
+.clip-review-include input{box-sizing:border-box;width:13px;height:13px;margin:0;padding:0;accent-color:#bdbdbd;cursor:pointer}
+.clip-review-include input:disabled{cursor:default;opacity:.4}
+.clip-review-entry.with-inclusion{grid-template-columns:34px minmax(0,1fr)}
+.clip-review-entry.with-inclusion .clip-review-include{grid-column:1;grid-row:1;width:34px}
+.clip-review-entry.with-inclusion .version-option{grid-column:2;grid-row:1;padding-left:3px}
+.clip-review-entry.with-inclusion input{width:15px;height:15px}
+.clip-review-include:focus-within{outline:1px solid var(--pepper-focus);outline-offset:-3px}
+.clip-review-stage{min-width:0;aspect-ratio:16/9;background:var(--pepper-preview-bg,#232323)}
+.clip-review-stage>.pepper-media-transition,.clip-review-stage .pepper-player-surface{height:100%;aspect-ratio:auto}
+.clip-review-stage .pepper-video-skin{height:100%;max-height:none;aspect-ratio:auto!important}
+.clip-review-stage video{object-fit:contain}
+@media(max-width:760px){.clip-review-sidebar .version-list{max-height:190px}}

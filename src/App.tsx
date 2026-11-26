@@ -1,4 +1,4 @@
-import { availableClientTypes, clientTypeLabel, isMariyaProject, type ClientType } from "./components/clientTypes";
+import { availableClientTypes, clientTypeLabel, defaultClientType, isFixedClientTypeProject, isMariyaProject, type ClientType } from "./components/clientTypes";
 import { InterviewTypeSelect, type HuddleTemplate } from "./components/InterviewTypeSelect";
 import { Fragment, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import type { DragEvent, MouseEvent, ReactNode } from "react";
@@ -12,6 +12,7 @@ import { writeText } from "@tauri-apps/plugin-clipboard-manager";
 import { openPath, openUrl } from "@tauri-apps/plugin-opener";
 import { check, type Update } from "@tauri-apps/plugin-updater";
 import { InlineVideoPlayer } from "./components/InlineVideoPlayer";
+import { Video as VideoIcon } from "lucide-react";
 import { ArrowUpDown, ArrowUpRight, Bell, Check, ChevronDown, ChevronRight, ChevronsUpDown, Clapperboard, CloudUpload, Copy, FolderInput, FolderKanban, Link2, LoaderCircle, Minus, Plus, RefreshCw, Search, Settings, Settings2, Square, Trash2, TriangleAlert, Wrench, X } from "lucide-react";
 import { MariyaSeasonSelect, useMariyaSeasons } from "./components/MariyaSeasonSelect";
 import { IngestWorkspace } from "./components/IngestWorkspace";
@@ -20,6 +21,7 @@ import { ClientWorkspace } from "./components/ClientWorkspace";
 import { createStudioSession, type StudioSession } from "./components/studioSessions";
 import { ClientScrollArea } from "./components/ClientScrollArea";
 import { CopyReviewLinkButton } from "./components/CopyReviewLinkButton";
+import { ClipReviewList } from "./components/ClipReviewList";
 import { VersionHistory } from "./components/VersionHistory";
 import { ClientLabel, parseClientLabel } from "./components/ClientLabel";
 import pepperIcon from "../src-tauri/icons/128x128.png";
@@ -30,6 +32,7 @@ import { StudioMailPeopleSettings, StudioMailSettings } from "./components/Studi
 
 type ClientStatus = "OK" | "Missing folders" | "Not a client";
 type ClientSort = { column: "name" | "status"; direction: "asc" | "desc" };
+type PromotionClip = { name:string; path:string; size:number; modified_ms:number; sha256:string; published:boolean; current:boolean };
 type IngestProgress = { project_root:string; phase:string; source:string; completed:number; total:number };
 type PepperMenuItem = { label: string; action: () => void; disabled?: boolean; separatorBefore?: boolean };
 type PepperContextMenu = { x: number; y: number; title: string; items: PepperMenuItem[] };
@@ -436,6 +439,11 @@ export default function App() {
   const [publishingStage, setPublishingStage] = useState<"publishing" | "refreshing" | null>(null);
   const [publishFailedClientPaths, setPublishFailedClientPaths] = useState<Set<string>>(new Set());
   const [pendingPromotion, setPendingPromotion] = useState<ClientInfo | null>(null);
+  const [promotionClips, setPromotionClips] = useState<PromotionClip[]>([]);
+  const [promotionClipSelection, setPromotionClipSelection] = useState<Set<string>>(new Set());
+  const [promotionClipPreview, setPromotionClipPreview] = useState<string | null>(null);
+  const [promotionTab, setPromotionTab] = useState<'main'|'clips'>('main');
+  const [promotionError, setPromotionError] = useState("");
   const promotionDialogRef = useRef<HTMLDialogElement | null>(null);
   const pepperContextMenuRef = useRef<HTMLDivElement | null>(null);
   const openPepperContextMenu = (event: MouseEvent, title: string, items: PepperMenuItem[]) => {
@@ -474,6 +482,14 @@ export default function App() {
       promotionDialogRef.current?.showModal();
     }
   }, [pendingPromotion]);
+  useEffect(() => {
+    if (!pendingPromotion) { setPromotionClips([]); setPromotionClipSelection(new Set()); setPromotionClipPreview(null); setPromotionTab('main'); setPromotionError(""); return; }
+    let active=true;
+    void invoke<PromotionClip[]>("list_client_clips",{clientPath:pendingPromotion.path}).then((clips)=>{
+      if(!active)return; setPromotionClips(clips); setPromotionClipSelection(new Set(clips.map(clip=>clip.name))); setPromotionClipPreview(null);
+    }).catch(()=>{if(active){setPromotionClips([]);setPromotionClipSelection(new Set());setPromotionClipPreview(null);setPromotionTab('main');}});
+    return()=>{active=false;};
+  },[pendingPromotion?.path]);
   useEffect(() => {
     if (pendingFrameIoUpload && !frameIoUploadDialogRef.current?.open) {
       frameIoUploadDialogRef.current?.showModal();
@@ -1254,7 +1270,7 @@ export default function App() {
   useEffect(() => {
     setShowNewClientForm(false);
     setNewClientName("");
-    setNewClientType(isMariyaMeetsRoot ? "MARIYAMEETS" : "EXHIBITOR");
+    setNewClientType(defaultClientType(projectRoot));
     setCustomClientType("");
     setHuddleTemplate("VIDEO_CALL");
   }, [projectRoot, isMariyaMeetsRoot]);
@@ -1963,7 +1979,7 @@ export default function App() {
         huddleTemplate: newClientType === "HUDDLE" ? huddleTemplate : null,
       });
       setNewClientName("");
-      setNewClientType(isMariyaMeetsRoot ? "MARIYAMEETS" : "EXHIBITOR");
+      setNewClientType(defaultClientType(projectRoot));
       setCustomClientType("");
       setHuddleTemplate("VIDEO_CALL");
       setShowNewClientForm(false);
@@ -1990,35 +2006,30 @@ export default function App() {
   const handlePromoteLatest = async (client: ClientInfo) => {
     const exportStatus = client.export_status;
     if (!exportStatus.latest_filename || exportStatus.issue) return;
-    setPendingPromotion(null);
     setPublishingClientPath(client.path);
     setPublishingStage("publishing");
+    setPromotionError("");
     setError(null);
     try {
-      let message: string;
-      try {
-        message = await invoke<string>("promote_latest_export", {
-          clientPath: client.path,
-          expectedFilename: exportStatus.latest_filename,
-        });
-      } catch (err) {
-        setPublishFailedClientPaths((current) => new Set(current).add(client.path));
-        setError(`Publish failed: ${String(err)}`);
-        void refreshClients(projectRoot, false, true, false, [client.name]).catch((refreshError) => console.warn("Could not refresh failed publish status", refreshError));
-        return;
-      }
+      const selectedClips=promotionClips.filter(clip=>promotionClipSelection.has(clip.name)).map(({name,size,modified_ms,sha256})=>({name,size,modified_ms,sha256}));
+      const message = await invoke<string>("promote_latest_export", {clientPath:client.path,expectedFilename:exportStatus.latest_filename,selectedClips});
       setPublishFailedClientPaths((current) => {
         const next = new Set(current);
         next.delete(client.path);
         return next;
       });
       showToast(message, "success");
+      setPendingPromotion(null);
       setPublishingStage("refreshing");
       try {
         await refreshClients(projectRoot, false, true, false, [client.name]);
       } catch (err) {
         setError(`Published, but project status could not refresh: ${String(err)}`);
       }
+    } catch(err) {
+      setPublishFailedClientPaths((current) => new Set(current).add(client.path));
+      const message=String(err); setPromotionError(message); setError(`Publish needs attention: ${message}`);
+      void refreshClients(projectRoot, false, true, false, [client.name]).catch((refreshError) => console.warn("Could not refresh failed publish status", refreshError));
     } finally {
       setPublishingClientPath(null);
       setPublishingStage(null);
@@ -2691,7 +2702,7 @@ export default function App() {
                       {clientTypeLabel(type)}
                     </button>
                   ))}
-                  {!isMariyaMeetsRoot && <button
+                  {!isMariyaMeetsRoot && !isFixedClientTypeProject(projectRoot) && <button
                     type="button"
                     className={`type-chip custom ${newClientType === "CUSTOM" ? "selected" : ""}`}
                     aria-pressed={newClientType === "CUSTOM"}
@@ -2726,7 +2737,7 @@ export default function App() {
                     title="Cancel"
                     onClick={() => {
                       setNewClientName("");
-                      setNewClientType(isMariyaMeetsRoot ? "MARIYAMEETS" : "EXHIBITOR");
+                      setNewClientType(defaultClientType(projectRoot));
                       setCustomClientType("");
                       setHuddleTemplate("VIDEO_CALL");
                       setShowNewClientForm(false);
@@ -2996,7 +3007,7 @@ export default function App() {
                         <span className="client-expand-icon" aria-hidden="true">
                           {expanded ? <ChevronDown size={16} /> : <ChevronRight size={16} />}
                         </span>
-                        <ClientLabel name={client.name} season={isMariyaMeetsRoot ? client.season : undefined}/>
+                        <ClientLabel name={client.name} type={client.client_type} season={isMariyaMeetsRoot ? client.season : undefined}/>
                       </div>
                     </div>
                     <div className={`client-statuses ${clientIsCached ? "" : !client.exportStatusLoading ? "client-status-enter" : ""}`}>
@@ -3091,7 +3102,7 @@ export default function App() {
                 </div>
                 {expanded && !client.exportStatusLoading && (
                   <div className="client-details">
-                    <ClientWorkspace studioRequest={studioRequests[client.path] ?? 0} key={client.path} projectRoot={projectRoot} clientPath={client.path} clientType={client.client_type} huddleTemplate={client.huddle_template} advancedMode={advancedMode && client.status !== "Not a client"} onContextMenu={openPepperContextMenu} reviewDefault={sortedApprovalVersions.length>0||published} hasApprovals={sortedApprovalVersions.length>0} finalPath={published&&exports.final_filename?`${client.path.replace(/[\\/]+$/, "")}\\04_FINAL\\${exports.final_filename}`:null}>
+                    <ClientWorkspace studioRequest={studioRequests[client.path] ?? 0} key={client.path} projectRoot={projectRoot} clientPath={client.path} clientType={client.client_type} huddleTemplate={client.huddle_template} advancedMode={advancedMode && client.status !== "Not a client"} onContextMenu={openPepperContextMenu} reviewDefault={sortedApprovalVersions.length>0||published} hasApprovals={sortedApprovalVersions.length>0} mainPublished={Boolean(exports.final_filename)} finalPath={published&&exports.final_filename?`${client.path.replace(/[\\/]+$/, "")}\\04_FINAL\\${exports.final_filename}`:null}>
                     {sortedApprovalVersions.length === 0 ? (
                       pendingApprovalEntry
                         ? <VersionHistory label={`${label.name} approval versions`}>{pendingApprovalEntry}</VersionHistory>
@@ -3528,43 +3539,47 @@ export default function App() {
       {pendingPromotion && (
         <dialog
           ref={promotionDialogRef}
-          className="modal update-modal promotion-modal"
+          className="modal promotion-modal"
           aria-label="Publish final"
           onCancel={(event) => {
             event.preventDefault();
-            setPendingPromotion(null);
+            if(publishingClientPath!==pendingPromotion.path)setPendingPromotion(null);
           }}
         >
+          <header className="promotion-heading"><div><h2>Publish final</h2><p className="promotion-client-name">{parseClientLabel(pendingPromotion.name).name}</p></div><button type="button" className="promotion-close" aria-label="Close publish dialog" disabled={publishingClientPath===pendingPromotion.path} onClick={()=>setPendingPromotion(null)}><X size={17}/></button></header>
+          <div className="promotion-content">
+          <nav className="cw-tabs cw-review-tabs promotion-tabs" role="tablist" aria-label="Publish views">
+            <button type="button" id="publish-main-tab" role="tab" aria-selected={promotionTab==='main'} aria-controls="publish-main-panel" onClick={()=>setPromotionTab('main')}><VideoIcon size={14}/>Main video</button>
+            {promotionClips.length>0&&<button type="button" id="publish-clips-tab" role="tab" aria-selected={promotionTab==='clips'} aria-controls="publish-clips-panel" onClick={()=>setPromotionTab('clips')}><Clapperboard size={14}/>Clips<span className="promotion-tab-count">{promotionClipSelection.size}/{promotionClips.length}</span></button>}
+          </nav>
           {(() => {
-            const cleanVersion = pendingPromotion.export_status.versions.find(
-              (version) => version.version === pendingPromotion.export_status.latest_version,
-            );
-            if (!cleanVersion) return <p className="promotion-preview-empty">The clean master preview is unavailable. Refresh exports before publishing.</p>;
-            const cleanPath = `${pendingPromotion.path.replace(/[\\/]+$/, "")}\\03_EXPORTS\\${cleanVersion.relative_path.replace(/[\\/]+/g, "\\")}`;
-            return (
+            const cleanVersion = pendingPromotion.export_status.versions.find(version=>version.version===pendingPromotion.export_status.latest_version);
+            const previewClip = promotionClips.find(clip=>clip.path===promotionClipPreview)??promotionClips[0];
+            const cleanPath = cleanVersion ? `${pendingPromotion.path.replace(/[\\/]+$/, "")}\\03_EXPORTS\\${cleanVersion.relative_path.replace(/[\\/]+/g, "\\")}` : null;
+            const previewPath = promotionTab==='clips'?previewClip?.path:cleanPath;
+            return <div role="tabpanel" id={promotionTab==='main'?'publish-main-panel':'publish-clips-panel'} aria-labelledby={promotionTab==='main'?'publish-main-tab':'publish-clips-tab'} className={`promotion-workspace ${promotionTab==='clips'&&promotionClips.length?'has-clips':''}`}>
               <article className="export-preview promotion-preview">
-                <div className="promotion-file-header">
-                  <strong title={cleanVersion.filename}>{cleanVersion.filename}</strong>
-                  <span>{cleanVersion.size != null ? formatStorage(cleanVersion.size) : "Size unavailable"}</span>
-                </div>
-                <InlineVideoPlayer className="promotion-video-player" src={convertFileSrc(cleanPath)} />
+                {previewPath?<div className="clip-review-stage promotion-review-stage"><InlineVideoPlayer key={previewPath} className="promotion-video-player" src={convertFileSrc(previewPath)}/></div>:<p className="promotion-preview-empty">{promotionTab==='clips'?'No clips available.':'Clean master unavailable. Refresh exports.'}</p>}
               </article>
-            );
+              {promotionTab==='clips'&&promotionClips.length>0&&<ClipReviewList label="Clips to publish" selected={previewClip?.path??''} items={promotionClips.map(clip=>({id:clip.path,name:clip.name,checked:promotionClipSelection.has(clip.name)}))} onSelect={setPromotionClipPreview} disabled={publishingClientPath===pendingPromotion.path} onToggle={id=>{const clip=promotionClips.find(item=>item.path===id);if(clip)setPromotionClipSelection(current=>{const next=new Set(current);if(next.has(clip.name))next.delete(clip.name);else next.add(clip.name);return next;});}}
+                header={<div className="promotion-selection-header"><label><input type="checkbox" aria-label="Include all clips" ref={input=>{if(input)input.indeterminate=promotionClipSelection.size>0&&promotionClipSelection.size<promotionClips.length;}} checked={promotionClipSelection.size===promotionClips.length} disabled={publishingClientPath===pendingPromotion.path} onChange={event=>setPromotionClipSelection(event.target.checked?new Set(promotionClips.map(clip=>clip.name)):new Set())}/><span>Include all</span></label><span>{promotionClipSelection.size} selected</span></div>}
+              />}
+            </div>;
           })()}
-          {pendingPromotion.export_status.final_filename && (
-            <p>Existing FINAL videos will be moved into a timestamped archive folder.</p>
-          )}
-          <div className="modal-actions">
-            <button type="button" className="ghost" autoFocus onClick={() => setPendingPromotion(null)}>
+          {promotionError&&<p className="promotion-error" role="alert">{promotionError}</p>}
+          </div>
+          <div className="modal-actions promotion-actions">
+            <div className="promotion-publish-summary" aria-live="polite"><span><VideoIcon size={13}/>Main video</span>{promotionClipSelection.size>0&&<><Plus size={11} className="promotion-summary-plus"/><span><Clapperboard size={13}/>{promotionClipSelection.size} {promotionClipSelection.size===1?'clip':'clips'}</span></>}</div>
+            <button type="button" className="ghost promotion-cancel" autoFocus disabled={publishingClientPath===pendingPromotion.path} onClick={() => setPendingPromotion(null)}>
               Cancel
             </button>
             <button
               type="button"
-              className="primary"
-              disabled={!pendingPromotion.export_status.versions.some((version) => version.version === pendingPromotion.export_status.latest_version)}
+              className="primary promotion-publish-button"
+              disabled={publishingClientPath===pendingPromotion.path||!pendingPromotion.export_status.versions.some((version) => version.version === pendingPromotion.export_status.latest_version)}
               onClick={() => void handlePromoteLatest(pendingPromotion)}
             >
-              {pendingPromotion.export_status.publish_failed ? "Retry publish" : "Publish"}
+              {publishingClientPath===pendingPromotion.path?<><LoaderCircle size={14} className="cf-spin"/><span>Publishing…</span></>:<><span>{(promotionError&&!promotionError.startsWith("Could not load clips:")||pendingPromotion.export_status.publish_failed)?"Retry publish":"Publish final"}</span><ArrowUpRight size={14}/></>}
             </button>
           </div>
         </dialog>

@@ -1,4 +1,4 @@
-import { availableClientTypes, clientTypeLabel, isMariyaProject } from "./clientTypes";
+import { availableClientTypes, clientTypeLabel, defaultClientType, isFixedClientTypeProject, isMariyaProject } from "./clientTypes";
 import { InterviewTypeSelect, type HuddleTemplate } from "./InterviewTypeSelect";
 import { MariyaSeasonSelect, useMariyaSeasons } from "./MariyaSeasonSelect";
 import { useEffect, useState } from 'react';
@@ -9,13 +9,14 @@ export function NewIngestClient({projectRoot,disabled,onCreate}:{projectRoot:str
   const [open,setOpen]=useState(false),[name,setName]=useState(''),[mode,setMode]=useState('');
   const [template,setTemplate]=useState<HuddleTemplate>('VIDEO_CALL'),[creating,setCreating]=useState(false),[error,setError]=useState('');
   const mariyaProject = isMariyaProject(projectRoot);
+  const preferredMode = isFixedClientTypeProject(projectRoot) || mariyaProject ? defaultClientType(projectRoot) : '';
   useEffect(() => {
     setOpen(false);
     setName('');
-    setMode(mariyaProject ? 'MARIYAMEETS' : '');
+    setMode(preferredMode);
     setTemplate('VIDEO_CALL');
     setError('');
-  }, [projectRoot, mariyaProject]);
+  }, [projectRoot, mariyaProject, preferredMode]);
   const needsSeason = mariyaProject && mode==='MARIYAMEETS';
   const seasons = useMariyaSeasons(projectRoot,open&&needsSeason);
   const seasonPending = needsSeason && (seasons.loading || seasons.creating || !seasons.season);
@@ -24,7 +25,7 @@ export function NewIngestClient({projectRoot,disabled,onCreate}:{projectRoot:str
     const clean=name.trim();
     if(/[\\/:*?"<>|]/.test(clean)||/[. ]$/.test(clean)){setError('Use a client name without file-path characters or a trailing dot.');return;}
     setCreating(true);setError('');
-    try{await onCreate(clean,mode,template,needsSeason?seasons.season:undefined);setName('');setMode(mariyaProject?'MARIYAMEETS':'');setTemplate('VIDEO_CALL');setOpen(false);}catch(error){setError(String(error));}finally{setCreating(false);}
+    try{await onCreate(clean,mode,template,needsSeason?seasons.season:undefined);setName('');setMode(preferredMode);setTemplate('VIDEO_CALL');setOpen(false);}catch(error){setError(String(error));}finally{setCreating(false);}
   };
   return <section className={`ig-new-client-card ${open?'open':''}`} aria-label="New client">
     {!open?<button className="ig-new-client-placeholder" disabled={disabled} onClick={()=>setOpen(true)}><Plus size={17}/><span>New client</span></button>:<form aria-label="Create client" onSubmit={event=>void submit(event)}>
