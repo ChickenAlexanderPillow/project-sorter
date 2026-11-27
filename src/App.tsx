@@ -35,6 +35,7 @@ import { ClientScrollArea } from "./components/ClientScrollArea";
 import { ClientDetails } from "./components/ClientDetails";
 import { useClientScrollPosition } from "./components/useClientScrollPosition";
 import { CopyReviewLinkButton } from "./components/CopyReviewLinkButton";
+import type { ClientClip } from "./components/useClientClips";
 import { ClipReviewList } from "./components/ClipReviewList";
 import { VersionHistory } from "./components/VersionHistory";
 import { ClientLabel, parseClientLabel } from "./components/ClientLabel";
@@ -375,6 +376,7 @@ type ClientRowActions = {
   handleQuickCreateSession: (client: ClientInfo) => Promise<void>;
   refreshClients: (rootOverride?: string | undefined, showLoading?: boolean, force?: boolean, replaceExisting?: boolean, clientNames?: string[] | undefined) => Promise<void>;
   handleUnpublish: (client: ClientInfo) => Promise<void>;
+  handlePublishClip: (client: ClientInfo, clip: ClientClip) => Promise<void>;
   showToast: (message: string, tone?: "info" | "success" | "error", duration?: number | null) => void;
   toggleManualPublished: (client: ClientInfo) => Promise<void>;
   toggleStatusWarnings: (client: ClientInfo) => Promise<void>;
@@ -418,6 +420,7 @@ type ClientListRowProps = {
   projectRoot: string;
   advancedMode: boolean;
   publishingClientPath: string | null;
+  clipPublishStates: Record<string, "Queued" | "Publishing">;
   publishProgress: PublishProgress | null;
   hoverClientRef: RefObject<string | null>;
   workspaceTypeNames: Record<string, string>;
@@ -439,9 +442,9 @@ type ClientListRowProps = {
 };
 
 const ClientListRow = memo(function ClientListRow({
-  client, index, screen, frameIoProgress, frameIoConfig, frameIoBusyPath, busy, projectRoot, advancedMode, publishingClientPath, publishProgress, hoverClientRef, workspaceTypeNames, frameIoConfigured, activeProject, clientIsCached, expanded, manuallyPublished, warningsSuppressed, publishFailedOverride, selectedVersion, dragOver, dragKinds, transferProgress, pendingDrop, creatingStudio, studioRequest, actions,
+  client, index, screen, frameIoProgress, frameIoConfig, frameIoBusyPath, busy, projectRoot, advancedMode, publishingClientPath, clipPublishStates, publishProgress, hoverClientRef, workspaceTypeNames, frameIoConfigured, activeProject, clientIsCached, expanded, manuallyPublished, warningsSuppressed, publishFailedOverride, selectedVersion, dragOver, dragKinds, transferProgress, pendingDrop, creatingStudio, studioRequest, actions,
 }: ClientListRowProps) {
-  const { confirmClientDrop, updateClientDropChoices, cancelClientDrop, toggleClientExpanded, openPepperContextMenu, handleOpenFolder, copyFromContextMenu, handleQuickCreateSession, refreshClients, handleUnpublish, showToast, toggleManualPublished, toggleStatusWarnings, handleSortDragOver, setDragTarget, handleDropEvent, setPendingPromotion, handleFixClient, handleOpenFinal, handleOpenFileLocation, setSelectedVersionByClient, openFrameIoSettings, setPendingFrameIoUpload, uploadApprovalToFrameIo, copyFrameIoShareLink, removeFrameIoUpload } = actions;
+  const { confirmClientDrop, updateClientDropChoices, cancelClientDrop, toggleClientExpanded, openPepperContextMenu, handleOpenFolder, copyFromContextMenu, handleQuickCreateSession, refreshClients, handleUnpublish, handlePublishClip, showToast, toggleManualPublished, toggleStatusWarnings, handleSortDragOver, setDragTarget, handleDropEvent, setPendingPromotion, handleFixClient, handleOpenFinal, handleOpenFileLocation, setSelectedVersionByClient, openFrameIoSettings, setPendingFrameIoUpload, uploadApprovalToFrameIo, copyFrameIoShareLink, removeFrameIoUpload } = actions;
 
   const [showIssues, setShowIssues] = useState(false);
   const label = parseClientLabel(client.name);
@@ -776,7 +779,7 @@ const ClientListRow = memo(function ClientListRow({
       </div>
   </div>
   <ClientDetails open={expanded && !client.exportStatusLoading}>{() => (
-      <ClientWorkspace studioRequest={studioRequest} key={client.path} projectRoot={projectRoot} clientPath={client.path} clientType={client.client_type} huddleTemplate={client.huddle_template} advancedMode={advancedMode && client.status !== "Not a client"} onContextMenu={openPepperContextMenu} reviewDefault={sortedApprovalVersions.length>0||published} hasApprovals={sortedApprovalVersions.length>0} mainPublished={Boolean(exports.final_filename)} finalPath={published&&exports.final_filename?`${client.path.replace(/[\\/]+$/, "")}\\04_FINAL\\${exports.final_filename}`:null}>
+      <ClientWorkspace studioRequest={studioRequest} key={client.path} projectRoot={projectRoot} clientPath={client.path} clientType={client.client_type} huddleTemplate={client.huddle_template} advancedMode={advancedMode && client.status !== "Not a client"} onContextMenu={openPepperContextMenu} reviewDefault={sortedApprovalVersions.length>0||published} hasApprovals={sortedApprovalVersions.length>0} clipPublishStates={clipPublishStates} publishDisabled={Boolean(busy || (publishingClientPath && !Object.keys(clipPublishStates).length))} onPublishClip={clip=>handlePublishClip(client,clip)} mainPublished={Boolean(exports.final_filename)} finalPath={published&&exports.final_filename?`${client.path.replace(/[\\/]+$/, "")}\\04_FINAL\\${exports.final_filename}`:null}>
       {sortedApprovalVersions.length === 0 ? (
         pendingApprovalEntry
           ? <VersionHistory label={`${label.name} approval versions`}>{pendingApprovalEntry}</VersionHistory>
@@ -1043,7 +1046,14 @@ export default function App() {
   const frameIoUploadDialogRef = useRef<HTMLDialogElement | null>(null);
   const frameIoRemoveDialogRef = useRef<HTMLDialogElement | null>(null);
   const [clientSort, setClientSort] = useState<ClientSort>({ column: "name", direction: "asc" });
-  const [publishingClientPath, setPublishingClientPath] = useState<string | null>(null);
+  const [activePublishingClientPath, setPublishingClientPath] = useState<string | null>(null);
+  const [clipPublishQueue, setClipPublishQueue] = useState<{clientPath:string;clip:ClientClip}[]>([]);
+  const queuedClipPaths = useRef(new Set<string>());
+  const processingClip = useRef(false);
+  const publishingClientPath = activePublishingClientPath ?? clipPublishQueue[0]?.clientPath ?? null;
+  const clipPublishStates = useMemo(() => Object.fromEntries(clipPublishQueue.map((job,index) =>
+    [job.clip.path, index === 0 && activePublishingClientPath === job.clientPath ? "Publishing" : "Queued"]
+  )) as Record<string, "Queued" | "Publishing">, [clipPublishQueue, activePublishingClientPath]);
   const [publishFailedClientPaths, setPublishFailedClientPaths] = useState<Set<string>>(new Set());
   const [pendingPromotion, setPendingPromotion] = useState<ClientInfo | null>(null);
   const [promotionClips, setPromotionClips] = useState<PromotionClip[]>([]);
@@ -2771,6 +2781,37 @@ export default function App() {
     await refreshClients(projectRoot, true, true, true);
   };
 
+  const handlePublishClip = async (client: ClientInfo, clip: ClientClip) => {
+    if (busy || (publishingClientPath && !clipPublishQueue.length) || !client.export_status.final_filename || clip.current || queuedClipPaths.current.has(clip.path)) return;
+    queuedClipPaths.current.add(clip.path);
+    setClipPublishQueue(queue => [...queue, {clientPath:client.path,clip}]);
+  };
+
+  useEffect(() => {
+    const job = clipPublishQueue[0];
+    if (!job || busy || activePublishingClientPath || processingClip.current) return;
+    processingClip.current = true;
+    setPublishingClientPath(job.clientPath);
+    setPublishProgress({ client_path: job.clientPath, stage: "clips", completed: 0, total: 0 });
+    void (async () => {
+      try {
+        const { name, size, modified_ms, sha256 } = job.clip;
+        const message = await invoke<string>("publish_client_clips", {
+          clientPath: job.clientPath, clipSelections: [{ name, size, modified_ms, sha256 }],
+        });
+        showToast(message, "success");
+      } catch (error) {
+        showToast(`Could not publish ${job.clip.name}: ${String(error)}`, "error");
+      } finally {
+        queuedClipPaths.current.delete(job.clip.path);
+        processingClip.current = false;
+        setClipPublishQueue(queue => queue.filter(item => item !== job));
+        setPublishingClientPath(null);
+        setPublishProgress(null);
+      }
+    })();
+  }, [clipPublishQueue, busy, activePublishingClientPath]);
+
   const handlePromoteLatest = async (client: ClientInfo) => {
     const exportStatus = client.export_status;
     if (!exportStatus.latest_filename || exportStatus.issue) return;
@@ -3086,7 +3127,7 @@ export default function App() {
   };
 
   const clientRowActions = useClientRowActions({
-    confirmClientDrop, updateClientDropChoices, cancelClientDrop, toggleClientExpanded, openPepperContextMenu, handleOpenFolder, copyFromContextMenu, handleQuickCreateSession, refreshClients, handleUnpublish, showToast, toggleManualPublished, toggleStatusWarnings, handleSortDragOver, setDragTarget, handleDropEvent, setPendingPromotion, handleFixClient, handleOpenFinal, handleOpenFileLocation, setSelectedVersionByClient, openFrameIoSettings, setPendingFrameIoUpload, uploadApprovalToFrameIo, copyFrameIoShareLink, removeFrameIoUpload,
+    confirmClientDrop, updateClientDropChoices, cancelClientDrop, toggleClientExpanded, openPepperContextMenu, handleOpenFolder, copyFromContextMenu, handleQuickCreateSession, refreshClients, handleUnpublish, handlePublishClip, showToast, toggleManualPublished, toggleStatusWarnings, handleSortDragOver, setDragTarget, handleDropEvent, setPendingPromotion, handleFixClient, handleOpenFinal, handleOpenFileLocation, setSelectedVersionByClient, openFrameIoSettings, setPendingFrameIoUpload, uploadApprovalToFrameIo, copyFrameIoShareLink, removeFrameIoUpload,
   });
 
   return (
@@ -3575,6 +3616,7 @@ export default function App() {
                   projectRoot={projectRoot}
                   advancedMode={advancedMode}
                   publishingClientPath={publishingClientPath}
+                  clipPublishStates={clipPublishStates}
                   publishProgress={publishProgress?.client_path === client.path ? publishProgress : null}
                   hoverClientRef={hoverClientRef}
                   workspaceTypeNames={workspaceTypeNames}

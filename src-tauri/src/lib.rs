@@ -2449,6 +2449,9 @@ async fn create_project_folder(workspace_root: String, show_name: String, year: 
     }).await.map_err(|error| error.to_string())?
 }
 
+#[derive(Serialize, Clone)]
+struct PublishProgress { client_path: String, stage: String, completed: u64, total: u64 }
+
 #[tauri::command]
 async fn promote_latest_export(
     app: tauri::AppHandle,
@@ -2457,8 +2460,6 @@ async fn promote_latest_export(
     selected_clips: Vec<ClipSelection>,
 ) -> Result<String, String> {
     tauri::async_runtime::spawn_blocking(move || {
-        #[derive(Serialize, Clone)]
-        struct PublishProgress { client_path: String, stage: String, completed: u64, total: u64 }
         let client = Path::new(&client_path);
         validate_clip_selections(client, &selected_clips)?;
         let current = scan_export_status(client);
@@ -2539,10 +2540,15 @@ fn list_client_clips_sync(client: &Path) -> Result<Vec<ClipInfo>, String> {
 }
 
 #[tauri::command]
-async fn publish_client_clips(client_path: String, clip_selections: Vec<ClipSelection>) -> Result<String, String> {
-    tauri::async_runtime::spawn_blocking(move || publish_client_clips_sync(Path::new(&client_path), &clip_selections)).await.map_err(|error| error.to_string())?
+async fn publish_client_clips(app: tauri::AppHandle, client_path: String, clip_selections: Vec<ClipSelection>) -> Result<String, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        publish_client_clips_sync_with_progress(Path::new(&client_path), &clip_selections, |completed, total| {
+            let _ = app.emit("publish-progress", PublishProgress { client_path: client_path.clone(), stage: "clips".into(), completed, total });
+        })
+    }).await.map_err(|error| error.to_string())?
 }
 
+#[cfg(test)]
 fn publish_client_clips_sync(client: &Path, selections: &[ClipSelection]) -> Result<String, String> {
     publish_client_clips_sync_with_progress(client, selections, |_, _| {})
 }

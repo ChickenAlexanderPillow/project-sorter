@@ -9,9 +9,9 @@ import './ClientWorkspace.css';
 import { StudioPanel } from './StudioPanel';
 import { TakeHomePackage } from './TakeHomePackage';
 import { ClientClips } from './ClientClips';
-import { useClientClips } from './useClientClips';
+import { useClientClips, type ClientClip } from './useClientClips';
 
-export function ClientWorkspace({projectRoot,clientPath,reviewDefault,hasApprovals,finalPath,clientType,huddleTemplate,studioRequest=0,advancedMode=false,children,onContextMenu}:{projectRoot:string;clientPath:string;reviewDefault:boolean;hasApprovals:boolean;finalPath?:string|null;mainPublished?:boolean;clientType?:string|null;huddleTemplate?:string|null;studioRequest?:number;advancedMode?:boolean;children:ReactNode;onContextMenu:FileContextMenu}){
+export function ClientWorkspace({projectRoot,clientPath,reviewDefault,hasApprovals,finalPath,mainPublished=false,publishDisabled=false,clipPublishStates,onPublishClip,clientType,huddleTemplate,studioRequest=0,advancedMode=false,children,onContextMenu}:{projectRoot:string;clientPath:string;reviewDefault:boolean;hasApprovals:boolean;finalPath?:string|null;mainPublished?:boolean;publishDisabled?:boolean;clipPublishStates:Record<string,"Queued"|"Publishing">;onPublishClip:(clip:ClientClip)=>Promise<void>;clientType?:string|null;huddleTemplate?:string|null;studioRequest?:number;advancedMode?:boolean;children:ReactNode;onContextMenu:FileContextMenu}){
   const showStudio=clientType?.toUpperCase()==='HUDDLE'&&huddleTemplate==='VIDEO_CALL';
   const [tab,setTab]=useState<'review'|'files'|'studio'|'drive'>(()=>showStudio&&studioRequest?'studio':reviewDefault?'review':'files');
   const previousDefault=useRef(reviewDefault);
@@ -41,7 +41,7 @@ export function ClientWorkspace({projectRoot,clientPath,reviewDefault,hasApprova
           {!hasApprovals&&finalPath?<div className="cw-final-preview" onContextMenu={event=>onContextMenu(event,'Published final',[{label:'Open file location',action:()=>{void invoke('open_file_location',{path:finalPath}).catch(error=>setError(String(error)));}}])}><header><span>Published final</span></header><SourceMediaPreview path={finalPath} name={finalPath.split(/[\\/]/).pop()}/>{error&&<div className="cf-error" role="alert">{error}</div>}</div>:children}
         </RetainedView>
         {clips.length>0&&<RetainedView active={reviewTab==='clips'} id={`${id}-review-clips-panel`} labelledBy={`${id}-review-clips`}>
-          <ClientClips clips={clips}/>
+          <ClientClips clips={clips} mainPublished={mainPublished} disabled={publishDisabled} publishStates={clipPublishStates} onPublish={onPublishClip}/>
         </RetainedView>}
       </RetainedView>
       {showStudio&&<RetainedView active={tab==='studio'} id={`${id}-studio-panel`} labelledBy={`${id}-studio`}><StudioPanel refreshKey={studioRequest} clientPath={clientPath} clientName={parseClientLabel(clientPath.split(/[\\/]/).pop()||'Studio session').name} onSettings={()=>window.dispatchEvent(new CustomEvent('pepper-open-restream-settings'))}/></RetainedView>}

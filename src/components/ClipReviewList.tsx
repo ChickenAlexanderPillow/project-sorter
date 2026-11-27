@@ -3,7 +3,7 @@ import { VersionHistory } from './VersionHistory';
 import './ClipReviewList.css';
 
 type Item = { id: string; name: string; status?: string; failed?: boolean; checked?: boolean; fixed?: boolean };
-export function ClipReviewList({label,items,selected,onSelect,onToggle,disabled=false,header,children}:{label:string;items:Item[];selected:string;onSelect:(id:string)=>void;onToggle?:(id:string)=>void;disabled?:boolean;header?:ReactNode;children?:ReactNode}) {
+export function ClipReviewList({label,items,selected,onSelect,onToggle,disabled=false,header,children,renderAction}:{label:string;items:Item[];selected:string;onSelect:(id:string)=>void;onToggle?:(id:string)=>void;disabled?:boolean;header?:ReactNode;children?:ReactNode;renderAction?:(id:string)=>ReactNode}) {
   return <aside className="clip-review-sidebar" onKeyDown={event=>{
     if(!(event.target instanceof HTMLButtonElement)||!event.target.classList.contains('version-option'))return;
     const index=items.findIndex(item=>item.id===selected);
@@ -19,6 +19,7 @@ export function ClipReviewList({label,items,selected,onSelect,onToggle,disabled=
         <span className="clip-review-name">{item.name.replace(/\.(mp4|mov|mxf|m4v|webm|avi)$/i,'')}</span>
         {item.status&&<span className={`version-state ${item.failed?'failed':''}`}>{item.status}</span>}
       </button>
+      {renderAction?.(item.id)}
       {onToggle&&<label className="clip-review-include" title={item.fixed?'Main video is always included':`Include ${item.name}`}><input type="checkbox" aria-label={`Include ${item.name}`} checked={item.checked} disabled={disabled||item.fixed} onChange={()=>onToggle(item.id)}/></label>}
     </div>)}</VersionHistory>
     {children}
