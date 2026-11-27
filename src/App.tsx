@@ -705,7 +705,11 @@ const ClientListRow = memo(function ClientListRow({
         </div>
       </div>
       <div className={`client-statuses ${clientIsCached ? "" : !client.exportStatusLoading ? "client-status-enter" : ""}`}>
-        {operationProgressActive || exports.approval_in_progress ? (
+        {exports.approval_in_progress && !operationProgressActive ? (
+          <span className={`client-export-spinner ${cleanExportInProgress ? "" : "approval"}`} role="status" aria-label={exportProgressLabel} title={exportProgressLabel}>
+            <LoaderCircle size={17} aria-hidden="true" />
+          </span>
+        ) : operationProgressActive ? (
           <span className="client-operation-progress">
             <progress
               className="frameio-upload-progress"

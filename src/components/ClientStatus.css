@@ -19,3 +19,9 @@
 .client-status-icon.final-state { color: #82bd9c; }
 .client-list .export-status-control .export-status-version { font-size: 10px; }
 .client-operation-progress progress:indeterminate { opacity: .65; }
+/* Match the status control's 18px icon slot and 5px padding on each side. */
+.client-export-spinner{position:relative;display:inline-grid;place-items:center;width:28px;height:28px;flex:none;color:#aaa}
+.client-export-spinner>svg{animation:client-export-spin 1.2s linear infinite}
+.client-export-spinner.approval::after{content:"";position:absolute;width:5px;height:5px;border:1px solid currentColor;border-radius:50%;opacity:.65}
+@keyframes client-export-spin{to{transform:rotate(360deg)}}
+@media(prefers-reduced-motion:reduce){.client-export-spinner>svg{animation:none}}

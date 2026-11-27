@@ -2,6 +2,7 @@ import { NeutralVideoSkin, Video, VideoPlayer, usePlayer } from "@videojs/react/
 import "@videojs/react/video/neutral-skin.css";
 import { useEffect, useLayoutEffect, useRef, type MouseEvent } from "react";
 import { TimelineNotes, type NoteTimelineProps } from './TimelineNotes';
+import { useTimeReadoutScrub } from './useTimeReadoutScrub';
 
 import { MediaTransition } from './MediaTransition';
 import { captureVideoPoster,videoPosters } from './videoPosters';
@@ -17,6 +18,8 @@ type InlineVideoPlayerProps = NoteTimelineProps & {
   onReady?:()=>void;
   seekTo?:number;
   onPlaybackTimeChange?:(currentTime:number,duration:number)=>void;
+  expanded?:boolean;
+  onToggleExpanded?:()=>void;
 
 };
 
@@ -50,23 +53,24 @@ export function InlineVideoPlayer(props: InlineVideoPlayerProps) {
   return <MediaTransition source={props.src} onError={props.onError} render={(src,onReady,onError)=><VideoSurface {...props} src={src} onReady={onReady} onError={onError}/>}/>;
 }
 
-function VideoSurface({ src, poster, posterPath, className, onContextMenu, onError, onReady, compact = false, seekTo, onPlaybackTimeChange, timelineMarkers=[], onAddTimestamp }: InlineVideoPlayerProps) {
+function VideoSurface({ src, poster, posterPath, className, onContextMenu, onError, onReady, compact = false, seekTo, onPlaybackTimeChange, timelineMarkers=[], onAddTimestamp, expanded=false, onToggleExpanded, markerFocusRequest }: InlineVideoPlayerProps) {
   const owner=useRef(Symbol('selected video'));
   const media=useRef<HTMLVideoElement>(null);
   const skin=useRef<HTMLDivElement>(null);
+  useTimeReadoutScrub(skin);
   const playbackCallback=useRef(onPlaybackTimeChange);
   playbackCallback.current=onPlaybackTimeChange;
   useEffect(()=>{
     const video=media.current;
     if(!video)return;
     const report=()=>playbackCallback.current?.(video.currentTime,Number.isFinite(video.duration)?video.duration:0);
-    video.addEventListener('timeupdate',report);video.addEventListener('loadedmetadata',report);video.addEventListener('durationchange',report);
-    return()=>{video.removeEventListener('timeupdate',report);video.removeEventListener('loadedmetadata',report);video.removeEventListener('durationchange',report);};
+    video.addEventListener('seeking',report);video.addEventListener('timeupdate',report);video.addEventListener('loadedmetadata',report);video.addEventListener('durationchange',report);
+    return()=>{video.removeEventListener('seeking',report);video.removeEventListener('timeupdate',report);video.removeEventListener('loadedmetadata',report);video.removeEventListener('durationchange',report);};
   },[src]);
   useEffect(()=>{
     const video=media.current;
     if(video&&seekTo!==undefined&&Number.isFinite(seekTo)&&Math.abs(video.currentTime-seekTo)>.05)video.currentTime=Math.max(0,Math.min(seekTo,Number.isFinite(video.duration)?video.duration:seekTo));
-  },[seekTo,src]);
+  },[seekTo,src,markerFocusRequest]);
   useLayoutEffect(()=>{
     if(!posterPath)return;
     const key=owner.current;
@@ -82,7 +86,7 @@ function VideoSurface({ src, poster, posterPath, className, onContextMenu, onErr
   },[src,posterPath]);
   return (
     <VideoPlayer poster={poster}>
-      <div ref={skin} className={compact ? 'pepper-preview-player' : 'pepper-player-surface'} onContextMenu={onContextMenu}>
+      <div ref={skin} className={`${compact ? 'pepper-preview-player' : 'pepper-player-surface'} ${onToggleExpanded?'has-preview-expand':''} ${onAddTimestamp?'has-note-timing':''}`} onContextMenu={onContextMenu}>
         <NeutralVideoSkin renderPoster={(props,{src})=>src?<img {...props} src={src} className={`${props.className??''} pepper-media-visual`} onLoad={event=>{props.onLoad?.(event);onReady?.();}}/>:null} className={`pepper-video-skin ${compact ? 'pepper-video-compact' : ''} ${className ?? ''}`} style={{ width: '100%', aspectRatio: '16 / 9' }}>
           <Video ref={media} className="pepper-media-visual" key={src} src={src} crossOrigin={posterPath?'anonymous':undefined} playsInline preload="metadata"
             onError={()=>{videoPosters.setForeground(owner.current,false);onError?.();}}
@@ -97,7 +101,8 @@ function VideoSurface({ src, poster, posterPath, className, onContextMenu, onErr
 
           {!compact && <PlaybackSpeedButton />}
         </NeutralVideoSkin>
-        <TimelineNotes root={skin} timelineMarkers={timelineMarkers} onAddTimestamp={onAddTimestamp}/>
+
+        <TimelineNotes expanded={expanded} onToggleExpanded={onToggleExpanded} markerFocusRequest={markerFocusRequest} root={skin} timelineMarkers={timelineMarkers} onAddTimestamp={onAddTimestamp}/>
       </div>
     </VideoPlayer>
   );

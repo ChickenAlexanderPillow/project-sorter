@@ -3,6 +3,17 @@ import assert from 'node:assert/strict';
 import { ClientNotesSync, rebaseNotes, type NoteTask } from '../src/components/clientNotesSync.ts';
 
 const task = (id: string, text = id): NoteTask => ({ id, text, completed: false, references: [] });
+
+test('range endpoints survive a poll alongside a teammate marker note edit',()=>{
+  const base=[{...task('one'),references:[{id:'ref',relative_path:'clip.mp4',name:'Clip',timecode:'00:00:10.000',end_timecode:'',text:'Original'}]}];
+  const local=structuredClone(base);local[0].references[0].end_timecode='00:00:12.345';
+  const remote=structuredClone(base);remote[0].references[0].text='Updated elsewhere';
+  const merged=rebaseNotes(base,local,remote);
+  assert.equal(merged[0].references[0].end_timecode,'00:00:12.345');
+  assert.equal(merged[0].references[0].text,'Updated elsewhere');
+  const cleared=structuredClone(merged);cleared[0].references[0].end_timecode='';
+  assert.equal(rebaseNotes(merged,cleared,merged)[0].references[0].end_timecode,'');
+});
 function deferred<T>() {
   let resolve!: (value: T) => void;
   const promise = new Promise<T>(done => { resolve = done; });

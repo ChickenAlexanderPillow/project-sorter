@@ -1,13 +1,14 @@
 import { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { AudioLines, Check, ChevronRight, Clock3, File, Files, GripVertical, Headphones, Image, LoaderCircle, NotebookPen, Package, RefreshCw, Trash2, Video } from 'lucide-react';
+import { formatNoteTime, parseNoteTime } from './noteTiming';
 import { startNativeFileDrag } from './nativeFileDrag';
 import { ClientNotesSync, type NoteTask as Task, type NoteReference as MediaReference } from './clientNotesSync';
 
 type MediaFile = { name: string; path: string; relative_path: string; kind: string };
 type Listing = { files: MediaFile[] };
-export type ClientNoteMarker = { taskId: string; referenceId: string; timecode: string; text: string };
-export type ClientNotePreview = { taskId: string; referenceId: string; path: string; name: string; kind: string; timecode: string; markers: ClientNoteMarker[]; revealMarker: (taskId: string, referenceId: string) => void; setTimecode: (value: string) => void; addTimestamp: (value: string) => ClientNoteMarker; editTimestamp: (taskId: string, referenceId: string, value: string) => void; editNote: (taskId:string, referenceId:string, text:string)=>void };
+export type ClientNoteMarker = { taskId: string; referenceId: string; timecode: string; end_timecode?: string; text: string };
+export type ClientNotePreview = { taskId: string; referenceId: string; path: string; name: string; kind: string; timecode: string; markers: ClientNoteMarker[]; revealMarker: (taskId: string, referenceId: string) => void; setTimecode: (value: string) => void; addTimestamp: (value: string, end?: string) => ClientNoteMarker; editTimestamp: (taskId: string, referenceId: string, value: string, end?: string) => void; editNote: (taskId:string, referenceId:string, text:string)=>void };
 type MediaCategory = 'all' | 'video' | 'audio' | 'stills' | 'stock';
 const CATEGORIES: { id: MediaCategory; name: string; Icon: typeof Files }[] = [
   { id: 'all', name: 'All', Icon: Files }, { id: 'video', name: 'Video', Icon: Video },
@@ -58,7 +59,7 @@ function migrateInlineReferences(task: Task, files: MediaFile[]): Task {
   return { ...task, text: text.trim(), references };
 }
 
-export function ClientEditNotes({ clientPath, activePreviewId, activePreviewPath, onPreviewChange, onMarkersChange }: { clientPath: string; activePreviewId: string | null; activePreviewPath: string | null; onPreviewChange: (preview: ClientNotePreview | null) => void; onMarkersChange:(markers:ClientNoteMarker[])=>void }) {
+export function ClientEditNotes({ clientPath, activePreviewId, activePreviewPath, playbackActiveIds=[], onPreviewChange, onMarkersChange }: { clientPath: string; activePreviewId: string | null; activePreviewPath: string | null; playbackActiveIds?:string[]; onPreviewChange: (preview: ClientNotePreview | null) => void; onMarkersChange:(markers:ClientNoteMarker[])=>void }) {
   const [tasks, setTasks] = useState<Task[]>([]);
   const [files, setFiles] = useState<MediaFile[]>([]);
   const [loaded, setLoaded] = useState(false);
@@ -210,7 +211,7 @@ export function ClientEditNotes({ clientPath, activePreviewId, activePreviewPath
     if (!loaded || !activePreviewPath) return;
     const file = files.find(item => item.path === activePreviewPath);
     if (!file) { onMarkersChange([]); return; }
-    onMarkersChange(tasks.flatMap(task => task.references.filter(ref => ref.relative_path === file.relative_path && ref.timecode.trim()).map(ref => ({ taskId: task.id, referenceId: ref.id, timecode: ref.timecode, text: ref.text ?? task.text }))));
+    onMarkersChange(tasks.flatMap(task => task.references.filter(ref => ref.relative_path === file.relative_path && ref.timecode.trim()).map(ref => ({ taskId: task.id, referenceId: ref.id, timecode: ref.timecode, end_timecode: ref.end_timecode, text: ref.text ?? task.text }))));
   }, [tasks, files, loaded, activePreviewPath, onMarkersChange]);
   const activeTasks = tasks.filter(task => !task.completed);
   const completedTasks = tasks.filter(task => task.completed);
@@ -228,17 +229,16 @@ export function ClientEditNotes({ clientPath, activePreviewId, activePreviewPath
           row?.querySelector<HTMLButtonElement>('.cen-note-marker')?.focus({ preventScroll: true });
         });
       },
-      markers: tasks.flatMap(item => item.references.filter(mark => mark.relative_path === reference.relative_path && mark.timecode.trim()).map(mark => ({ taskId: item.id, referenceId: mark.id, timecode: mark.timecode, text: mark.text ?? item.text }))),
-      addTimestamp: value => {
+      markers: tasks.flatMap(item => item.references.filter(mark => mark.relative_path === reference.relative_path && mark.timecode.trim()).map(mark => ({ taskId: item.id, referenceId: mark.id, timecode: mark.timecode, end_timecode: mark.end_timecode, text: mark.text ?? item.text }))),
+      addTimestamp: (value, end='') => {
         const id = crypto.randomUUID();
-        setEditingMarker(id);
-        setTasks(current => normalizeTasks(current.map(item => item.id === task.id ? { ...item, references: [...item.references, { ...reference, id, timecode: value, text: '' }] } : item)));
-        return { taskId: task.id, referenceId: id, timecode: value, text: '' };
+        setTasks(current => normalizeTasks(current.map(item => item.id === task.id ? { ...item, references: [...item.references, { ...reference, id, timecode: value, end_timecode: end, text: '' }] } : item)));
+        return { taskId: task.id, referenceId: id, timecode: value, end_timecode: end, text: '' };
       },
       editNote: (taskId, referenceId, text) => setTasks(current => current.map(item => item.id === taskId ? { ...item, references: item.references.map(mark => mark.id === referenceId ? { ...mark, text } : mark) } : item)),
-      editTimestamp: (taskId, referenceId, value) => {
+      editTimestamp: (taskId, referenceId, value, end='') => {
         if (!value.trim()) setTasks(current => normalizeTasks(current.map(item => item.id === taskId ? { ...item, references: item.references.filter(mark => mark.id !== referenceId) } : item)));
-        else updateReferenceTimecode(taskId, referenceId, value);
+        else setTasks(current => current.map(item => item.id === taskId ? { ...item, references: item.references.map(mark => mark.id === referenceId ? { ...mark, timecode: value, end_timecode: end } : mark) } : item));
       },
       setTimecode: value => updateReferenceTimecode(task.id, reference.id, value),
     });
@@ -277,8 +277,8 @@ export function ClientEditNotes({ clientPath, activePreviewId, activePreviewPath
     return <div className="cen-note-markers" aria-label="Timestamps">{[...markers].sort((a,b) => a.timecode.localeCompare(b.timecode)).map(reference => {
       const file = files.find(item => item.relative_path === reference.relative_path);
       const markerText = reference.text ?? task.text;
-      return <div className={`cen-marker-row ${activePreviewId === `${task.id}:${reference.id}` ? 'selected' : ''}`} data-marker-id={reference.id} data-marker-task={task.id} key={reference.id}>
-        <button type="button" className="cen-note-marker" aria-pressed={activePreviewId === `${task.id}:${reference.id}`} disabled={!file} title={`Open ${reference.name} at ${reference.timecode}`} onClick={() => { if (file) openReferencePreview(task, reference, file); }}><Clock3 size={12}/><span>{reference.timecode}</span></button>
+      return <div className={`cen-marker-row ${activePreviewId === `${task.id}:${reference.id}` ? 'selected' : ''} ${playbackActiveIds.includes(`${task.id}:${reference.id}`)?'playback-active':''}`} aria-current={playbackActiveIds.includes(`${task.id}:${reference.id}`)?'time':undefined} data-marker-id={reference.id} data-marker-task={task.id} key={reference.id}>
+        <button type="button" className="cen-note-marker" aria-pressed={activePreviewId === `${task.id}:${reference.id}`} disabled={!file} title={`Open ${reference.name} at ${reference.timecode}`} onClick={() => { if (file) openReferencePreview(task, reference, file); }}><Clock3 size={12}/><span>{formatNoteTime(parseNoteTime(reference.timecode)??0)}{reference.end_timecode&&<><br/><span className="cen-range-end">&ndash; {formatNoteTime(parseNoteTime(reference.end_timecode)??0)}</span></>}</span></button>
         {editingMarker === reference.id ? <input autoFocus className="cen-marker-text" aria-label={`Note at ${reference.timecode}`} placeholder="Add a marker note..." value={markerText} onClick={event => event.stopPropagation()} onFocus={event => { const field=event.currentTarget; requestAnimationFrame(() => field.setSelectionRange(field.value.length,field.value.length)); }} onBlur={() => setEditingMarker(null)} onKeyDown={event => { event.stopPropagation(); if (event.key === 'Enter' || event.key === 'Escape') { event.preventDefault(); event.currentTarget.blur(); } }} onChange={event => { const text=event.target.value; setTasks(current => current.map(item => item.id === task.id ? { ...item, references: item.references.map(mark => mark.id === reference.id ? { ...mark, text } : mark) } : item)); }}/> : <span className={`cen-marker-caption ${markerText ? '' : 'empty'}`} tabIndex={0} role="textbox" aria-readonly="true" aria-label={`Note at ${reference.timecode}. Double-click or press Enter to edit`} onClick={event => event.stopPropagation()} onMouseDown={event => { if (event.detail > 1) event.preventDefault(); }} onDoubleClick={event => { event.preventDefault(); event.stopPropagation(); setEditingMarker(reference.id); }} onKeyDown={event => { if(event.key === 'Enter' || event.key === 'F2') { event.preventDefault(); event.stopPropagation(); setEditingMarker(reference.id); } }}>{markerText || 'Untitled note'}</span>}
         <button type="button" className="cen-marker-remove" aria-label={`Remove timestamp ${reference.timecode}`} onClick={() => setTasks(current => current.map(item => item.id === task.id ? { ...item, references: item.references.filter(mark => mark.id !== reference.id) } : item))}><Trash2 size={11}/></button>
       </div>;

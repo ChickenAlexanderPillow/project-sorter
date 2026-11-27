@@ -3,6 +3,7 @@ import { convertFileSrc } from '@tauri-apps/api/core';
 import { AudioLines, Pause, Play, Volume2, VolumeX } from 'lucide-react';
 import { mediaKind } from './MediaTypes';
 import { previewPreparation } from './previewPreparation';
+import { useTimeReadoutScrub } from './useTimeReadoutScrub';
 
 const timeLabel = (value: number) => {
   const seconds = Number.isFinite(value) ? Math.max(0, Math.floor(value)) : 0;
@@ -13,6 +14,8 @@ const timeLabel = (value: number) => {
 export function CopyMediaPreview({ path, name }: { path: string; name: string }) {
   const kind = mediaKind(path);
   const media = useRef<HTMLMediaElement | null>(null);
+  const playerRoot = useRef<HTMLElement|null>(null);
+  useTimeReadoutScrub(playerRoot);
   const attachMedia = useCallback((node: HTMLVideoElement | HTMLAudioElement | null) => {
     if (media.current && media.current !== node) media.current.pause();
     media.current = node;
@@ -50,7 +53,7 @@ export function CopyMediaPreview({ path, name }: { path: string; name: string })
   }
 
   return <>
-    <div className="pph-copy-canvas">
+    <div className="pph-copy-canvas" ref={node=>{playerRoot.current=node?.parentElement??null;}}>
       {failed ? <span>Preview unavailable for this file</span>
         : !kind ? <span>No preview available</span>
         : !prepared ? <span>Loading preview…</span>
@@ -61,7 +64,7 @@ export function CopyMediaPreview({ path, name }: { path: string; name: string })
     <div className="pph-copy-playback">
       {playable ? <>
         <button type="button" onClick={() => void togglePlayback()} disabled={!prepared || failed} aria-label={`${playing ? 'Pause' : 'Play'} ${name}`}>{playing ? <Pause size={15}/> : <Play size={15}/>}</button>
-        <span className="pph-copy-time">{timeLabel(position)}</span>
+        <span className="pph-copy-time" data-time-scrub>{timeLabel(position)}</span>
         <input type="range" min={0} max={duration || 1} step={0.1} value={Math.min(position, duration || 1)} disabled={!prepared || failed || !duration} aria-label={`Seek ${name}`} onChange={event => { const value = Number(event.target.value); if (media.current) media.current.currentTime = value; setPosition(value); }}/>
         <span className="pph-copy-time">{timeLabel(duration)}</span>
         <button type="button" disabled={!prepared || failed} onClick={() => setMuted(value => !value)} aria-label={`${muted ? 'Unmute' : 'Mute'} ${name}`}>{muted ? <VolumeX size={15}/> : <Volume2 size={15}/>}</button>

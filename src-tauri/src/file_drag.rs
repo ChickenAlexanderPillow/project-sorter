@@ -34,14 +34,17 @@ fn validate_paths(client: &Path, paths: Vec<String>) -> Result<Vec<String>, Stri
                 )
             })
             .unwrap_or(false);
-        if !path.is_absolute() || (!project && crate::media_browser::media_kind(path).is_none()) {
-            return Err("Only media and editing projects can be dragged.".into());
+        if !path.is_absolute() {
+            return Err("Choose an absolute client asset path.".into());
         }
         let canonical = path
             .canonicalize()
             .map_err(|e| format!("{} is unavailable: {e}", path.display()))?;
-        if !canonical.is_file() || !roots.iter().any(|root| canonical.starts_with(root)) {
-            return Err("Choose a file inside this client's configured media or Edit folders.".into());
+        if !roots.iter().any(|root| canonical.starts_with(root)) {
+            return Err("Choose an asset inside this client's configured media or Edit folders.".into());
+        }
+        if !canonical.is_dir() && (!canonical.is_file() || (!project && crate::media_browser::media_kind(path).is_none())) {
+            return Err("Only media, folders and editing projects can be dragged.".into());
         }
         // Canonical paths are for validation only. Preserve mapped drives and
         // original UNC spelling in Premiere's reference.
@@ -59,6 +62,7 @@ pub async fn client_files_start_drag(
     app: tauri::AppHandle,
     client_path: String,
     paths: Vec<String>,
+    category: Option<String>,
 ) -> Result<String, String> {
     DRAGGING
         .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
@@ -67,6 +71,10 @@ pub async fn client_files_start_drag(
     // NAS metadata access can stall during disconnection. Keep it off the UI
     // thread and bound how long a gesture waits before reporting an error.
     let validation = tauri::async_runtime::spawn_blocking(move || {
+        let paths = match category {
+            Some(category) => crate::client_files::category_drag_paths(Path::new(&client_path), &category)?,
+            None => paths,
+        };
         validate_paths(Path::new(&client_path), paths)
     });
     let paths = tokio::time::timeout(std::time::Duration::from_secs(5), validation)
@@ -346,6 +354,31 @@ mod native {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn category_drags_offer_folders_and_preserve_media_boundaries() {
+        let temp = tempfile::tempdir().unwrap();
+        let client = temp.path().join("client");
+        for folder in ["010_VIDEO_PROXY", "020_VIDEO_RAW", "030_AUDIO_CLEAN", "040_AUDIO_RAW", "060_MUSIC", "Custom", ".hidden", "Adobe Premiere Pro Auto-Save"] {
+            std::fs::create_dir_all(client.join("01_MEDIA").join(folder)).unwrap();
+        }
+        std::fs::write(client.join("01_MEDIA/loose.mp4"), b"source").unwrap();
+        for (category, expected) in [("video", 2), ("audio", 3), ("all", 6)] {
+            let paths = crate::client_files::category_drag_paths(&client, category).unwrap();
+            assert_eq!(paths.len(), expected);
+            assert!(paths.iter().all(|path| Path::new(path).is_dir()));
+            assert_eq!(validate_paths(&client, paths).unwrap().len(), expected);
+        }
+        assert!(crate::client_files::category_drag_paths(&client, "edit").is_err());
+        let outside = temp.path().join("outside");
+        std::fs::create_dir(&outside).unwrap();
+        assert!(validate_paths(&client, vec![outside.to_string_lossy().into_owned()]).is_err());
+        std::fs::create_dir(client.join("Originals")).unwrap();
+        std::fs::write(client.join(".pepper-client.json"), br#"{"folder_destinations":{"video_raw":"Originals"}}"#).unwrap();
+        let video = crate::client_files::category_drag_paths(&client, "video").unwrap();
+        assert!(video.contains(&client.join("Originals").to_string_lossy().into_owned()));
+        assert_eq!(validate_paths(&client, video).unwrap().len(), 2);
+        assert_eq!(std::fs::read(client.join("01_MEDIA/loose.mp4")).unwrap(), b"source");
+    }
     #[test]
     fn miscellaneous_and_configured_media_and_edit_files_are_draggable() {
         let temp = tempfile::tempdir().unwrap();

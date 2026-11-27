@@ -3156,6 +3156,9 @@ button.ghost,
 
 .version-browser .export-preview .pepper-video-skin { max-height: none; border-radius: 0; }
 
+.pepper-time-scrub,.pepper-time-scrub button{cursor:ew-resize!important;touch-action:none;user-select:none}
+.pepper-time-scrub.is-scrubbing{color:#eee}
+
 .pepper-video-skin {
   --media-ring: transparent;
 }

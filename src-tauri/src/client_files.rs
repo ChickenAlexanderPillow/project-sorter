@@ -66,6 +66,32 @@ fn excluded_folder(name: &str) -> bool {
             "media cache" | "media cache files" | "peak files"
         )
 }
+/// Drag category folders themselves so editors retain their bin structure.
+pub(crate) fn category_drag_paths(client_path: &Path, category: &str) -> Result<Vec<String>, String> {
+    if !matches!(category, "video" | "audio" | "all") {
+        return Err("Choose Video, Audio or All to drag folders.".into());
+    }
+    let mut paths = Vec::new();
+    for (_, relative) in category_roots(client_path, category)? {
+        let folder = client_path.join(relative);
+        if !folder.is_dir() { continue; }
+        if category == "all" {
+            for entry in std::fs::read_dir(&folder).map_err(|e| format!("Could not read {}: {e}", folder.display()))? {
+                let entry = entry.map_err(|e| e.to_string())?;
+                if entry.file_type().map_err(|e| e.to_string())?.is_dir()
+                    && !excluded_folder(&entry.file_name().to_string_lossy()) {
+                    paths.push(entry.path().to_string_lossy().into_owned());
+                }
+            }
+        } else {
+            paths.push(folder.to_string_lossy().into_owned());
+        }
+    }
+    paths.sort();
+    paths.dedup();
+    if paths.is_empty() { return Err("No media folders are available to drag.".into()); }
+    Ok(paths)
+}
 fn list_assets(client_path: &Path, category: &str) -> Result<ClientAssets, String> {
     let roots = category_roots(client_path, category)?;
     if !client_path.is_absolute() || !client_path.is_dir() {
@@ -226,6 +252,8 @@ pub struct ClientEditNoteReference {
     relative_path: String,
     name: String,
     timecode: String,
+    #[serde(default)]
+    end_timecode: String,
     #[serde(default)]
     text: String,
 }
@@ -537,7 +565,7 @@ mod tests {
     #[test]
     fn notes_merge_independent_marker_edits() {
         let mut original = note("one", "Task");
-        original.references.push(ClientEditNoteReference { id: "ref".into(), relative_path: "clip.mp4".into(), name: "clip".into(), timecode: "00:10".into(), text: "Marker".into() });
+        original.references.push(ClientEditNoteReference { id: "ref".into(), relative_path: "clip.mp4".into(), name: "clip".into(), timecode: "00:10".into(), end_timecode: String::new(), text: "Marker".into() });
         let mut local = original.clone();
         local.references[0].timecode = "00:20".into();
         let mut remote = original.clone();
@@ -546,6 +574,25 @@ mod tests {
         assert_eq!(merged.len(), 1);
         assert_eq!(merged[0].references[0].timecode, "00:20");
         assert_eq!(merged[0].references[0].text, "Teammate's marker");
+    }
+    #[test]
+    fn notes_range_roundtrip_and_merge_preserves_endpoints() {
+        let legacy = serde_json::json!({"id":"ref","relative_path":"clip.mp4","name":"clip","timecode":"00:00:10.000","text":"Cut"});
+        let reference: ClientEditNoteReference = serde_json::from_value(legacy).unwrap();
+        assert!(reference.end_timecode.is_empty());
+        let mut base = note("one", "Task");
+        base.references.push(reference);
+        let mut local = base.clone();
+        local.references[0].end_timecode = "00:00:12.345".into();
+        let mut remote = base.clone();
+        remote.references[0].text = "Shared note".into();
+        let merged = merge_edit_notes(&[base], &[local], &[remote]);
+        assert_eq!(merged.len(), 1);
+        assert_eq!(merged[0].references[0].end_timecode, "00:00:12.345");
+        assert_eq!(merged[0].references[0].text, "Shared note");
+        let temp = tempfile::tempdir().unwrap();
+        let saved = sync_edit_notes(temp.path(), &merged, Some(&[])).unwrap();
+        assert_eq!(client_edit_notes(temp.path()).unwrap(), saved);
     }
     #[test]
     fn categories_show_only_working_assets_and_keep_variant_identity() {

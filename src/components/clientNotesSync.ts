@@ -1,4 +1,4 @@
-export type NoteReference = { id: string; relative_path: string; name: string; timecode: string; text?: string };
+export type NoteReference = { id: string; relative_path: string; name: string; timecode: string; end_timecode?: string; text?: string };
 export type NoteTask = { id: string; text: string; completed: boolean; references: NoteReference[] };
 const same = (a: unknown, b: unknown) => JSON.stringify(a) === JSON.stringify(b);
 
