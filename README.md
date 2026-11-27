@@ -65,6 +65,11 @@ pnpm tauri dev
 pnpm tauri build
 ```
 
+The app icon source is `public/Polished Chili Pepper App Icon.png`, configured in
+`scripts/app-icon.json`. With Python and Pillow installed, run `npm run icons`
+to regenerate the native icons, favicon, and platform exports. Release builds
+use the same generator.
+
 ## GitHub Releases and automatic updates
 
 Pepper checks the latest GitHub Release at startup. Every push to `main` publishes a signed Pepper build automatically. The workflow uses the major/minor version from `src-tauri/tauri.conf.json` and GitHub's run number as the patch version. For example, a commit may become `0.1.4`, then the next commit `0.1.5`.

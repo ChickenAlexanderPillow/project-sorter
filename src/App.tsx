@@ -1,4 +1,5 @@
 import { ClientDropConfirm, type DropPreview, type DropChoices } from "./components/ClientDropConfirm";
+import { ClientIssuesDialog, type ClientIssue } from "./components/ClientIssuesDialog";
 import { ClientRowTransfer } from "./components/ClientRowTransfer";
 import { ClientMediaDrop } from "./components/ClientMediaDrop";
 import { mediaDropTarget } from "./components/clientMediaDropTarget";
@@ -20,7 +21,7 @@ import type { PepperUpdate } from "./components/updateProgress";
 import { UpdateDialog } from "./components/UpdateDialog";
 import { InlineVideoPlayer } from "./components/InlineVideoPlayer";
 import { Video as VideoIcon } from "lucide-react";
-import { ArrowUpDown, ArrowUpRight, Bell, Check, ChevronDown, ChevronRight, ChevronsUpDown, Clapperboard, CloudUpload, Copy, FolderInput, FolderKanban, FolderOpen, Link2, LoaderCircle, Minus, Plus, RefreshCw, Search, Settings, Settings2, Square, Trash2, TriangleAlert, Wrench, X } from "lucide-react";
+import { ArrowUpDown, ArrowUpRight, Bell, Check, ChevronDown, ChevronRight, ChevronsUpDown, CirclePlay, Clapperboard, CloudUpload, Copy, FileCheck2, FolderInput, FolderKanban, FolderOpen, Link2, LoaderCircle, Minus, Plus, RefreshCw, Search, Settings, Settings2, Square, Trash2, TriangleAlert, X } from "lucide-react";
 import { ProjectSeasonSelect, useProjectSeasons } from "./components/MariyaSeasonSelect";
 import { IngestWorkspace } from "./components/IngestWorkspace";
 import { isNativeFileDragActive } from "./components/nativeFileDrag";
@@ -35,6 +36,7 @@ import { VersionHistory } from "./components/VersionHistory";
 import { ClientLabel, parseClientLabel } from "./components/ClientLabel";
 import pepperIcon from "../src-tauri/icons/128x128.png";
 import "./App.css";
+import "./components/ClientStatus.css";
 import { IntegrationBrand } from "./components/IntegrationBrand";
 import { SettingsDialog, type SettingsSection } from "./components/SettingsDialog";
 import { StudioMailPeopleSettings, StudioMailSettings } from "./components/StudioMailSettings";
@@ -52,16 +54,18 @@ function ExportStatusTooltip({
   id,
   details,
   versions,
-  enabled = true,
+  label,
+  onActivate,
   children,
 }: {
   id: string;
   details: string[];
   versions: number[];
-  enabled?: boolean;
+  label: string;
+  onActivate: () => void;
   children: ReactNode;
 }) {
-  const anchorRef = useRef<HTMLSpanElement | null>(null);
+  const anchorRef = useRef<HTMLButtonElement | null>(null);
   const tooltipRef = useRef<HTMLSpanElement | null>(null);
   const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [open, setOpen] = useState(false);
@@ -112,18 +116,19 @@ function ExportStatusTooltip({
     if (timerRef.current) clearTimeout(timerRef.current);
   }, []);
 
-  if (!enabled) return <>{children}</>;
-
   return (
-    <span
+    <button
+      type="button"
       ref={anchorRef}
-      className="export-status-tooltip-anchor"
-      tabIndex={0}
-      aria-describedby={id}
+      className="export-status-tooltip-anchor export-status-control"
+      aria-label={label}
+      onClick={event => { event.stopPropagation(); close(); onActivate(); }}
+      aria-describedby={open ? id : undefined}
       onMouseEnter={scheduleOpen}
       onMouseLeave={close}
       onFocus={scheduleOpen}
       onBlur={close}
+      onKeyDown={event => { if (event.key === "Escape") close(); }}
     >
       {children}
       {open && createPortal(
@@ -137,16 +142,16 @@ function ExportStatusTooltip({
           {details.map((detail) => (
             <span className="export-status-tooltip-detail" key={detail}>{detail}</span>
           ))}
-          <span className="export-status-tooltip-versions">
+          {versions.length > 0 && <span className="export-status-tooltip-versions">
             <span>Versions:</span>
             <span className="export-status-tooltip-version-list">
               {versions.map((version) => <span className="version-label" key={version}>V{version}</span>)}
             </span>
-          </span>
+          </span>}
         </span>,
         document.body
       )}
-    </span>
+    </button>
   );
 }
 
@@ -434,6 +439,7 @@ const ClientListRow = memo(function ClientListRow({
 }: ClientListRowProps) {
   const { confirmClientDrop, updateClientDropChoices, cancelClientDrop, toggleClientExpanded, openPepperContextMenu, handleOpenFolder, copyFromContextMenu, handleQuickCreateSession, refreshClients, handleUnpublish, showToast, toggleManualPublished, toggleStatusWarnings, handleSortDragOver, setDragTarget, handleDropEvent, setPendingPromotion, handleFixClient, handleOpenFinal, handleOpenFileLocation, setSelectedVersionByClient, openFrameIoSettings, setPendingFrameIoUpload, uploadApprovalToFrameIo, copyFrameIoShareLink, removeFrameIoUpload } = actions;
 
+  const [showIssues, setShowIssues] = useState(false);
   const label = parseClientLabel(client.name);
 
   const droppable = screen === "sort" && client.status !== "Not a client" && !clientIsCached && !pendingDrop && !transferProgress;
@@ -526,17 +532,34 @@ const ClientListRow = memo(function ClientListRow({
   const exportNeedsAttention = Boolean(
     exports.issue || exportLabel === "FINAL outdated" || exportLabel === "FINAL unverified"
   );
+  const issues: ClientIssue[] = [];
+  if (client.status === "Missing folders") issues.push({
+    id: "folders", title: "Missing folders", details: client.missing,
+    actionLabel: "Create missing folders", action: () => handleFixClient(client), disabled: busy,
+  });
+  if (exports.issue) issues.push({
+    id: "exports", title: "Check exports", details: [exports.issue],
+    actionLabel: "Open exports folder", action: () => handleOpenFolder(`${client.path}/03_EXPORTS`),
+  });
+  if (!exports.issue && !publishFailed && (exportLabel === "FINAL outdated" || exportLabel === "FINAL unverified")) issues.push({
+    id: "final", title: exportLabel,
+    details: [exportLabel === "FINAL outdated" ? "A newer export is available to publish." : "The final file could not be matched to the latest export."],
+    actionLabel: "Review publish", disabled: Boolean(busy || publishingClientPath || !exports.latest_filename),
+    action: () => { setShowIssues(false); setPendingPromotion({ ...client, export_status: { ...exports, publish_failed: publishFailed } }); },
+  });
+  if (publishFailed) issues.push({
+    id: "publish", title: "Publish failed", details: ["The last publish did not complete."],
+    actionLabel: "Retry publish", disabled: Boolean(busy || publishingClientPath || !exports.latest_filename || exports.issue),
+    action: () => { setShowIssues(false); setPendingPromotion({ ...client, export_status: { ...exports, publish_failed: true } }); },
+  });
   const exportDisplayVersion = exports.approval_in_progress
     ? exports.approval_progress_version ?? version
     : latestApprovalVersion?.version ?? version;
-  const exportStatusSummary = exportDisplayVersion !== null && exportLabel !== "FINAL"
-    ? (
-      <span className="export-status-summary">
-        <span className="version-label export-status-version">V{exportDisplayVersion}</span>
-        <span className="export-status-label">{exportLabel}</span>
-      </span>
-    )
-    : <span className="export-status-label">{exportLabel}</span>;
+  const statusLabel = exportLabel === "FINAL" ? "Published" : exportLabel;
+  const StatusIcon = exportLabel === "FINAL" ? Check
+    : exportLabel === "Shared" ? Link2
+      : exportLabel === "Approval ready" ? CirclePlay
+        : exportLabel === "Awaiting export" ? Clapperboard : FileCheck2;
   const tooltipVersionNumbers = Array.from(new Set([
     ...sortedApprovalVersions.map((approval) => approval.version),
     ...(creatingApprovalVersion && exports.approval_progress_version !== null
@@ -616,7 +639,7 @@ const ClientListRow = memo(function ClientListRow({
           ...(published ? [{ label: "Unpublish and return to pending", action: () => void handleUnpublish(client), separatorBefore: true, disabled: Boolean(busy || publishingClientPath) }] : []),
           ...(label.type === "HUDDLE" ? [{ label: client.huddle_template === "VIDEO_CALL" ? "Interview type: Video Call" : "Set interview type: Video Call", action: () => { void invoke("set_client_huddle_template", { clientPath: client.path, huddleTemplate: "VIDEO_CALL" }).then(() => { showToast("Huddle interview type saved as Video Call.", "success"); void refreshClients(projectRoot, true, true, true); }).catch(error => showToast(`Could not save interview type: ${String(error)}`, "error", 7000)); }, separatorBefore: true, disabled: client.huddle_template === "VIDEO_CALL" }] : []),
           { label: manuallyPublished ? "Remove published override" : "Mark as published", action: () => void toggleManualPublished(client), separatorBefore: true, disabled: !manuallyPublished && isFinalised(client) },
-          { label: warningsSuppressed ? "Show status warnings and Fix action" : "Hide status warnings and Fix action", action: () => void toggleStatusWarnings(client) },
+          { label: warningsSuppressed ? "Show status warnings" : "Hide status warnings", action: () => void toggleStatusWarnings(client) },
         ] : []),
       ])}
       onDragOver={
@@ -675,26 +698,26 @@ const ClientListRow = memo(function ClientListRow({
         </div>
       </div>
       <div className={`client-statuses ${clientIsCached ? "" : !client.exportStatusLoading ? "client-status-enter" : ""}`}>
-        {operationProgressActive ? (
+        {operationProgressActive || exports.approval_in_progress ? (
           <span className="client-operation-progress">
             <progress
               className="frameio-upload-progress"
-              value={publishingThisClient ? publishingProgressPercent ?? 0 : approvalProgressPercent}
+              value={publishingThisClient ? publishingProgressPercent ?? 0 : latestFrameIoBusy ? approvalProgressPercent : undefined}
               max={100}
-              aria-label={publishingThisClient ? "Publishing export" : "Uploading approval to Frame.io"}
+              aria-label={publishingThisClient ? "Publishing export" : latestFrameIoBusy ? "Uploading approval to Frame.io" : exportProgressLabel}
             />
           </span>
         ) : <>
-        {!clientIsCached && client.status !== "OK" && (!warningsSuppressed || client.status === "Not a client") && (
-        <span
-          className={`badge ${client.status
-            .toLowerCase()
-            .replace(/\s/g, "-")}`}
-        >
-          {client.status}
-        </span>
+        {!clientIsCached && issues.length > 0 && !warningsSuppressed && (
+          <button type="button" className="client-status-warning"
+            aria-label={`${issues.length} ${issues.length === 1 ? "issue" : "issues"} for ${label.name}`}
+            title={`${issues.length} ${issues.length === 1 ? "issue" : "issues"}`} aria-haspopup="dialog"
+            onClick={event => { event.stopPropagation(); setShowIssues(true); }}>
+            <TriangleAlert size={17} aria-hidden="true" />
+          </button>
         )}
-        {!clientIsCached && client.status !== "Not a client" && !(warningsSuppressed && exportNeedsAttention && exportLabel !== "FINAL" && !exports.approval_in_progress) && (
+        {!clientIsCached && client.status === "Not a client" && <span className="badge not-a-client">Not a client</span>}
+        {!clientIsCached && client.status !== "Not a client" && (!exportNeedsAttention || exports.approval_in_progress) && (
           <>
             {client.exportStatusLoading ? (
               <span className="client-status-space" aria-hidden="true" />
@@ -702,29 +725,19 @@ const ClientListRow = memo(function ClientListRow({
               <span className="client-export-status">
                 <ExportStatusTooltip
                   id={`export-versions-tooltip-${index}`}
-                  details={exportTooltipDetails}
+                  details={[statusLabel, ...exportTooltipDetails]}
                   versions={tooltipVersionNumbers}
-                  enabled={exportLabel !== "Awaiting export"}
+                  label={`${statusLabel}${exportDisplayVersion !== null && exportLabel !== "FINAL" ? `, version ${exportDisplayVersion}` : ""}`}
+                  onActivate={() => {
+                    if (exportLabel === "FINAL" && exports.final_filename) void handleOpenFinal(client);
+                    else if (!expanded) toggleClientExpanded(client.name);
+                  }}
                 >
-                  {exports.approval_in_progress ? (
-                    <span className="badge export-ready export-progress">
-                      <LoaderCircle className="approval-progress-spinner" size={13} aria-hidden="true" />
-                      {exportStatusSummary}
-                    </span>
-                  ) : exportNeedsAttention && !warningsSuppressed ? (
-                    <span className="badge export-warning">{exportStatusSummary}</span>
-                  ) : exportLabel === "FINAL" ? (
-                    <span className="status-text final-state" aria-label="Published">
-                      <Check size={14} aria-hidden="true" />
-                    </span>
-                  ) : exportLabel === "Shared" ? (
-                    <span className="status-text shared-state">
-                      <Link2 size={14} aria-hidden="true" /> {exportStatusSummary}
-                    </span>
-                  ) : exportLabel === "Awaiting export" ? (
-                    <span className="status-text empty-state"><Clapperboard size={13} aria-hidden="true" />Awaiting export</span>
-                  ) : (
-                    <span className="status-text">{exportStatusSummary}</span>
+                  <span className={`client-status-icon ${exportLabel === "FINAL" ? "final-state" : exportLabel === "Shared" ? "shared-state" : exportLabel === "Awaiting export" ? "empty-state" : ""}`}>
+                    <StatusIcon size={16} strokeWidth={1.8} aria-hidden="true" />
+                  </span>
+                  {exportDisplayVersion !== null && exportLabel !== "FINAL" && exportLabel !== "Awaiting export" && (
+                    <span className="version-label export-status-version" aria-hidden="true">V{exportDisplayVersion}</span>
                   )}
                 </ExportStatusTooltip>
               </span>
@@ -742,17 +755,7 @@ const ClientListRow = memo(function ClientListRow({
             disabled={Boolean(busy || publishingClientPath || !exports.latest_filename || exports.issue)}
             title={`${publishFailed ? "Retry failed publish" : "Publish"} ${exports.latest_filename}`}
           >
-            {publishFailed && publishingClientPath !== client.path ? "Failed" : <><span>Publish</span><ArrowUpRight size={13} aria-hidden="true" /></>}
-          </button>
-        )}
-        {client.status === "Missing folders" && !warningsSuppressed && (
-          <button
-            className="ghost icon-button"
-            onClick={() => handleFixClient(client)}
-            aria-label="Fix"
-            title="Fix"
-          >
-            <Wrench size={17} strokeWidth={2} aria-hidden="true" />
+            <span>Publish</span><ArrowUpRight size={13} aria-hidden="true" />
           </button>
         )}
         {exports.final_filename && !exports.issue && (
@@ -950,6 +953,8 @@ const ClientListRow = memo(function ClientListRow({
       )}
       </ClientWorkspace>
   )}</ClientDetails>
+  {showIssues && <ClientIssuesDialog clientName={label.name} issues={issues}
+    onRefresh={() => refreshClients(projectRoot, true, true, true)} onClose={() => setShowIssues(false)} />}
   </Fragment>
               );
 });
@@ -2733,15 +2738,11 @@ export default function App() {
   };
 
   const handleFixClient = async (client: ClientInfo) => {
-    try {
-      await invoke("fix_client", {
-        projectRoot,
-        clientName: client.name,
-      });
-      await refreshClients();
-    } catch (err) {
-      setError(String(err));
-    }
+    await invoke("fix_client", {
+      projectRoot,
+      clientName: client.name,
+    });
+    await refreshClients(projectRoot, true, true, true);
   };
 
   const handlePromoteLatest = async (client: ClientInfo) => {
@@ -2819,7 +2820,7 @@ export default function App() {
     try {
       await saveConfigValue("suppressedClientStatusWarnings", next);
       setSuppressedStatusPaths(next);
-      showToast(next[client.path] ? "Status warnings and Fix action hidden" : "Status warnings restored", "success");
+      showToast(next[client.path] ? "Status warnings hidden" : "Status warnings restored", "success");
     } catch (error) { setError(`Could not save warning preference: ${String(error)}`); }
   };
 

@@ -83,11 +83,11 @@
 .integration-issues { display: inline-flex; align-items: center; gap: 5px; }
 .integration-brand { display: flex; align-items: center; gap: 8px; height: 24px; color: var(--pepper-text); }
 .integration-brand-frameio svg { width: 19px; height: 22px; }
-.integration-heading .integration-brand-frameio span { color: inherit; font-size: 15px; font-weight: 600; letter-spacing: -.4px; }
+.integration-heading .integration-brand-frameio span { color: inherit; font-size: 15px; font-weight: 600; letter-spacing:var(--pepper-tracking); }
 .integration-brand-restream svg { width: 100px; height: 14px; }
 .integration-brand-gmail { color: var(--pepper-text); }
 .integration-brand-gmail svg { width: 20px; height: 16px; color: var(--pepper-muted); }
-.integration-heading .integration-brand-gmail span { color: inherit; font-size: 13px; font-weight: 600; letter-spacing: -.2px; }
+.integration-heading .integration-brand-gmail span { color: inherit; font-size: 13px; font-weight: 600; letter-spacing:var(--pepper-tracking); }
 .pepper-settings .integration-provider .frameio-config-grid { gap: 10px; }
 .integration-storage { position: relative; margin: 8px 0 12px; padding-right: 28px; }
 .integration-storage-numbers { display: flex; justify-content: space-between; gap: 10px; align-items: baseline; color: var(--pepper-muted); font-size: 10px; }

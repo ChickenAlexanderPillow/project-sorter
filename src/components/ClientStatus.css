@@ -1,0 +1,21 @@
+.client-list .export-status-control {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  min-height: 28px;
+  padding: 0 5px;
+  border: 0;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--pepper-text);
+  box-shadow: none;
+  cursor: pointer;
+}
+.client-list .export-status-control:hover { background: #ffffff0a; box-shadow: none; transform: none; }
+.client-list .export-status-control:focus-visible { outline: 2px solid #999; outline-offset: 2px; }
+.client-status-icon { display: grid; place-items: center; width: 18px; height: 24px; flex: none; color: #c7c7c7; }
+.client-status-icon.empty-state { color: #888; }
+.client-status-icon.shared-state { color: var(--pepper-info); }
+.client-status-icon.final-state { color: #82bd9c; }
+.client-list .export-status-control .export-status-version { font-size: 10px; }
+.client-operation-progress progress:indeterminate { opacity: .65; }

@@ -1,5 +1,14 @@
+@font-face {
+  font-family: "Manrope";
+  font-style: normal;
+  font-weight: 200 800;
+  font-display: swap;
+  src: url("/fonts/manrope/Manrope-Variable.ttf") format("truetype");
+}
+
 :root {
-  font-family: "Sora", "Space Grotesk", "Segoe UI", sans-serif;
+  --pepper-font: "Manrope", "Segoe UI Variable", "Segoe UI", system-ui, sans-serif;
+  font-family: var(--pepper-font);
   font-size: 15px;
   line-height: 1.4;
   font-weight: 400;
@@ -7,10 +16,8 @@
   --footer-height: 56px;
   color: #1f2328;
   background-color: #f5f6f8;
-  font-synthesis: none;
-  text-rendering: optimizeLegibility;
-  -webkit-font-smoothing: antialiased;
-  -moz-osx-font-smoothing: grayscale;
+  font-synthesis: style;
+  text-rendering: auto;
 }
 
 * {
@@ -1162,7 +1169,7 @@ button.accent {
   border-radius: 8px;
   pointer-events: auto;
   z-index: 51;
-  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
+  font-family: var(--pepper-font);
 }
 
 .debug-row {
@@ -2174,8 +2181,12 @@ body,
 
 /* Awards Editor-inspired visual system: flat surfaces, compact controls and quiet hierarchy. */
 :root {
-  font-family: "Segoe UI Variable", "Segoe UI", system-ui, sans-serif;
+  font-family: var(--pepper-font);
   font-size: 13px;
+  --pepper-tracking: 0.03em;
+  --pepper-name-tracking: 0.075em;
+  --pepper-name-font: var(--pepper-font);
+  letter-spacing: var(--pepper-tracking);
   --pepper-bg: #1c1c1c;
   --pepper-surface: #222222;
   --pepper-surface-raised: #292929;
@@ -2190,6 +2201,15 @@ body,
   --pepper-radius-control: 5px;
   --pepper-radius-card: 6px;
   --pepper-radius-dialog: 8px;
+}
+
+/* Native form controls do not inherit tracking by default. */
+button,
+input,
+select,
+textarea {
+  font-family: inherit;
+  letter-spacing: inherit;
 }
 
 body,
@@ -2390,9 +2410,11 @@ button.ghost,
 
 .project-switcher-copy strong {
   overflow: hidden;
+  font-family: var(--pepper-name-font);
   color: var(--pepper-text);
   font-size: 13px;
-  font-weight: 600;
+  font-weight: 500;
+  letter-spacing: var(--pepper-name-tracking);
   text-overflow: ellipsis;
   white-space: nowrap;
 }
@@ -2555,6 +2577,9 @@ button.ghost,
 
 .project-option-name {
   overflow: hidden;
+  font-family: var(--pepper-name-font);
+  font-weight: 500;
+  letter-spacing: var(--pepper-name-tracking);
   text-overflow: ellipsis;
   white-space: nowrap;
 }

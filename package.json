@@ -5,6 +5,7 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
+    "icons": "python scripts/generate-app-icons.py",
     "build": "tsc && vite build",
     "preview": "vite preview",
     "tauri": "tauri"

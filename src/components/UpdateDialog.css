@@ -28,7 +28,7 @@
   color: #dedede;
 }
 .pepper-update-heading-copy { min-width: 0; }
-.pepper-update-dialog h2 { margin: 0 0 7px; font-size: 15px; line-height: 1.15; font-weight: 600; letter-spacing: -.2px; }
+.pepper-update-dialog h2 { margin: 0 0 7px; font-size: 15px; line-height: 1.15; font-weight: 600; letter-spacing:var(--pepper-tracking); }
 .pepper-update-version { display: flex; align-items: center; gap: 7px; color: var(--pepper-muted, #999); font-size: 11px; line-height: 1; font-variant-numeric: tabular-nums; }
 .pepper-update-version strong { color: var(--pepper-text, #ddd); font-weight: 500; }
 .pepper-update-version > svg { opacity: .6; }
