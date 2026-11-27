@@ -1,3 +1,4 @@
+import { activityPercent, finishBackgroundActivity, reportBackgroundActivity } from "./notificationActivity";
 import { useEffect, useId, useRef, useState } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
@@ -93,16 +94,23 @@ export function TakeHomePackage({projectRoot,clientPath,clientName,onFilesChange
     finally{operationBusy.current=false;setBusy(false);}
   }
 
+  function reportDriveActivity(operationId:string,label:string,value?:TakeHomeProgress) {
+    reportBackgroundActivity({id:`drive:${operationId}`,kind:'drive',title:label,context:clientName,
+      detail:value?.current_file ? value.current_file.split(/[\\/]/).pop() || value.current_file : value?.phase || 'Preparing files\u2026',
+      percent:value && value.bytes_total > 1 ? activityPercent(value.bytes_done,value.bytes_total) : null});
+  }
+
   async function run<T>(operation:(operationId:string)=>Promise<T>,label:string){
     if(operationBusy.current)return;operationBusy.current=true;statusEpoch.current++;setStatusChecking(false);setBusy(true);setError('');setProgress(null);setActivity(label);
     const operationId=globalThis.crypto?.randomUUID?.()||`${Date.now()}-${Math.random().toString(36).slice(2)}`;
     let unlisten:(()=>void)|undefined;
+    reportDriveActivity(operationId,label);
     try{
-      unlisten=await listen<TakeHomeProgress>('pepper-takehome-progress',event=>{if(event.payload.operation_id===operationId)setProgress(event.payload);});
+      unlisten=await listen<TakeHomeProgress>('pepper-takehome-progress',event=>{if(event.payload.operation_id===operationId){setProgress(event.payload);reportDriveActivity(operationId,label,event.payload);}});
       return await operation(operationId);
     }
     catch(reason){const detail=String(reason);if(!/No (NAS|drive) changes/.test(detail))setError(detail);}
-    finally{unlisten?.();operationBusy.current=false;setBusy(false);}
+    finally{unlisten?.();finishBackgroundActivity(`drive:${operationId}`);operationBusy.current=false;setBusy(false);}
   }
 
   async function prepare(){
@@ -137,14 +145,15 @@ export function TakeHomePackage({projectRoot,clientPath,clientName,onFilesChange
   }
   async function restoreVersion(version:ArchiveVersion){
     if(operationBusy.current)return;operationBusy.current=true;statusEpoch.current++;setStatusChecking(false);setBusy(true);setError('');setProgress(null);setActivity('Restoring version');let stop:(()=>void)|undefined;
+    const operationId=globalThis.crypto?.randomUUID?.()||`${Date.now()}-${Math.random().toString(36).slice(2)}`;
+    reportDriveActivity(operationId,'Restoring version');
     try{
-      const operationId=globalThis.crypto?.randomUUID?.()||`${Date.now()}-${Math.random().toString(36).slice(2)}`;
-      stop=await listen<TakeHomeProgress>('pepper-takehome-progress',event=>{if(event.payload.operation_id===operationId)setProgress(event.payload);});
+      stop=await listen<TakeHomeProgress>('pepper-takehome-progress',event=>{if(event.payload.operation_id===operationId){setProgress(event.payload);reportDriveActivity(operationId,'Restoring version',event.payload);}});
       await invoke('takehome_archive_restore',{operationId,clientPath,archiveId:version.id,relativePath:version.path});
       setRestoreTarget(null);onFilesChanged();
       const value=await invoke<ArchiveListing>('takehome_archive_list',{clientPath});setArchive(value);
     }catch(reason){setError(String(reason));}
-    finally{stop?.();operationBusy.current=false;setBusy(false);setCheckRevision(value=>value+1);}
+    finally{stop?.();finishBackgroundActivity(`drive:${operationId}`);operationBusy.current=false;setBusy(false);setCheckRevision(value=>value+1);}
   }
 
   const formatCount=(count:number,label:string)=>`${count.toLocaleString()} ${label}${count===1?'':'s'}`;

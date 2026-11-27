@@ -1,6 +1,6 @@
 .client-list .client-row.client-row-transfer-active { position: relative; isolation: isolate; overflow: hidden; }
-.client-list .client-row.client-row-transfer-active > :not(.client-row-transfer) { visibility: hidden !important; pointer-events: none; }
-.client-list .client-row.client-row-transfer-active > :not(.client-row-transfer) * { visibility: hidden !important; }
+.client-list .client-row.client-row-transfer-active > :not(.client-row-transfer):not(.client-row-disclosure) { visibility: hidden !important; pointer-events: none; }
+.client-list .client-row.client-row-transfer-active > :not(.client-row-transfer):not(.client-row-disclosure) * { visibility: hidden !important; }
 .client-list .table-row.client-row.client-row-transfer-active > .client-row-transfer {
   position: absolute;
   inset: 0;

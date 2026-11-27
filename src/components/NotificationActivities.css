@@ -1,0 +1,19 @@
+.notification-popover:has(.notification-activities) { display: flex; flex-direction: column; }
+.notification-activities { flex: none; min-height: 0; border-bottom: 1px solid #414141; }
+.notification-activities-heading { display: flex; align-items: center; gap: 6px; padding: 10px 13px 3px; font-size: 10px; color: #999; }
+.notification-activities-heading > span:last-child { margin-left: auto; font-variant-numeric: tabular-nums; }
+.notification-activities-list { max-height: min(250px, 42vh); overflow: auto; scrollbar-width: thin; }
+.notification-activity { padding: 9px 13px 12px; }
+.notification-activity + .notification-activity { border-top: 1px solid #353535; }
+.notification-activity-heading { display: flex; align-items: center; gap: 7px; min-width: 0; color: #d5d5d5; }
+.notification-activity-heading > strong { font-size: 11px; font-weight: 500; flex: 1; }
+.notification-activity-heading > span { font-size: 10px; color: #aaa; font-variant-numeric: tabular-nums; }
+.notification-activity > p { margin: 4px 0 0 21px; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.notification-activity-context { font-size: 11px; color: #ccc; }
+.notification-activity-detail { font-size: 10px; color: #888; }
+.notification-activity > .frameio-upload-progress { width: calc(100% - 21px); margin: 9px 0 0 21px; }
+.notification-popover:has(.notification-activities) > ul { flex: 1 1 auto; min-height: 0; }
+.notification-popover:has(.notification-activities) > .notification-empty { padding: 12px; }
+.notification-popover-heading { flex: none; }
+.notification-bell-active { position: absolute; right: 5px; bottom: 2px; width: 5px; height: 5px; border-radius: 50%; background: #c8c8c8; box-shadow: 0 0 0 2px #1c1c1c; }
+.notification-bell[data-active="true"] { color: #e3e3e3; }

@@ -6,8 +6,6 @@
   min-width: 0;
 }
 
-.client-scroll-area.busy { opacity: .7; pointer-events: none; }
-
 .client-scroll-area .client-list {
   /* Reserved trailing space must not stretch the grid's client rows. */
   align-content: start;

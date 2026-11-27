@@ -99,6 +99,8 @@
 .cen-collapse>strong{font-size:11px;font-weight:500}
 .cen-count{margin-left:3px;color:#777;font-size:9px;white-space:nowrap}
 .cen-heading-actions{display:flex;align-items:center;gap:9px}
+.cen-refresh{display:grid;place-items:center;width:22px;height:22px;min-height:22px;padding:0;border:0;background:transparent;color:#888;cursor:pointer}
+.cen-refresh:hover,.cen-refresh:focus-visible{color:#ddd;background:#333;border-radius:4px}
 .cen-heading-actions>[role=status]{display:flex;align-items:center;gap:4px;color:#777;font-size:9px}
 .cen-add,.cen-empty-add{display:flex;align-items:center;justify-content:center;gap:4px;min-height:25px;padding:4px 7px;border:1px solid #414141;border-radius:4px;background:#2b2b2b;color:#bbb;font-size:9px}
 .cen-add:hover:not(:disabled),.cen-empty-add:hover{background:#383838;color:#eee}

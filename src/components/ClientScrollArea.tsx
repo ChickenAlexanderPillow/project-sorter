@@ -4,12 +4,11 @@ import "./ClientScrollArea.css";
 
 type Props = {
   scrollRef: RefObject<HTMLDivElement | null>;
-  busy: boolean;
   onDragOver?: DragEventHandler<HTMLDivElement>;
   children: ReactNode;
 };
 
-export function ClientScrollArea({ scrollRef, busy, onDragOver, children }: Props) {
+export function ClientScrollArea({ scrollRef, onDragOver, children }: Props) {
   const viewportId = useId();
   const railRef = useRef<HTMLDivElement>(null);
   const thumbRef = useRef<HTMLDivElement>(null);
@@ -116,7 +115,7 @@ export function ClientScrollArea({ scrollRef, busy, onDragOver, children }: Prop
   }, [scrollRef]);
 
   return (
-    <div className={`client-scroll-area${busy ? " busy" : ""}`}>
+    <div className="client-scroll-area">
       <div id={viewportId} className="table-scroll" ref={scrollRef} onDragOver={onDragOver}>
         {children}
       </div>

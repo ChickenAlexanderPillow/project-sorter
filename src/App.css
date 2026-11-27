@@ -408,11 +408,6 @@ button.accent {
   scrollbar-gutter: stable both-edges;
 }
 
-.table-scroll.busy {
-  opacity: 0.7;
-  pointer-events: none;
-}
-
 .client-refresh-overlay {
   position: absolute;
   inset: 0;

@@ -211,7 +211,7 @@ pub async fn client_files_list(
 
 const EDIT_NOTES_FILE: &str = ".pepper-edit-notes.json";
 
-#[derive(Clone, Serialize, serde::Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, serde::Deserialize)]
 pub struct ClientEditNoteTask {
     id: String,
     text: String,
@@ -220,7 +220,7 @@ pub struct ClientEditNoteTask {
     references: Vec<ClientEditNoteReference>,
 }
 
-#[derive(Clone, Serialize, serde::Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, serde::Deserialize)]
 pub struct ClientEditNoteReference {
     id: String,
     relative_path: String,
@@ -276,9 +276,9 @@ fn client_edit_notes(client_path: &Path) -> Result<Vec<ClientEditNoteTask>, Stri
                 return serde_json::from_value(tasks.clone()).map_err(|_| "The editing notes file could not be read.".to_string());
             }
             let legacy = data.get("text").and_then(|v| v.as_str()).unwrap_or("");
-            Ok(legacy.lines().filter_map(|line| {
+            Ok(legacy.lines().enumerate().filter_map(|(index, line)| {
                 let text = line.trim_start().strip_prefix("- ").or_else(|| line.trim_start().strip_prefix("* ")).unwrap_or(line).trim();
-                (!text.is_empty()).then(|| ClientEditNoteTask { id: uuid::Uuid::new_v4().to_string(), text: text.to_string(), completed: false, references: Vec::new() })
+                (!text.is_empty()).then(|| ClientEditNoteTask { id: format!("legacy-{index}-{}", { use sha2::{Digest, Sha256}; format!("{:x}", Sha256::digest(text.as_bytes())) }), text: text.to_string(), completed: false, references: Vec::new() })
             }).collect())
         }
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(Vec::new()),
@@ -324,9 +324,110 @@ pub async fn client_edit_notes_load(client_path: String) -> Result<Vec<ClientEdi
         .await.map_err(|e| e.to_string())?
 }
 
+// Apply only fields changed against the caller's base, under a shared-file lock.
+// Conflicting edits to one field preserve both tasks instead of losing text.
+fn merge_note_value(base: &serde_json::Value, local: &serde_json::Value, remote: &serde_json::Value) -> (serde_json::Value, bool) {
+    if local == base { return (remote.clone(), false); }
+    if remote == base || local == remote { return (local.clone(), false); }
+    if let (Some(base), Some(local), Some(remote)) = (base.as_object(), local.as_object(), remote.as_object()) {
+        let mut result = remote.clone();
+        let mut conflict = false;
+        for (key, value) in local {
+            let (merged, collided) = merge_note_value(base.get(key).unwrap_or(&serde_json::Value::Null), value, remote.get(key).unwrap_or(&serde_json::Value::Null));
+            result.insert(key.clone(), merged);
+            conflict |= collided;
+        }
+        return (result.into(), conflict);
+    }
+    if let (Some(base), Some(local), Some(remote)) = (base.as_array(), local.as_array(), remote.as_array()) {
+        return merge_note_list(base, local, remote);
+    }
+    (local.clone(), true)
+}
+
+fn merge_note_list(base: &[serde_json::Value], local: &[serde_json::Value], remote: &[serde_json::Value]) -> (serde_json::Value, bool) {
+    let mut result = remote.to_vec();
+    let mut conflict = false;
+    for before in base {
+        if !local.iter().any(|item| item["id"] == before["id"]) {
+            result.retain(|item| item["id"] != before["id"] || item != before);
+        }
+    }
+    for item in local {
+        let before = base.iter().find(|old| old["id"] == item["id"]);
+        if before == Some(item) { continue; }
+        if let Some(index) = result.iter().position(|saved| saved["id"] == item["id"]) {
+            let (merged, collided) = merge_note_value(before.unwrap_or(&serde_json::Value::Null), item, &result[index]);
+            result[index] = merged;
+            conflict |= collided;
+        } else {
+            result.push(item.clone());
+        }
+    }
+    // Only a deliberate reorder may change the order of existing shared rows.
+    let old_order: Vec<_> = base.iter().filter(|b| local.iter().any(|l| l["id"] == b["id"])).map(|v| &v["id"]).collect();
+    let new_order: Vec<_> = local.iter().filter(|l| base.iter().any(|b| b["id"] == l["id"])).map(|v| &v["id"]).collect();
+    if old_order != new_order {
+        result.sort_by_key(|v| local.iter().position(|l| l["id"] == v["id"]).unwrap_or(usize::MAX));
+    }
+    (result.into(), conflict)
+}
+
+fn merge_edit_notes(base: &[ClientEditNoteTask], local: &[ClientEditNoteTask], remote: &[ClientEditNoteTask]) -> Vec<ClientEditNoteTask> {
+    let mut result = remote.to_vec();
+    for before in base {
+        if !local.iter().any(|task| task.id == before.id) {
+            result.retain(|task| task.id != before.id || task != before);
+        }
+    }
+    for task in local {
+        let before = base.iter().find(|old| old.id == task.id);
+        if before == Some(task) { continue; }
+        if let Some(index) = result.iter().position(|saved| saved.id == task.id) {
+            let (merged, conflict) = merge_note_value(&serde_json::to_value(before).unwrap(), &serde_json::to_value(task).unwrap(), &serde_json::to_value(&result[index]).unwrap());
+            if conflict {
+                let mut copy = result[index].clone();
+                copy.id = uuid::Uuid::new_v4().to_string();
+                result[index] = task.clone();
+                result.push(copy);
+            } else {
+                result[index] = serde_json::from_value(merged).unwrap();
+            }
+        } else {
+            result.push(task.clone());
+        }
+    }
+    let old_order: Vec<_> = base.iter().filter(|b| local.iter().any(|l| l.id == b.id)).map(|v| &v.id).collect();
+    let new_order: Vec<_> = local.iter().filter(|l| base.iter().any(|b| b.id == l.id)).map(|v| &v.id).collect();
+    if old_order != new_order { result.sort_by_key(|v| local.iter().position(|l| l.id == v.id).unwrap_or(usize::MAX)); }
+    result
+}
+
+fn sync_edit_notes(client: &Path, tasks: &[ClientEditNoteTask], base: Option<&[ClientEditNoteTask]>) -> Result<Vec<ClientEditNoteTask>, String> {
+    if !client.is_absolute() || !client.is_dir() { return Err("This client's folder is unavailable.".into()); }
+    let lock_path = client.canonicalize().map_err(|e| e.to_string())?.join(".pepper-edit-notes.lock");
+    if std::fs::symlink_metadata(&lock_path).is_ok_and(|m| m.file_type().is_symlink()) { return Err("The notes lock must not be a symbolic link.".into()); }
+    let lock = std::fs::OpenOptions::new().read(true).write(true).create(true).truncate(false).open(&lock_path).map_err(|e| format!("Could not open notes lock: {e}"))?;
+    // OS locks are released on process exit and work across SMB clients. Keep
+    // the lock file in place so every writer locks the same file identity.
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
+    loop {
+        match lock.try_lock() {
+            Ok(()) => break,
+            Err(std::fs::TryLockError::WouldBlock) if std::time::Instant::now() < deadline => std::thread::sleep(std::time::Duration::from_millis(25)),
+            Err(error) => return Err(format!("Notes are busy or unavailable; retrying: {error}")),
+        }
+    }
+    mark_edit_notes_hidden(&lock_path).map_err(|e| format!("Could not hide notes lock: {e}"))?;
+    let remote = client_edit_notes(client)?;
+    let merged = match base { Some(base) => merge_edit_notes(base, tasks, &remote), None => tasks.to_vec() };
+    save_client_edit_notes(client, &merged)?;
+    Ok(merged)
+}
+
 #[tauri::command]
-pub async fn client_edit_notes_save(client_path: String, tasks: Vec<ClientEditNoteTask>) -> Result<(), String> {
-    tauri::async_runtime::spawn_blocking(move || save_client_edit_notes(Path::new(&client_path), &tasks))
+pub async fn client_edit_notes_save(client_path: String, tasks: Vec<ClientEditNoteTask>, base_tasks: Option<Vec<ClientEditNoteTask>>) -> Result<Vec<ClientEditNoteTask>, String> {
+    tauri::async_runtime::spawn_blocking(move || sync_edit_notes(Path::new(&client_path), &tasks, base_tasks.as_deref()))
         .await.map_err(|e| e.to_string())?
 }
 
@@ -382,6 +483,70 @@ pub async fn client_files_open_project(
 mod tests {
     use super::*;
     use std::fs;
+
+    fn note(id: &str, text: &str) -> ClientEditNoteTask {
+        ClientEditNoteTask { id: id.into(), text: text.into(), completed: false, references: vec![] }
+    }
+
+    #[test]
+    fn notes_merge_stale_writers_and_preserve_conflicting_text() {
+        let base = vec![note("one", "Original")];
+        let a = vec![note("one", "Alice"), note("two", "New task")];
+        let mut b = base.clone();
+        b[0].completed = true;
+        let merged = merge_edit_notes(&base, &b, &a);
+        assert_eq!(merged.len(), 2);
+        assert_eq!(merged[0].text, "Alice");
+        assert!(merged[0].completed);
+        let collision = merge_edit_notes(&base, &[note("one", "Bob")], &a);
+        assert_eq!(collision.len(), 3);
+        assert_eq!(collision[0].id, "one");
+        assert_eq!(collision[0].text, "Bob");
+        assert!(collision.iter().any(|t| t.text == "Alice" && t.id != "one"));
+        // Deleting a stale task cannot remove somebody else's changed text.
+        assert_eq!(merge_edit_notes(&base, &[], &a), a);
+    }
+
+    #[test]
+    fn notes_lock_serializes_independent_writers_without_losing_additions() {
+        let temp = tempfile::tempdir().unwrap();
+        let client = temp.path().to_path_buf();
+        let handles: Vec<_> = (0..8).map(|index| {
+            let client = client.clone();
+            std::thread::spawn(move || sync_edit_notes(&client, &[note(&index.to_string(), "Added concurrently")], Some(&[])).unwrap())
+        }).collect();
+        for handle in handles { handle.join().unwrap(); }
+        assert_eq!(client_edit_notes(&client).unwrap().len(), 8);
+        assert!(client.join(".pepper-edit-notes.lock").exists());
+    }
+
+    #[test]
+    fn notes_storage_handles_legacy_ids_and_clear_then_readd() {
+        let temp = tempfile::tempdir().unwrap();
+        let client = temp.path();
+        fs::write(client.join(EDIT_NOTES_FILE), br#"{"text":"- First\n- Second"}"#).unwrap();
+        let base = client_edit_notes(client).unwrap();
+        assert_eq!(base, client_edit_notes(client).unwrap());
+        assert!(sync_edit_notes(client, &[], Some(&base)).unwrap().is_empty());
+        assert!(!client.join(EDIT_NOTES_FILE).exists());
+        let tasks = vec![note("one", "Restored")];
+        assert_eq!(sync_edit_notes(client, &tasks, Some(&[])).unwrap(), tasks);
+        assert_eq!(client_edit_notes(client).unwrap(), tasks);
+    }
+
+    #[test]
+    fn notes_merge_independent_marker_edits() {
+        let mut original = note("one", "Task");
+        original.references.push(ClientEditNoteReference { id: "ref".into(), relative_path: "clip.mp4".into(), name: "clip".into(), timecode: "00:10".into(), text: "Marker".into() });
+        let mut local = original.clone();
+        local.references[0].timecode = "00:20".into();
+        let mut remote = original.clone();
+        remote.references[0].text = "Teammate's marker".into();
+        let merged = merge_edit_notes(&[original], &[local], &[remote]);
+        assert_eq!(merged.len(), 1);
+        assert_eq!(merged[0].references[0].timecode, "00:20");
+        assert_eq!(merged[0].references[0].text, "Teammate's marker");
+    }
     #[test]
     fn categories_show_only_working_assets_and_keep_variant_identity() {
         let temp = tempfile::tempdir().unwrap();

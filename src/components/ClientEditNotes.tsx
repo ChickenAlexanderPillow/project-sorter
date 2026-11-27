@@ -1,12 +1,11 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { invoke } from '@tauri-apps/api/core';
-import { AudioLines, Check, ChevronRight, Clock3, File, Files, GripVertical, Headphones, Image, LoaderCircle, NotebookPen, Package, Trash2, Video } from 'lucide-react';
+import { AudioLines, Check, ChevronRight, Clock3, File, Files, GripVertical, Headphones, Image, LoaderCircle, NotebookPen, Package, RefreshCw, Trash2, Video } from 'lucide-react';
 import { startNativeFileDrag } from './nativeFileDrag';
+import { ClientNotesSync, type NoteTask as Task, type NoteReference as MediaReference } from './clientNotesSync';
 
 type MediaFile = { name: string; path: string; relative_path: string; kind: string };
 type Listing = { files: MediaFile[] };
-type MediaReference = { id: string; relative_path: string; name: string; timecode: string; text?: string };
-type Task = { id: string; text: string; completed: boolean; references: MediaReference[] };
 export type ClientNoteMarker = { taskId: string; referenceId: string; timecode: string; text: string };
 export type ClientNotePreview = { taskId: string; referenceId: string; path: string; name: string; kind: string; timecode: string; markers: ClientNoteMarker[]; revealMarker: (taskId: string, referenceId: string) => void; setTimecode: (value: string) => void; addTimestamp: (value: string) => ClientNoteMarker; editTimestamp: (taskId: string, referenceId: string, value: string) => void; editNote: (taskId:string, referenceId:string, text:string)=>void };
 type MediaCategory = 'all' | 'video' | 'audio' | 'stills' | 'stock';
@@ -33,7 +32,7 @@ const prepareLoadedTasks = (saved: Task[]) => {
     if (owner) loadedTasks = loadedTasks.map(task => task.id === owner.id ? { ...task, references: [...task.references, ...markerTask.references] } : task).filter(task => task.id !== markerTask.id);
   }
   const normalizedTasks = normalizeTasks(orderTasks(loadedTasks));
-  return { tasks: normalizedTasks, persistedSignature: signature(savedTasks(normalizedTasks)) };
+  return { tasks: normalizedTasks };
 };
 const normalizeTasks = (tasks: Task[]) => {
   const draft = [...tasks].reverse().find(isDraft) || makeTask();
@@ -83,58 +82,45 @@ export function ClientEditNotes({ clientPath, activePreviewId, activePreviewPath
   const panel = useRef<HTMLElement>(null);
   const inputRefs = useRef(new Map<string, HTMLTextAreaElement>());
   const picker = useRef<HTMLDivElement>(null);
-  const timer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const sync = useRef<ClientNotesSync | null>(null);
   const drag = useRef<{ pointerId: number; x: number; y: number; path: string } | null>(null);
   const nativeBusy = useRef(false);
   const cursor = useRef<{ id: string; position: number } | null>(null);
-  const lastSaved = useRef<string | null>(null);
-  const tasksRef = useRef(tasks);
-  const saveInFlight = useRef(false);
-  tasksRef.current = tasks;
-
   useEffect(() => {
     let current = true;
-    setLoaded(false); setTasks([]); setError(''); setStatus('saved'); setMention(null); setMentionFile(null);
-    void invoke<Task[]>('client_edit_notes_load', { clientPath }).then(saved => {
+    setLoaded(false); setTasks([]); setError(''); setStatus('saving'); setMention(null); setMentionFile(null);
+    const session = new ClientNotesSync({
+      load: () => invoke<Task[]>('client_edit_notes_load', { clientPath }),
+      save: (tasks, baseTasks) => invoke<Task[]>('client_edit_notes_save', { clientPath, tasks, baseTasks }),
+    }, saved => {
       if (!current) return;
-      const prepared = prepareLoadedTasks(saved);
-      lastSaved.current = prepared.persistedSignature; setTasks(prepared.tasks); setLoaded(true);
-    }).catch(reason => { if (current) { setError(String(reason)); setStatus('error'); } });
+      setTasks(previous => {
+        const draft = previous.find(isDraft);
+        return normalizeTasks([...prepareLoadedTasks(saved).tasks.filter(task => !isDraft(task)), ...(draft ? [draft] : [])]);
+      });
+      setLoaded(true);
+    }, (nextStatus, reason) => { if (current) { setStatus(nextStatus); setError(reason); } });
+    sync.current = session;
+    void session.refresh();
+    const interval = window.setInterval(() => { void session.refresh(); }, 500);
+    const refresh = () => { void session.refresh(true); };
+    const visible = () => { if (document.visibilityState === 'visible') refresh(); };
+    window.addEventListener('focus', refresh);
+    window.addEventListener('pepper-refresh-notes', refresh);
+    document.addEventListener('visibilitychange', visible);
     void invoke<Listing>('client_files_list', { clientPath, category: 'all' })
       .then(listing => { if (current) setFiles(listing.files.filter(file => file.kind !== 'project')); })
       .catch(() => { /* Notes remain usable when media folders are unavailable. */ });
-    return () => { current = false; if (timer.current) clearTimeout(timer.current); };
-  }, [clientPath]);
-
-  // Refresh shared notes while this tab is open. Never replace local state while
-  // there are edits waiting to save or a save is in progress, so remote updates
-  // cannot interrupt typing or erase this tab's pending changes.
-  useEffect(() => {
-    if (!loaded) return;
-    let current = true;
-    let polling = false;
-    const refresh = async () => {
-      if (polling || saveInFlight.current || timer.current !== null
-        || signature(savedTasks(tasksRef.current)) !== lastSaved.current) return;
-      polling = true;
-      try {
-        const saved = await invoke<Task[]>('client_edit_notes_load', { clientPath });
-        if (!current || saveInFlight.current || timer.current !== null
-          || signature(savedTasks(tasksRef.current)) !== lastSaved.current) return;
-        const prepared = prepareLoadedTasks(saved);
-        if (prepared.persistedSignature !== lastSaved.current) {
-          lastSaved.current = prepared.persistedSignature;
-          setTasks(prepared.tasks);
-        }
-      } catch {
-        // Keep the current notes visible during temporary shared-folder errors.
-      } finally {
-        polling = false;
-      }
+    return () => {
+      current = false;
+      session.stop();
+      if (sync.current === session) sync.current = null;
+      window.clearInterval(interval);
+      window.removeEventListener('focus', refresh);
+      window.removeEventListener('pepper-refresh-notes', refresh);
+      document.removeEventListener('visibilitychange', visible);
     };
-    const interval = window.setInterval(() => { void refresh(); }, 1000);
-    return () => { current = false; window.clearInterval(interval); };
-  }, [clientPath, loaded]);
+  }, [clientPath]);
 
   useEffect(() => {
     if (!mention) return;
@@ -149,23 +135,9 @@ export function ClientEditNotes({ clientPath, activePreviewId, activePreviewPath
     return () => { document.removeEventListener('pointerdown', onPointerDown); document.removeEventListener('keydown', onKeyDown, true); };
   }, [mention]);
 
-  useEffect(() => {
-    if (!loaded) return;
-    const currentTasks = savedTasks(tasks);
-    const current = signature(currentTasks);
-    if (lastSaved.current === current) return;
-    if (timer.current) clearTimeout(timer.current);
-    timer.current = setTimeout(() => {
-      timer.current = null;
-      saveInFlight.current = true;
-      setStatus('saving');
-      void invoke('client_edit_notes_save', { clientPath, tasks: currentTasks }).then(() => { lastSaved.current = current; setStatus('saved'); setError(''); })
-        .catch(reason => { setError(String(reason)); setStatus('error'); })
-        .finally(() => { saveInFlight.current = false; });
-    }, 700);
-    return () => { if (timer.current) clearTimeout(timer.current); };
-  }, [clientPath, loaded, tasks]);
-
+  useLayoutEffect(() => {
+    if (loaded) sync.current?.update(savedTasks(tasks));
+  }, [loaded, tasks]);
 
   useEffect(() => {
     if (!loaded || !files.length) return;
@@ -316,8 +288,8 @@ export function ClientEditNotes({ clientPath, activePreviewId, activePreviewPath
   return <section ref={panel} className="cen-panel" aria-label="Client notes">
     <header className="cen-heading">
       <div className="cen-title"><NotebookPen size={14}/><strong>Notes</strong><span className="cen-count">{activeCount}</span></div>
-      <div className="cen-heading-actions"><span className={`cen-save-status ${status}`} role="status">{!loaded ? status === 'error' ? 'Unavailable' : <LoaderCircle size={12} className="cf-spin"/> : status === 'saving' ? 'Saving…' : status === 'error' ? 'Couldn’t save' : 'Saved'}</span>
-
+      <div className="cen-heading-actions"><span className={`cen-save-status ${status}`} role="status">{!loaded ? status === 'error' ? 'Unavailable' : <LoaderCircle size={12} className="cf-spin"/> : status === 'saving' ? 'Saving…' : status === 'error' ? 'Not synced' : 'Synced'}</span>
+        <button type="button" className="cen-refresh" title="Refresh notes" aria-label="Refresh notes" onClick={() => void sync.current?.refresh(true)}><RefreshCw size={12}/></button>
       </div>
     </header>
     {<>
@@ -413,6 +385,6 @@ export function ClientEditNotes({ clientPath, activePreviewId, activePreviewPath
         <footer><button type="button" className="cen-mention-cancel" onClick={closePicker}>Cancel</button><button type="button" onClick={() => insertReference()}>Insert reference</button></footer>
       </div>}
     </div>}
-    {error && <p className="cen-error" role="alert">Tasks couldn’t be {loaded ? 'saved' : 'loaded'}. Check the NAS connection, then reopen this client to retry.</p>}
+    {error && <p className="cen-error" role="alert" title={error}>Notes couldn’t sync. Check the shared folder connection. Retrying automatically.</p>}
   </section>;
 }

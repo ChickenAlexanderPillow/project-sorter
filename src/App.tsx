@@ -1,3 +1,6 @@
+import { NotificationActivities } from "./components/NotificationActivities";
+import { activityPercent, type NotificationActivity } from "./components/notificationActivity";
+import { useBackgroundActivities } from "./components/useBackgroundActivities";
 import { createCloseRequestHandler } from "./components/closeRequest";
 import { ClientDropConfirm, type DropPreview, type DropChoices } from "./components/ClientDropConfirm";
 import { ClientIssuesDialog, type ClientIssue } from "./components/ClientIssuesDialog";
@@ -630,7 +633,7 @@ const ClientListRow = memo(function ClientListRow({
       style={{ animationDelay: `${Math.min(index * 18, 180)}ms` }}
       data-client-name={client.name}
       data-client={droppable ? client.name : undefined}
-      onClick={() => { if (!dragOver && !pendingDrop && !transferProgress) toggleClientExpanded(client.name); }}
+      onClick={() => { if (!dragOver && !pendingDrop) toggleClientExpanded(client.name); }}
       onContextMenu={(event) => openPepperContextMenu(event, label.name, [
         { label: "Open client folder", action: () => void handleOpenFolder(client.path) },
         { label: "Copy client name", action: () => copyFromContextMenu(client.name, "Client name") },
@@ -961,6 +964,7 @@ const ClientListRow = memo(function ClientListRow({
 });
 
 export default function App() {
+  const backgroundActivities = useBackgroundActivities();
   const [screen] = useState<"home" | "sort">("sort");
   const [ingestOpen, setIngestOpen] = useState(false);
   const [ingestOperationBusy, setIngestOperationBusy] = useState(false);
@@ -1136,7 +1140,7 @@ export default function App() {
   const [creatingClient, setCreatingClient] = useState(false);
   const closeOperationActiveRef = useRef(false);
   const updateInProgressRef = useRef(false);
-  closeOperationActiveRef.current = Boolean(busy || publishingClientPath || frameIoBusyPath || creatingClient || ingestOperationBusy);
+  closeOperationActiveRef.current = Boolean(busy || publishingClientPath || frameIoBusyPath || creatingClient || ingestOperationBusy || backgroundActivities.length > 0);
   useEffect(() => {
     let active = true;
     const handler = createCloseRequestHandler({
@@ -1197,9 +1201,7 @@ export default function App() {
   const [showNotificationMenu, setShowNotificationMenu] = useState(false);
   const unreadNotificationCount = notificationHistory.filter((entry) => entry.unread).length;
   const notificationCenterRef = useRef<HTMLDivElement | null>(null);
-  const [queueMeta, setQueueMeta] = useState<{ queued: number; skipped: number } | null>(
-    null
-  );
+
   const [alwaysOnTop, setAlwaysOnTop] = useState(false);
   const [copiedDebug, setCopiedDebug] = useState(false);
   const debugHideTimeoutRef = useRef<number | null>(null);
@@ -1801,13 +1803,17 @@ export default function App() {
     }
   };
 
+  function recordNotification(message: string, tone: "info" | "success" | "error" = "info", _duration?: number | null) {
+    setNotificationHistory(current => [{ id: crypto.randomUUID(), message, tone, createdAt: Date.now(), unread: true }, ...current].slice(0, 100));
+  }
+
   function showToast(
     message: string,
     tone: "info" | "success" | "error" = "info",
     duration: number | null = 3000
   ) {
     setToast({ message, tone });
-    setNotificationHistory((current) => [{ id: crypto.randomUUID(), message, tone, createdAt: Date.now(), unread: true }, ...current].slice(0, 100));
+    recordNotification(message, tone);
     if (toastTimeoutRef.current) {
       window.clearTimeout(toastTimeoutRef.current);
       toastTimeoutRef.current = null;
@@ -1820,13 +1826,31 @@ export default function App() {
     }
   }
 
-  const processingToast =
-    busy && progress && queueMeta
-      ? {
-          message: `Processing ${progress.processed}/${progress.total} • Queued ${queueMeta.queued} • Skipped ${queueMeta.skipped}`,
-          tone: "info" as const,
-        }
-      : null;
+  const activeNotifications: NotificationActivity[] = [...backgroundActivities];
+  const clientContext = (path: string) => parseClientLabel(path.split(/[\\/]/).filter(Boolean).pop() || path).name;
+  const fileContext = (path: string) => path.split(/[\\/]/).pop() || path;
+  if (sortingClientPath) activeNotifications.unshift({
+    id: `copy:${sortingClientPath}`, kind: 'copy', title: 'Copying files', context: clientContext(sortingClientPath),
+    detail: progress?.current ? `${progress.processed} / ${progress.total} files \u00b7 ${fileContext(progress.current)}` : 'Preparing files\u2026',
+    percent: activityPercent(progress?.bytes_done, progress?.bytes_total),
+  });
+  if (publishingClientPath) {
+    const current = publishProgress?.client_path === publishingClientPath ? publishProgress : null;
+    activeNotifications.push({ id:`publish:${publishingClientPath}`,kind:'publish',title:'Publishing final',context:clientContext(publishingClientPath),
+      detail:current?.stage === 'clips' ? 'Copying and verifying clips' : 'Copying and verifying video',percent:activityPercent(current?.completed,current?.total) });
+  }
+  const reviewStates: Record<string,string> = {preparing:'Preparing upload',uploading:'Uploading approval',processing:'Processing on Frame.io',creating_version_stack:'Adding version',updating_share:'Updating review link',creating_share:'Creating review link',finalizing_review:'Preparing review link'};
+  const reviewPaths = new Set(Object.entries(frameIoProgress).filter(([,value])=>Boolean(reviewStates[value.state])).map(([path])=>path));
+  if (frameIoBusyPath) reviewPaths.add(frameIoBusyPath);
+  reviewPaths.forEach(path => {
+    const current=frameIoProgress[path];
+    const client=clients.find(client=>path.replace(/\\/g,'/').toLowerCase().startsWith(`${client.path.replace(/\\/g,'/').toLowerCase()}/`));
+    activeNotifications.push({id:`review:${path}`,kind:'review',title:reviewStates[current?.state] || 'Updating Frame.io',context:client ? clientContext(client.path) : 'Frame.io',detail:fileContext(path),percent:current?.state==='uploading'?activityPercent(current.uploaded,current.total):null});
+  });
+  const importing = ['collecting','inventorying','filing'].includes(ingestProgress?.phase || '');
+  if (importing || ingestOperationBusy) activeNotifications.push({id:'import',kind:'import',title:ingestProgress?.phase==='inventorying'?'Finding media':ingestProgress?.phase==='filing'?'Organising media':'Importing media',context:ingestProgress?.project_root ? fileContext(ingestProgress.project_root) : '',detail:ingestProgress?.source ? fileContext(ingestProgress.source) : 'Preparing media\u2026',percent:importing?activityPercent(ingestProgress?.completed,ingestProgress?.total):null});
+  if (busy && !sortingClientPath) activeNotifications.push({id:'undo',kind:'other',title:'Undoing transfer',context:'',detail:'Restoring the previous file operation',percent:null});
+  if (creatingClient) activeNotifications.push({id:'create-client',kind:'other',title:'Creating client',context:newClientName,detail:'Preparing client folders',percent:null});
 
   useEffect(() => {
     projectRootRef.current = projectRoot;
@@ -2337,6 +2361,7 @@ export default function App() {
     replaceExisting = false,
     clientNames?: string[]
   ) => {
+    window.dispatchEvent(new Event('pepper-refresh-notes'));
     const root = rootOverride ?? projectRoot;
     if (!root || (clientsScansInFlightRef.current > 0 && !force)) return;
     const scanSequence = ++clientsScanSequenceRef.current;
@@ -2878,7 +2903,7 @@ export default function App() {
   async function handleSortDrop(
     client: ClientInfo,
     paths: string[],
-    meta?: { queued: number; skipped: number },
+    _meta?: { queued: number; skipped: number },
     destinationFolder?: string,
     rootOverride?: string,
     destinationRoutes?: { folder: string; paths: string[] }[],
@@ -2910,12 +2935,6 @@ export default function App() {
     setSortingClientPath(client.path);
     setBusy(true);
     setError(null);
-    if (meta) {
-      setQueueMeta(meta);
-    } else {
-      const queued = paths.length;
-      setQueueMeta({ queued, skipped: 0 });
-    }
     setProgress({ processed: 0, total: paths.length, current: "", result: "", bytes_done: 0, bytes_total: 0 });
     try {
       const result = await invoke<SortResult>("sort_files", {
@@ -2932,7 +2951,7 @@ export default function App() {
       setLastSummary(
         `${result.processed} processed • ${result.failed} failed • ${result.skipped} skipped`
       );
-      showToast(
+      recordNotification(
         `Complete • ${result.processed} processed • ${result.failed} failed • ${result.skipped} skipped`,
         result.failed ? "error" : "success",
         5000
@@ -2940,12 +2959,11 @@ export default function App() {
       if (projectRootRef.current === root) await refreshClients(root, false);
     } catch (err) {
       setError(String(err));
-      showToast(`Transfer failed: ${String(err)}`, "error", 5000);
+      recordNotification(`Transfer failed: ${String(err)}`, "error", 5000);
     } finally {
       setSortingClientPath(null);
       busyRef.current = false;
       setBusy(false);
-      setQueueMeta(null);
       if (pendingRefreshRef.current) {
         pendingRefreshRef.current = false;
         watcherRefreshAllRef.current = false;
@@ -3126,7 +3144,8 @@ export default function App() {
             <button
               type="button"
               className="notification-bell"
-              aria-label={unreadNotificationCount ? `Notifications, ${unreadNotificationCount} unread` : "Notifications"}
+              aria-label={`Notifications${activeNotifications.length ? `, ${activeNotifications.length} in progress` : ""}${unreadNotificationCount ? `, ${unreadNotificationCount} unread` : ""}`}
+              data-active={activeNotifications.length > 0}
               aria-expanded={showNotificationMenu}
               title="Notifications"
               onClick={() => {
@@ -3136,6 +3155,7 @@ export default function App() {
               }}
             >
               <Bell size={17} aria-hidden="true" />
+              {activeNotifications.length > 0 && <span className="notification-bell-active" aria-hidden="true"/>}
               {unreadNotificationCount > 0 && <span className="notification-count">{unreadNotificationCount > 99 ? "99+" : unreadNotificationCount}</span>}
             </button>
             {showNotificationMenu && (
@@ -3143,12 +3163,13 @@ export default function App() {
                 <header className="notification-popover-heading">
                   <div className="notification-popover-title">
                     <strong>Notifications</strong>
-                    <span>{notificationHistory.length ? `${notificationHistory.length} recent` : "Up to date"}</span>
+                    <span>{activeNotifications.length ? `${activeNotifications.length} in progress` : notificationHistory.length ? `${notificationHistory.length} recent` : "Up to date"}</span>
                   </div>
                   <button type="button" disabled={notificationHistory.length === 0} onClick={() => setNotificationHistory([])} aria-label="Clear notification history" title="Clear history"><Trash2 size={14} /></button>
                 </header>
+                <NotificationActivities activities={activeNotifications}/>
                 {notificationHistory.length === 0 ? (
-                  <p className="notification-empty">No notifications yet.</p>
+                  <p className="notification-empty">{activeNotifications.length ? "No recent notifications." : "No notifications yet."}</p>
                 ) : (
                   <ul>
                     {notificationHistory.map((entry) => (
@@ -3207,11 +3228,7 @@ export default function App() {
         </div>
       </header>
       {error && <div className="banner error">{error}</div>}
-      {(processingToast ?? toast) && (
-        <div className={`toast ${(processingToast ?? toast)!.tone}`}>
-          {(processingToast ?? toast)!.message}
-        </div>
-      )}
+      {toast && <div className={`toast ${toast.tone}`}>{toast.message}</div>}
 
       {ingestOpen ? <IngestWorkspace projectRoot={projectRoot} projectTitle={formatProjectName(projectRoot.split(/[\\/]/).filter(Boolean).slice(-1)[0] || "Import media")} clients={clients} clientTypes={projectClientTypes} defaultClientType={defaultProjectClientType} onActivityChange={setIngestOperationBusy} onBack={()=>setIngestOpen(false)} onCreateClient={async(name,clientMode,template,season)=>{await invoke("create_client",{projectRoot,clientName:`${normalizeClientInput(name)}_${clientMode.toUpperCase()}`,clientType:clientMode,season:season||null,huddleTemplate:(workspaceConfig?.clientTypes.find(type=>type.id===clientMode)?.featureOptions.premiere_project?.length??0)>1?template:null,resourceMappings:workspaceLocalMappings});await refreshClients(undefined,false);}} /> : <div className="app-content">
         <section className="panel">
@@ -3443,7 +3460,6 @@ export default function App() {
           </div>
           </div>
           <ClientScrollArea
-            busy={busy}
             onDragOver={screen === "sort" ? handleSortDragOver : undefined}
             scrollRef={tableScrollRef}
           >
