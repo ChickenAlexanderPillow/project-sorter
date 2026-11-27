@@ -3,6 +3,7 @@ import { useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { ArrowLeft, ArrowRight, Check, CheckCheck, CircleAlert, Copy, FileAudio, Folder, FolderInput, LoaderCircle, Network, Plus, ShieldCheck, X } from "lucide-react";
 import type { CreateIngestClient } from "./NewIngestClient";
+import type { WorkspaceClientType } from "./workspaceTypes";
 import { RetainedView } from "./RetainedView";
 import { GroupWorkspace } from "./GroupWorkspace";
 import "./IngestWorkspace.css";
@@ -17,7 +18,7 @@ import "./ImportSelection.css";
 
 type IngestFile = { id:string; batch_id:string; collected_at:string|null; newly_collected:boolean; name:string; source:string; source_name:string; relative_path:string; inbox_path:string; role:string; size:number; sha256:string; source_modified:string|null; source_created:string|null; recording_metadata?:RecordingMetadata|null; timestamp_warning:string|null; status:string; group_id?:string|null; group_name:string|null; client:string|null; clients:string[]; client_paths:string[]; destinations:string[]; duplicate_of:string|null; counterpart_id:string|null };
 type Manifest = { schema_version:number; files:IngestFile[]; reviewed_groups:string[] };
-type Client = { name:string; path:string; status:string };
+type Client = { name:string; path:string; status:string; client_type?:string|null };
 type Lease = { locked:boolean; owner:string|null; stale:boolean };
 type Progress = { updated_at:string; project_root:string; phase:string; source:string; completed:number; total:number; bytes_copied:number; file_size:number; completed_sources:string[] };
 type ReviewDestination = { file_id:string; name:string; role:string; client:string; destination:string; collision:boolean; issue:string|null };
@@ -29,7 +30,7 @@ const basename = (path:string) => path.split(/[\\/]/).filter(Boolean).pop() || p
 const bytes = (size:number) => size >= 1024 ** 3 ? `${(size / 1024 ** 3).toFixed(1)} GB` : `${(size / 1024 ** 2).toFixed(1)} MB`;
 const fileClients = (file:IngestFile) => file.clients?.length ? file.clients : file.client ? [file.client] : [];
 const fileRole = (row:ReviewDestination) => ({"Raw audio":"Raw Audio","Clean audio":"Clean Audio","Music":"Music","Proxy video":"Proxy Video","Full-resolution video":"Full-Res Video",Stills:"Stills",Graphics:"Graphics",Stock:"Stock",Miscellaneous:"Misc"} as Record<string,string>)[row.role] || "Media";
-export function IngestWorkspace({projectRoot, projectTitle, clients, onBack, onCreateClient}:{projectRoot:string; projectTitle:string; clients:Client[]; onBack:()=>void; onCreateClient:CreateIngestClient}) {
+export function IngestWorkspace({projectRoot, projectTitle, clients, onBack, onCreateClient, clientTypes, defaultClientType, onActivityChange}:{projectRoot:string; projectTitle:string; clients:Client[]; onBack:()=>void; onCreateClient:CreateIngestClient; clientTypes:WorkspaceClientType[]; defaultClientType:string; onActivityChange?:(active:boolean)=>void}) {
   const storageKey = `pepper.ingest.view:${projectRoot}`;
   const readView = () => { try { return JSON.parse(localStorage.getItem(storageKey) || "{}"); } catch { return {}; } };
   const initialView = useRef(readView()).current;
@@ -50,6 +51,7 @@ export function IngestWorkspace({projectRoot, projectTitle, clients, onBack, onC
   const [progress, setProgress] = useState<Progress|null>(null);
   const [review, setReview] = useState<ReviewDestination[]|null>(null), [reviewedConflicts, setReviewedConflicts] = useState(false);
   const [confirmationOpen,setConfirmationOpen]=useState(false);
+  useEffect(() => { onActivityChange?.(busy || saveState === "saving" || resolvingSources); return () => onActivityChange?.(false); }, [busy, saveState, resolvingSources, onActivityChange]);
   const reviewCache=useRef<{key:string;rows:ReviewDestination[]}|null>(null);
   const [validClientPaths,setValidClientPaths]=useState<string[]>([]);
   const [clientsChecked,setClientsChecked]=useState(false);
@@ -108,14 +110,14 @@ export function IngestWorkspace({projectRoot, projectTitle, clients, onBack, onC
 
   const readOnly = busy || lease.locked || !loaded || resolvingSources;
   const relativePath = (path:string) => { const prefix = projectRoot.replace(/[\\/]+$/, ""); return path.toLowerCase().startsWith(prefix.toLowerCase() + "\\") || path.toLowerCase().startsWith(prefix.toLowerCase() + "/") ? path.slice(prefix.length + 1).replace(/\\/g, "/") : path; };
-  const clientSignature=JSON.stringify(clients.filter(client=>client.status!=="Not a client"&&parseClientLabel(client.name).type).map(client=>client.path));
+  const clientSignature=JSON.stringify(clients.filter(client=>client.status!=="Not a client"&&(client.client_type||parseClientLabel(client.name).type)).map(client=>client.path));
   useEffect(()=>{
     let active=true;setValidClientPaths([]);setClientsChecked(false);
     const paths=JSON.parse(clientSignature) as string[];
     void invoke<string[]>('media_valid_client_paths',{paths}).then(valid=>{if(active){setValidClientPaths(valid);setClientsChecked(true);}}).catch(error=>{if(active)setError(`Could not check client media folders: ${String(error)}`);});
     return()=>{active=false;};
   },[clientSignature,projectRoot]);
-  const clientOptions=clients.filter(client=>validClientPaths.includes(client.path)&&parseClientLabel(client.name).type).map(client=>({...client,path:relativePath(client.path)}));
+  const clientOptions=clients.filter(client=>validClientPaths.includes(client.path)&&(client.client_type||parseClientLabel(client.name).type)).map(client=>({...client,path:relativePath(client.path)}));
   const reviewKey=JSON.stringify([manifest.files.map(file=>[file.id,file.status,file.role,file.name,file.sha256,file.client,file.clients,file.client_paths,file.destinations]),clientOptions.map(client=>client.path)]);
   useEffect(() => {
     if (!confirmationOpen || busy || !loaded || !clientsChecked || saveState !== "saved") return;
@@ -199,7 +201,7 @@ export function IngestWorkspace({projectRoot, projectTitle, clients, onBack, onC
       {videosNeedType > 0 && <p className="ig-quiet-note"><CircleAlert size={14}/> {videosNeedType} video{videosNeedType===1?' needs':'s need'} a type.</p>}
     </RetainedView>
 
-    <RetainedView active={step===2}>{filedNotice&&<div className="ig-success ig-group-filed-notice"><CheckCheck size={17}/><span><strong>Media organised</strong><small>The selected media is in its client folders. Add late media whenever it arrives.</small></span></div>}<GroupWorkspace projectRoot={projectRoot} files={manifest.files} clients={clientOptions} disabled={readOnly} onAssign={assignFiles} onType={setFileTypes} onCreateClient={onCreateClient}/></RetainedView>
+    <RetainedView active={step===2}>{filedNotice&&<div className="ig-success ig-group-filed-notice"><CheckCheck size={17}/><span><strong>Media organised</strong><small>The selected media is in its client folders. Add late media whenever it arrives.</small></span></div>}<GroupWorkspace projectRoot={projectRoot} files={manifest.files} clients={clientOptions} disabled={readOnly} onAssign={assignFiles} onType={setFileTypes} onCreateClient={onCreateClient} clientTypes={clientTypes} defaultClientType={defaultClientType}/></RetainedView>
     </>}
     </div>
     {sourceBrowser && <MediaSourceBrowser projectRoot={projectRoot} onAdd={addSources} onClose={() => setSourceBrowser(false)}/>}

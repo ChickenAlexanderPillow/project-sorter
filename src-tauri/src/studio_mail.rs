@@ -64,12 +64,20 @@ fn load_recipients(app: &AppHandle) -> Result<Vec<StudioMailRecipient>, String> 
 }
 
 #[tauri::command]
-pub fn studio_mail_recipients(app: AppHandle) -> Result<Vec<StudioMailRecipient>, String> {
+pub async fn studio_mail_recipients(app: AppHandle) -> Result<Vec<StudioMailRecipient>, String>{
+    crate::background::run(move || studio_mail_recipients_sync(app)).await?
+}
+
+pub fn studio_mail_recipients_sync(app: AppHandle) -> Result<Vec<StudioMailRecipient>, String>{
     load_recipients(&app)
 }
 
 #[tauri::command]
-pub fn studio_mail_save_recipients(app: AppHandle, recipients: Vec<StudioMailRecipient>) -> Result<Vec<StudioMailRecipient>, String> {
+pub async fn studio_mail_save_recipients(app: AppHandle, recipients: Vec<StudioMailRecipient>) -> Result<Vec<StudioMailRecipient>, String>{
+    crate::background::run(move || studio_mail_save_recipients_sync(app, recipients)).await?
+}
+
+pub fn studio_mail_save_recipients_sync(app: AppHandle, recipients: Vec<StudioMailRecipient>) -> Result<Vec<StudioMailRecipient>, String>{
     if recipients.len() > 100 { return Err("You can save up to 100 email contacts.".into()); }
     let mut ids = HashSet::new();
     let mut emails = HashSet::new();
@@ -123,7 +131,11 @@ pub struct MailSettingsStatus {
 }
 
 #[tauri::command]
-pub fn studio_mail_status() -> MailSettingsStatus {
+pub async fn studio_mail_status() -> Result<MailSettingsStatus, String> {
+    crate::background::run(move || studio_mail_status_sync()).await
+}
+
+pub fn studio_mail_status_sync() -> MailSettingsStatus{
     let sender = read("sender");
     MailSettingsStatus {
         configured: sender.is_some() && read("password").is_some(),
@@ -132,7 +144,11 @@ pub fn studio_mail_status() -> MailSettingsStatus {
 }
 
 #[tauri::command]
-pub fn studio_mail_save_credentials(sender: String, password: String) -> Result<(), String> {
+pub async fn studio_mail_save_credentials(sender: String, password: String) -> Result<(), String> {
+    crate::background::run(move || studio_mail_save_credentials_sync(sender, password)).await?
+}
+
+pub fn studio_mail_save_credentials_sync(sender: String, password: String) -> Result<(), String>{
     let sender = sender.trim();
     if !sender.contains('@') || sender.chars().any(char::is_whitespace) {
         return Err("Enter a valid full email address.".into());

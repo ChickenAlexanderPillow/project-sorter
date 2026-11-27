@@ -84,6 +84,10 @@ The GitHub Actions workflow in `.github/workflows/publish.yml` builds the signed
 
 The public key is embedded in `src-tauri/tauri.conf.json`; never commit the private key.
 
+Pepper displays update download progress and signature verification in the app. **Update and restart** downloads the signed release, then launches the Windows installer in quiet mode; Pepper closes briefly and the installer reopens it. Existing machine-wide installations may still require Windows administrator approval. Update installation is disabled while another Pepper operation is running.
+
+Development mode shows a simulated update dialog on startup. **Check for updates** reopens it; the preview runs through download, verification, and completion without installing or restarting the app.
+
 The build outputs native installers/bundles for Windows/macOS (no external runtime required).
 
 ## Tests

@@ -9,9 +9,14 @@ export function parseClientLabel(raw:string) {
   return {name:(type ? parts.slice(0, -1) : parts).join(" "), type, normalized};
 }
 
-export function ClientLabel({name,season,type}:{name:string;season?:string|null;type?:string|null}) {
+export function ClientLabel({name,season,type,typeNames}:{name:string;season?:string|null;type?:string|null;typeNames?:Record<string,string>}) {
   const parsed = parseClientLabel(name);
   const label = {...parsed, type: type?.trim() || parsed.type};
   const seasonNumber = season?.match(/^SEASON\s+(\d+)$/i)?.[1];
-  return <span className="pepper-client-label"><span className="pepper-client-label-name">{label.name}</span>{label.type && <span className={`client-tag ${label.type.toLowerCase()}`}>{clientTypeLabel(label.type)}</span>}{seasonNumber && <span className="client-tag season-tag" title={`Season ${seasonNumber}`} aria-label={`Season ${seasonNumber}`}>S{seasonNumber}</span>}</span>;
+  const displayName = label.type ? typeNames?.[label.type.toLowerCase()] ?? clientTypeLabel(label.type) : "";
+  const normalized = name.trim().replace(/\s+/g, "_");
+  const suffix = label.type ? `_${label.type.toUpperCase()}` : "";
+  const visibleName = suffix && normalized.toUpperCase().endsWith(suffix)
+    ? normalized.slice(0, -suffix.length).replace(/_/g, " ") : label.name;
+  return <span className="pepper-client-label"><span className="pepper-client-label-name">{visibleName}</span>{label.type && <span className={`client-tag ${label.type.toLowerCase()}`}>{displayName}</span>}{seasonNumber && <span className="client-tag season-tag" title={`Season ${seasonNumber}`} aria-label={`Season ${seasonNumber}`}>S{seasonNumber}</span>}</span>;
 }

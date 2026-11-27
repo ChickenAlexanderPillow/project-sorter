@@ -231,14 +231,29 @@ fn report_copy_progress(root:&Path,source:&Path,completed:usize,total:usize,byte
     }
 }
 #[tauri::command]
-pub fn ingest_progress(project_root:String)->Result<Option<IngestProgress>,String>{let path=PathBuf::from(project_root).join("_INGEST/state/progress.json");if !path.exists(){return Ok(None)}serde_json::from_slice(&fs::read(path).map_err(|e|e.to_string())?).map(Some).map_err(|e|e.to_string())}
+pub async fn ingest_progress(project_root:String)->Result<Option<IngestProgress>,String>{
+    // This is polled while browsing clients. A slow NAS must not block the UI thread.
+    tauri::async_runtime::spawn_blocking(move || {
+        let path=PathBuf::from(project_root).join("_INGEST/state/progress.json");
+        match fs::read(path) {
+            Ok(bytes)=>serde_json::from_slice(&bytes).map(Some).map_err(|e|e.to_string()),
+            Err(error) if error.kind()==std::io::ErrorKind::NotFound=>Ok(None),
+            Err(error)=>Err(error.to_string()),
+        }
+    }).await.map_err(|error|error.to_string())?
+}
 #[derive(Serialize)]
 pub struct SourceAvailability{pub source:String,pub available:bool}
 #[tauri::command]
-pub fn ingest_source_availability(project_root:String)->Result<Vec<SourceAvailability>,String>{let root=PathBuf::from(project_root);let manifest=read_manifest(&root)?;let mut sources:Vec<String>=manifest.files.iter().map(|f|f.source.clone()).collect();sources.sort();sources.dedup();Ok(sources.into_iter().map(|source|SourceAvailability{available:Path::new(&source).exists(),source}).collect())}
+pub async fn ingest_source_availability(project_root:String)->Result<Vec<SourceAvailability>,String>{
+    crate::background::run(move || ingest_source_availability_sync(project_root)).await?
+}
+
+pub fn ingest_source_availability_sync(project_root:String)->Result<Vec<SourceAvailability>,String>{let root=PathBuf::from(project_root);let manifest=read_manifest(&root)?;let mut sources:Vec<String>=manifest.files.iter().map(|f|f.source.clone()).collect();sources.sort();sources.dedup();Ok(sources.into_iter().map(|source|SourceAvailability{available:Path::new(&source).exists(),source}).collect())}
 #[derive(Serialize)]
 pub struct FilingPreview{pub file_id:String,pub name:String,pub role:String,pub client:String,pub destination:String,pub collision:bool,pub issue:Option<String>}
 fn role_destination(role:&str)->Option<&'static str>{match role{"Proxy video"=>Some("01_MEDIA/010_VIDEO_PROXY"),"Full-resolution video"=>Some("01_MEDIA/020_VIDEO_RAW"),"Raw audio"=>Some("01_MEDIA/040_AUDIO_RAW"),"Clean audio"=>Some("01_MEDIA/030_AUDIO_CLEAN"),"Music"=>Some("01_MEDIA/060_MUSIC"),"Stills"=>Some("01_MEDIA/050_STILLS"),"Graphics"=>Some("01_MEDIA/070_GRAPHICS"),"Miscellaneous"=>Some("01_MEDIA/080_MISCELLANEOUS"),"Stock"=>Some("01_MEDIA/090_STOCK"),_=>None}}
+fn role_purpose(role:&str)->Option<&'static str>{match role{"Proxy video"=>Some("video_proxy"),"Full-resolution video"=>Some("video_raw"),"Raw audio"=>Some("audio_raw"),"Clean audio"=>Some("audio_clean"),"Music"=>Some("music"),"Stills"=>Some("stills"),"Graphics"=>Some("graphics"),"Miscellaneous"=>Some("misc"),"Stock"=>Some("stock"),_=>None}}
 
 fn normalized_path(path: &Path) -> String {
     let normalized = path.to_string_lossy().replace('/', "\\");
@@ -296,14 +311,15 @@ fn preview_filing_sync(project_root:String,eligible_client_paths:Option<Vec<Stri
   if !f.client_paths.is_empty()&&f.client_paths.len()!=clients.len(){return Err(format!("Client destination metadata is inconsistent for {}",f.name));}
   let mut targets:Vec<(String,String)>=clients.into_iter().enumerate().map(|(i,c)|(c.clone(),f.client_paths.get(i).cloned().unwrap_or(c))).collect();targets.sort_by(|a,b|a.1.cmp(&b.1));targets.dedup_by(|a,b|a.1==b.1);
   for (client,relative) in targets{if eligible_client_paths.as_ref().is_some_and(|paths|!paths.contains(&relative)){continue;}let mut issue=if role.is_none(){Some(format!("Choose a role and destination for {}",f.name))}else{None};let source=PathBuf::from(&f.inbox_path);let base=root.join(&relative);if client=="_INGEST"||!valid_client_name(&client)||!valid_client_path(&relative)||!base.is_dir(){issue=Some(format!("Client is unavailable or invalid: {client}"));}
-   let mut destination=base.join(role.unwrap_or("01_MEDIA/080_MISCELLANEOUS")).join(&f.name);if issue.is_none()&&!destination.parent().unwrap().is_dir(){issue=Some(format!("Destination folder is missing for {client}"));}
+   let legacy_rel=role.unwrap_or("01_MEDIA/080_MISCELLANEOUS");let routed_rel=if let Some(purpose)=role_purpose(&f.role){match crate::workspace::destination_for_client_in_config(&base,purpose,None){Ok(Some(path))=>path,Ok(None)=>legacy_rel.to_string(),Err(error)=>{issue=Some(error);legacy_rel.to_string()}}}else{legacy_rel.to_string()};
+   let mut destination=base.join(&routed_rel).join(&f.name);if issue.is_none()&&!destination.parent().unwrap().is_dir(){issue=Some(format!("Destination folder is missing for {client}"));}
    // Keep the final review cheap: collection already verified the inbox copy,
    // and filing performs the authoritative SHA-256 check immediately before
    // each copy. A metadata preflight here catches missing/truncated files
    // without rereading every media byte just to render the review.
    if issue.is_none()&&!fs::metadata(&source).is_ok_and(|metadata|metadata.is_file()&&metadata.len()==f.size){issue=Some("Verified inbox copy is missing or changed".into());}
    let mut collision=false;let mut n=1;
-   loop{let already_used=used.contains(&destination.to_string_lossy().to_string());let same=destination.exists()&&hash(&destination).ok().as_deref()==Some(f.sha256.as_str());if (!destination.exists()||same)&&!already_used{break;}collision=true;let stem=Path::new(&f.name).file_stem().unwrap_or_default().to_string_lossy();let ext=Path::new(&f.name).extension().and_then(|x|x.to_str()).unwrap_or("");let suffix=if ext.is_empty(){String::new()}else{format!(".{ext}")};destination=base.join(role.unwrap_or("01_MEDIA/080_MISCELLANEOUS")).join(format!("{stem} (Ingest {n}){suffix}"));n+=1;}
+   loop{let already_used=used.contains(&destination.to_string_lossy().to_string());let same=destination.exists()&&hash(&destination).ok().as_deref()==Some(f.sha256.as_str());if (!destination.exists()||same)&&!already_used{break;}collision=true;let stem=Path::new(&f.name).file_stem().unwrap_or_default().to_string_lossy();let ext=Path::new(&f.name).extension().and_then(|x|x.to_str()).unwrap_or("");let suffix=if ext.is_empty(){String::new()}else{format!(".{ext}")};destination=base.join(&routed_rel).join(format!("{stem} (Ingest {n}){suffix}"));n+=1;}
    if destination.to_string_lossy().encode_utf16().count()>32760{issue=Some("Destination path exceeds the Windows path limit".into());}
    if issue.is_none(){used.insert(destination.to_string_lossy().into_owned());}
    rows.push(FilingPreview{file_id:f.id.clone(),name:f.name.clone(),role:f.role.clone(),client:client.clone(),destination:destination.to_string_lossy().into_owned(),collision,issue});
@@ -312,13 +328,21 @@ fn preview_filing_sync(project_root:String,eligible_client_paths:Option<Vec<Stri
  Ok(rows)
 }
 #[tauri::command]
-pub fn ingest_lease_status(project_root:String)->LeaseStatus{
+pub async fn ingest_lease_status(project_root:String)-> Result<LeaseStatus, String> {
+    crate::background::run(move || ingest_lease_status_sync(project_root)).await
+}
+
+pub fn ingest_lease_status_sync(project_root:String)->LeaseStatus{
  let path=PathBuf::from(project_root).join("_INGEST/state/writer.lock");if !path.exists(){return LeaseStatus{locked:false,owner:None,stale:false}}
  let owner=fs::read_to_string(&path).ok();let stale=fs::metadata(&path).ok().and_then(|m|m.modified().ok()).and_then(|t|t.elapsed().ok()).map(|e|e>std::time::Duration::from_secs(180)).unwrap_or(false);
  LeaseStatus{locked:true,owner,stale}
 }
 #[tauri::command]
-pub fn ingest_recover_stale_lease(project_root:String)->Result<(),String>{
+pub async fn ingest_recover_stale_lease(project_root:String)-> Result<(), String> {
+    crate::background::run(move || ingest_recover_stale_lease_sync(project_root)).await?
+}
+
+pub fn ingest_recover_stale_lease_sync(project_root:String)->Result<(),String>{
  let root=PathBuf::from(project_root);let path=root.join("_INGEST/state/writer.lock");let age=fs::metadata(&path).and_then(|m|m.modified()).and_then(|t|t.elapsed().map_err(std::io::Error::other)).map_err(|e|e.to_string())?;
  if age<std::time::Duration::from_secs(180){return Err("Writer lease heartbeat is recent; recovery is not available yet".into());}
  let claimed=path.with_file_name(format!("writer.recovered.{}.lock",Uuid::new_v4()));fs::rename(&path,&claimed).map_err(|e|format!("Lease changed during recovery; retry: {e}"))?;
@@ -330,7 +354,11 @@ pub fn ingest_recover_stale_lease(project_root:String)->Result<(),String>{
 }
 
 #[tauri::command]
-pub fn ingest_load(project_root: String) -> Result<Manifest, String> { read_manifest(Path::new(&project_root)) }
+pub async fn ingest_load(project_root: String) -> Result<Manifest, String>{
+    crate::background::run(move || ingest_load_sync(project_root)).await?
+}
+
+pub fn ingest_load_sync(project_root: String) -> Result<Manifest, String>{ read_manifest(Path::new(&project_root)) }
 
 #[tauri::command]
 pub async fn ingest_collect(project_root: String, sources: Vec<String>) -> Result<Manifest, String> {
@@ -397,8 +425,9 @@ fn collect_with_lease(root: &Path, sources: Vec<String>, _lease: &WriterLease) -
         let reserved=root.join("_INGEST");if src.starts_with(&reserved)&&!src.starts_with(&inbox){return Err("Choose files from _INGEST/sources; ingest state files are reserved".into());}
         let id = Uuid::new_v4().to_string(); let batch_dir = inbox.join(&id);
         let selected_root = if src.is_dir() { src.clone() } else { src.parent().unwrap_or(Path::new(".")).to_path_buf() };
+        if src.components().any(|component| component.as_os_str().to_string_lossy().eq_ignore_ascii_case(".pepper")) { return Err("Pepper workspace metadata is not an ingest source.".into()); }
         let candidates: Vec<PathBuf> = if src.is_file() { if is_ingest_temporary(&src){return Err("Incomplete ingest transfer files cannot be collected".into());}vec![src.clone()] } else {
-            let mut found=Vec::new();for entry in walkdir::WalkDir::new(&src).follow_links(false).into_iter().filter_entry(|entry|!entry.path().starts_with(&reserved)){let entry=entry.map_err(|e|e.to_string())?;if entry.file_type().is_file()&&!is_ingest_temporary(entry.path()){found.push(entry.into_path());}}found
+            let mut found=Vec::new();for entry in walkdir::WalkDir::new(&src).follow_links(false).into_iter().filter_entry(|entry|!entry.path().starts_with(&reserved)&&(entry.depth()==0||!entry.file_type().is_dir()||!entry.file_name().to_string_lossy().eq_ignore_ascii_case(".pepper"))){let entry=entry.map_err(|e|e.to_string())?;if entry.file_type().is_file()&&!is_ingest_temporary(entry.path()){found.push(entry.into_path());}}found
         };
         let required=candidates.iter().filter(|p|!p.starts_with(&inbox)).try_fold(0u64,|sum,p|fs::metadata(p).map(|m|sum.saturating_add(m.len())).map_err(|e|e.to_string()))?;
         let free=available_space(&inbox)?;if required>free.saturating_sub(free/20){return Err(format!("Not enough destination space: need {required} bytes, have {free} bytes available"));}
@@ -480,7 +509,11 @@ fn collect_with_lease(root: &Path, sources: Vec<String>, _lease: &WriterLease) -
 }
 
 #[tauri::command]
-pub fn ingest_save(project_root: String, manifest: Manifest) -> Result<(), String> {
+pub async fn ingest_save(project_root: String, manifest: Manifest) -> Result<(), String> {
+    crate::background::run(move || ingest_save_sync(project_root, manifest)).await?
+}
+
+pub fn ingest_save_sync(project_root: String, manifest: Manifest) -> Result<(), String>{
     let root=PathBuf::from(project_root);let _lease=acquire_lease(&root)?;
     let current=read_manifest(&root)?;
     if manifest.files.iter().any(|f|!current.files.iter().any(|c|c.id==f.id)) {return Err("Manifest includes unknown files; refresh ingest state before saving".into());}
@@ -527,13 +560,14 @@ fn file_with_lease(root:&Path, state:&mut Manifest, eligible_client_paths:Option
         targets.sort_by(|a,b|a.1.cmp(&b.1));targets.dedup_by(|a,b|a.1==b.1);let target_count=targets.len();
         if let Some(eligible)=eligible_client_paths.as_ref(){targets.retain(|(_,relative)|eligible.contains(relative));}
         if targets.is_empty(){continue;}
-        let rel=role_destination(&f.role).ok_or_else(||format!("Choose a media type for {} before organising",f.name))?;
+        let legacy_rel=role_destination(&f.role).ok_or_else(||format!("Choose a media type for {} before organising",f.name))?;
         let source=PathBuf::from(&f.inbox_path);if !source.is_file()||hash_with_lease(&source,Some(_lease))?!=f.sha256{return Err(format!("Inbox file is missing or changed: {}",f.name));}
         for (client,relative) in targets{
             if eligible_client_paths.as_ref().is_some_and(|paths|!paths.contains(&relative)){continue;}
             if client.is_empty()||client=="_INGEST"||!valid_client_name(&client)||!valid_client_path(&relative){return Err(format!("Invalid client destination: {client}"));}
             let client_root=root.join(&relative);if !client_root.is_dir(){return Err(format!("Client no longer exists: {client} ({relative})"));}
             if f.destinations.iter().any(|d|Path::new(d).parent().map(|p|p.starts_with(&client_root)).unwrap_or(false)){continue;}
+            let rel=if let Some(purpose)=role_purpose(&f.role){crate::workspace::destination_for_client_in_config(&client_root,purpose,None)?.unwrap_or_else(||legacy_rel.to_string())}else{legacy_rel.to_string()};
             let dir=client_root.join(rel);if !dir.is_dir(){return Err(format!("Client destination folder is missing: {}",dir.display()));}
             let canonical_root=root.canonicalize().map_err(|e|e.to_string())?;let canonical_client=client_root.canonicalize().map_err(|e|e.to_string())?;let canonical_dir=dir.canonicalize().map_err(|e|e.to_string())?;
             if !canonical_client.starts_with(&canonical_root)||!canonical_dir.starts_with(&canonical_client){return Err(format!("Destination escapes its project client folder: {}",dir.display()));}
@@ -682,7 +716,7 @@ mod tests {
         assert_eq!(fs::metadata(&source).unwrap().modified().unwrap(),source_meta.modified().unwrap());
         assert_eq!(read_manifest(&root).unwrap().files[0].recording_metadata,state.files[0].recording_metadata);
         let mut edited=state.clone();edited.files[0].recording_metadata.as_mut().unwrap().start_source=Some("filesystem_created".into());
-        assert!(ingest_save(root.to_string_lossy().into_owned(),edited).unwrap_err().contains("Original file evidence"));
+        assert!(ingest_save_sync(root.to_string_lossy().into_owned(),edited).unwrap_err().contains("Original file evidence"));
         let mut legacy=serde_json::to_value(&state).unwrap();legacy["files"][0].as_object_mut().unwrap().remove("recording_metadata");
         let legacy:Manifest=serde_json::from_value(legacy).unwrap();assert!(legacy.files[0].recording_metadata.is_none());
     }
@@ -876,7 +910,7 @@ mod tests {
         let repeated=collect_sync(root.to_string_lossy().into_owned(),vec![source.to_string_lossy().into_owned()]).unwrap();assert_eq!(repeated.files.len(),1);
         assert!(fs::read_to_string(root.join("_INGEST/state/journal.jsonl")).unwrap().contains("progress_update_deferred"));
         drop(reader);report_progress(&root,"complete","card",1,1);
-        assert_eq!(ingest_progress(root.to_string_lossy().into_owned()).unwrap().unwrap().phase,"complete");
+        assert_eq!(tauri::async_runtime::block_on(ingest_progress(root.to_string_lossy().into_owned())).unwrap().unwrap().phase,"complete");
     }
 
     #[test]
@@ -939,7 +973,7 @@ mod tests {
         let temp=tempfile::tempdir().unwrap();let root=temp.path().join("show");let source=root.join("_INGEST/sources/card");fs::create_dir_all(&source).unwrap();
         let tmp=source.join("REC.wav.550e8400-e29b-41d4-a716-446655440000.partial");fs::write(&tmp,b"partial").unwrap();
         let lock=root.join("_INGEST/state/writer.lock");fs::create_dir_all(lock.parent().unwrap()).unwrap();fs::write(&lock,b"dead owner").unwrap();filetime::set_file_mtime(&lock,filetime::FileTime::from_unix_time(0,0)).unwrap();
-        append_journal(&root,serde_json::json!({"action":"transfer_started","temp_path":tmp})).unwrap();ingest_recover_stale_lease(root.to_string_lossy().into_owned()).unwrap();
+        append_journal(&root,serde_json::json!({"action":"transfer_started","temp_path":tmp})).unwrap();ingest_recover_stale_lease_sync(root.to_string_lossy().into_owned()).unwrap();
         assert!(!tmp.exists());assert!(!lock.exists());
     }
 }

@@ -9,12 +9,20 @@ export function useClientClips(clientPath: string, enabled: boolean) {
     if (!enabled) return;
     let active = true;
     let timer: number | undefined;
+    const update = (clips: ClientClip[]) => setResult(current =>
+      current.path === clientPath && current.clips.length === clips.length
+        && current.clips.every((clip, index) => {
+          const next = clips[index];
+          return clip.path === next.path && clip.name === next.name && clip.size === next.size
+            && clip.modified_ms === next.modified_ms && clip.sha256 === next.sha256
+            && clip.published === next.published && clip.current === next.current;
+        }) ? current : { path: clientPath, clips });
     const scan = async () => {
       try {
         const clips = await invoke<ClientClip[]>('list_client_clips', {clientPath});
-        if (active) setResult({path: clientPath, clips});
+        if (active) update(clips);
       } catch {
-        if (active) setResult({path: clientPath, clips: []});
+        if (active) update([]);
       } finally {
         if (active) timer = window.setTimeout(() => void scan(), 2500);
       }

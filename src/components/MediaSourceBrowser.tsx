@@ -58,9 +58,11 @@ export function MediaSourceBrowser({projectRoot,onAdd,onClose}:{projectRoot:stri
   useEffect(()=>{
     let active=true,pending=false;
     const update=async()=>{if(pending)return;pending=true;try{const next=await invoke<Location[]>('media_source_locations',{projectRoot});if(active){const available=next.filter(item=>item.available);if(knownDevices.current){const added=available.filter(item=>item.kind==='removable'&&!knownDevices.current!.has(item.path));setNewDevices(current=>[...current.filter(item=>available.some(device=>device.path===item.path)),...added.filter(item=>!current.some(device=>device.path===item.path))]);}knownDevices.current=new Set(available.map(item=>item.path));setLocations(next);}}catch{/* Keep the last discovered locations while a device is mounting. */}finally{pending=false;}};
-    const timer=window.setInterval(()=>void update(),3000);
-    window.addEventListener('focus',update);
-    return()=>{active=false;window.clearInterval(timer);window.removeEventListener('focus',update);};
+    const timer=window.setInterval(()=>{if(document.visibilityState==='visible')void update();},3000);
+    let focusTimer:number|undefined;
+    const focus=()=>{window.clearTimeout(focusTimer);focusTimer=window.setTimeout(()=>void update(),250);};
+    window.addEventListener('focus',focus);
+    return()=>{active=false;window.clearInterval(timer);window.clearTimeout(focusTimer);window.removeEventListener('focus',focus);};
   },[projectRoot]);
   const visible=listing?.entries.filter(entry=>entry.name.toLowerCase().includes(query.toLowerCase()))||[];
   const drives=locations.filter(location=>location.available&&!['folder','project'].includes(location.kind));

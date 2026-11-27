@@ -19,7 +19,7 @@ fn validate_paths(client: &Path, paths: Vec<String>) -> Result<Vec<String>, Stri
     let root = client
         .canonicalize()
         .map_err(|e| format!("Client folder unavailable: {e}"))?;
-    let roots: Vec<PathBuf> = [
+    let mut relative_roots: Vec<String> = [
         "01_MEDIA/010_VIDEO_PROXY",
         "01_MEDIA/020_VIDEO_RAW",
         "01_MEDIA/030_AUDIO_CLEAN",
@@ -30,7 +30,12 @@ fn validate_paths(client: &Path, paths: Vec<String>) -> Result<Vec<String>, Stri
         "01_MEDIA/090_STOCK",
         "02_EDIT",
     ]
-    .iter()
+    .iter().map(|dir| (*dir).to_string()).collect();
+    for purpose in ["video_proxy", "video_raw", "audio_clean", "audio_raw", "stills", "music", "graphics", "stock", "edit"] {
+        if let Ok(Some(path)) = crate::workspace::destination_for_client(client, purpose) { relative_roots.push(path); }
+    }
+    relative_roots.sort(); relative_roots.dedup();
+    let roots: Vec<PathBuf> = relative_roots.iter()
     .filter_map(|dir| client.join(dir).canonicalize().ok())
     .filter(|dir| dir.starts_with(&root))
     .collect();

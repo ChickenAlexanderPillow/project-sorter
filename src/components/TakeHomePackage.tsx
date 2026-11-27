@@ -62,10 +62,11 @@ export function TakeHomePackage({projectRoot,clientPath,clientName,onFilesChange
     if(!active||!info||busy||preview)return;
     // Returning from Explorer can reveal newly edited files, but only requests
     // metadata status; content verification belongs to the chosen operation.
-    const refresh=()=>setCheckRevision(value=>value+1);
+    let timer:number|undefined;
+    const refresh=()=>{window.clearTimeout(timer);timer=window.setTimeout(()=>{if(!statusChecking)setCheckRevision(value=>value+1);},250);};
     window.addEventListener('focus',refresh);
-    return()=>window.removeEventListener('focus',refresh);
-  },[active,info,busy,preview]);
+    return()=>{window.clearTimeout(timer);window.removeEventListener('focus',refresh);};
+  },[active,info,busy,preview,statusChecking]);
 
   const closeOptions=()=>{if(optionsRef.current)optionsRef.current.open=false;};
   useEffect(()=>{

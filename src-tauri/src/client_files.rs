@@ -30,26 +30,20 @@ pub struct ClientAssets {
     truncated: bool,
 }
 
-fn category_roots(category: &str) -> Result<Vec<(&'static str, &'static str)>, String> {
-    match category {
-        "all" => Ok(vec![("Media", "01_MEDIA")]),
-        "video" => Ok(vec![
-            ("Raw", "01_MEDIA/020_VIDEO_RAW"),
-            ("Proxy", "01_MEDIA/010_VIDEO_PROXY"),
-        ]),
-        "audio" => Ok(vec![
-            ("Raw", "01_MEDIA/040_AUDIO_RAW"),
-            ("Clean", "01_MEDIA/030_AUDIO_CLEAN"),
-            ("Music", "01_MEDIA/060_MUSIC"),
-        ]),
-        "stills" => Ok(vec![
-            ("Stills", "01_MEDIA/050_STILLS"),
-            ("Graphics", "01_MEDIA/070_GRAPHICS"),
-        ]),
-        "stock" => Ok(vec![("Stock", "01_MEDIA/090_STOCK")]),
-        "edit" => Ok(vec![("Edit", "02_EDIT")]),
-        _ => Err("Choose Video, Audio, Stills or Edit.".into()),
-    }
+fn category_roots(client_path: &Path, category: &str) -> Result<Vec<(String, String)>, String> {
+    let folders: Vec<(&str, &str, &str)> = match category {
+        "all" => vec![("Media", "media", "01_MEDIA")],
+        "video" => vec![("Raw", "video_raw", "01_MEDIA/020_VIDEO_RAW"), ("Proxy", "video_proxy", "01_MEDIA/010_VIDEO_PROXY")],
+        "audio" => vec![("Raw", "audio_raw", "01_MEDIA/040_AUDIO_RAW"), ("Clean", "audio_clean", "01_MEDIA/030_AUDIO_CLEAN"), ("Music", "music", "01_MEDIA/060_MUSIC")],
+        "stills" => vec![("Stills", "stills", "01_MEDIA/050_STILLS"), ("Graphics", "graphics", "01_MEDIA/070_GRAPHICS")],
+        "stock" => vec![("Stock", "stock", "01_MEDIA/090_STOCK")],
+        "edit" => vec![("Edit", "edit", "02_EDIT")],
+        _ => return Err("Choose Video, Audio, Stills or Edit.".into()),
+    };
+    folders.into_iter().map(|(label, purpose, legacy)| {
+        let path = crate::workspace::destination_for_client(client_path, purpose)?.unwrap_or_else(|| legacy.to_string());
+        Ok((label.to_string(), path))
+    }).collect()
 }
 fn project_file(path: &Path) -> bool {
     matches!(
@@ -73,7 +67,7 @@ fn excluded_folder(name: &str) -> bool {
         )
 }
 fn list_assets(client_path: &Path, category: &str) -> Result<ClientAssets, String> {
-    let roots = category_roots(category)?;
+    let roots = category_roots(client_path, category)?;
     if !client_path.is_absolute() || !client_path.is_dir() {
         return Err("This client's folder is unavailable.".into());
     }
@@ -87,7 +81,7 @@ fn list_assets(client_path: &Path, category: &str) -> Result<ClientAssets, Strin
         let folder = client_path.join(relative);
         let available = folder.is_dir();
         folders.push(AssetFolder {
-            label: label.into(),
+            label: label.clone().into(),
             path: folder.to_string_lossy().into_owned(),
             available,
         });
@@ -148,7 +142,7 @@ fn list_assets(client_path: &Path, category: &str) -> Result<ClientAssets, Strin
                     .to_string_lossy()
                     .into_owned(),
                 kind: kind.into(),
-                variant: label.into(),
+                variant: label.clone().into(),
                 size: metadata.len(),
                 modified_ms: metadata
                     .modified()

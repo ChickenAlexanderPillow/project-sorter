@@ -42,7 +42,7 @@
         "https://github.com/ChickenAlexanderPillow/project-sorter/releases/latest/download/latest.json"
       ],
       "windows": {
-        "installMode": "passive"
+        "installMode": "quiet"
       }
     }
   },

@@ -1,25 +1,34 @@
-import { availableClientTypes, clientTypeLabel, defaultClientType, isFixedClientTypeProject, isMariyaProject, type ClientType } from "./components/clientTypes";
+import { ClientDropConfirm, type DropPreview, type DropChoices } from "./components/ClientDropConfirm";
+import { ClientRowTransfer } from "./components/ClientRowTransfer";
+import { ClientMediaDrop } from "./components/ClientMediaDrop";
+import { mediaDropTarget } from "./components/clientMediaDropTarget";
+import { clientTypeLabel, isHuddleClientType } from "./components/clientTypes";
 import { InterviewTypeSelect, type HuddleTemplate } from "./components/InterviewTypeSelect";
-import { Fragment, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
-import type { DragEvent, MouseEvent, ReactNode } from "react";
+import { memo, Fragment, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import type { DragEvent, MouseEvent, ReactNode, RefObject, Dispatch, SetStateAction } from "react";
 import { createPortal } from "react-dom";
 import { convertFileSrc, invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { LazyStore } from "@tauri-apps/plugin-store";
 import { cursorPosition, getCurrentWindow, LogicalSize } from "@tauri-apps/api/window";
+import { confirm } from "@tauri-apps/plugin-dialog";
 import { type DragDropEvent } from "@tauri-apps/api/webview";
 import { writeText } from "@tauri-apps/plugin-clipboard-manager";
-import { openPath, openUrl } from "@tauri-apps/plugin-opener";
-import { check, type Update } from "@tauri-apps/plugin-updater";
+import { openUrl } from "@tauri-apps/plugin-opener";
+import { check } from "@tauri-apps/plugin-updater";
+import type { PepperUpdate } from "./components/updateProgress";
+import { UpdateDialog } from "./components/UpdateDialog";
 import { InlineVideoPlayer } from "./components/InlineVideoPlayer";
 import { Video as VideoIcon } from "lucide-react";
-import { ArrowUpDown, ArrowUpRight, Bell, Check, ChevronDown, ChevronRight, ChevronsUpDown, Clapperboard, CloudUpload, Copy, FolderInput, FolderKanban, Link2, LoaderCircle, Minus, Plus, RefreshCw, Search, Settings, Settings2, Square, Trash2, TriangleAlert, Wrench, X } from "lucide-react";
-import { MariyaSeasonSelect, useMariyaSeasons } from "./components/MariyaSeasonSelect";
+import { ArrowUpDown, ArrowUpRight, Bell, Check, ChevronDown, ChevronRight, ChevronsUpDown, Clapperboard, CloudUpload, Copy, FolderInput, FolderKanban, FolderOpen, Link2, LoaderCircle, Minus, Plus, RefreshCw, Search, Settings, Settings2, Square, Trash2, TriangleAlert, Wrench, X } from "lucide-react";
+import { ProjectSeasonSelect, useProjectSeasons } from "./components/MariyaSeasonSelect";
 import { IngestWorkspace } from "./components/IngestWorkspace";
 import { isNativeFileDragActive } from "./components/nativeFileDrag";
 import { ClientWorkspace } from "./components/ClientWorkspace";
 import { createStudioSession, type StudioSession } from "./components/studioSessions";
 import { ClientScrollArea } from "./components/ClientScrollArea";
+import { ClientDetails } from "./components/ClientDetails";
+import { useClientScrollPosition } from "./components/useClientScrollPosition";
 import { CopyReviewLinkButton } from "./components/CopyReviewLinkButton";
 import { ClipReviewList } from "./components/ClipReviewList";
 import { VersionHistory } from "./components/VersionHistory";
@@ -29,6 +38,8 @@ import "./App.css";
 import { IntegrationBrand } from "./components/IntegrationBrand";
 import { SettingsDialog, type SettingsSection } from "./components/SettingsDialog";
 import { StudioMailPeopleSettings, StudioMailSettings } from "./components/StudioMailSettings";
+import { WorkspaceSettings } from "./components/WorkspaceSettings";
+import type { WorkspaceConfig, WorkspaceDiscovery } from "./components/workspaceTypes";
 
 type ClientStatus = "OK" | "Missing folders" | "Not a client";
 type ClientSort = { column: "name" | "status"; direction: "asc" | "desc" };
@@ -185,8 +196,9 @@ type ExportVersion = {
   frameio: FrameIoRecord | null;
 };
 
-type FrameIoRecord = { state: string; share_url: string | null; last_error: string | null; updated_at: string; destination_account_id: string; destination_project_id: string };
+type FrameIoRecord = { state: string; file_id: string | null; share_url: string | null; last_error: string | null; updated_at: string; destination_account_id: string; destination_project_id: string };
 type FrameIoProgress = { approval_path: string; state: string; uploaded: number; total: number; message: string | null; share_url: string | null };
+type PublishProgress = { client_path: string; stage: "main" | "clips"; completed: number; total: number };
 type FrameIoOption = { id: string; name: string; workspace_name: string | null };
 type FrameIoStorage = { usedBytes: number; limitBytes: number };
 type FrameIoStorageSnapshot = FrameIoStorage & { accountId: string; clientId: string };
@@ -264,6 +276,8 @@ type UndoResult = {
 };
 
 type SortProgress = {
+  bytes_done: number;
+  bytes_total: number;
   processed: number;
   total: number;
   current: string;
@@ -298,51 +312,8 @@ const formatStorage = (bytes: number) => {
   return `${value.toLocaleString(undefined, { maximumFractionDigits: unit > 1 ? 1 : 0 })} ${units[unit]}`;
 };
 
-
-const MODE_ACCEPTED: Record<string, string[]> = {
-  "VIDEO PROXY": [
-    "mov",
-    "mp4",
-    "mxf",
-    "mkv",
-    "avi",
-    "mpg",
-    "mpeg",
-    "m4v",
-    "webm",
-    "r3d",
-  ],
-  "VIDEO RAW": [
-    "mov",
-    "mp4",
-    "mxf",
-    "mkv",
-    "avi",
-    "mpg",
-    "mpeg",
-    "m4v",
-    "webm",
-    "r3d",
-  ],
-  "AUDIO CLEAN": ["wav", "mp3", "aif", "aiff", "flac", "m4a", "aac", "ogg", "opus"],
-  "AUDIO RAW": ["wav", "mp3", "aif", "aiff", "flac", "m4a", "aac", "ogg", "opus"],
-  STILLS: ["jpg", "jpeg", "png", "tif", "tiff", "heic", "heif", "webp", "bmp", "gif"],
-};
-
-const acceptedForMode = (mode: string) =>
-  mode === "AUTO" ? null : MODE_ACCEPTED[mode] ?? null;
 const CURSOR_Y_OFFSET = -20;
 const DEBUG_ENABLED = false;
-
-const getExtension = (path: string) => {
-  const lastDot = path.lastIndexOf(".");
-  if (lastDot === -1) return "";
-  return path.slice(lastDot + 1).toLowerCase();
-};
-
-
-
-
 
 const normalizeClientInput = (value: string) =>
   value.trim().replace(/\s+/g, "_");
@@ -382,13 +353,637 @@ const formatUiDateTime = (value: Date | string | number) =>
     minute: "2-digit",
   });
 
+type PendingClientDrop = { id: string; client: ClientInfo; projectRoot: string; paths: string[]; folder: string; preview: DropPreview | null; error: string | null; choices: DropChoices };
+
+type ClientRowActions = {
+  confirmClientDrop: (clientPath: string, choices: DropChoices) => void;
+  updateClientDropChoices: (clientPath: string, choices: DropChoices) => void;
+  cancelClientDrop: (clientPath: string) => void;
+  toggleClientExpanded: (name: string) => void;
+  openPepperContextMenu: (event: MouseEvent, title: string, items: PepperMenuItem[]) => void;
+  handleOpenFolder: (path: string) => Promise<void>;
+  copyFromContextMenu: (value: string, description: string) => void;
+  handleQuickCreateSession: (client: ClientInfo) => Promise<void>;
+  refreshClients: (rootOverride?: string | undefined, showLoading?: boolean, force?: boolean, replaceExisting?: boolean, clientNames?: string[] | undefined) => Promise<void>;
+  handleUnpublish: (client: ClientInfo) => Promise<void>;
+  showToast: (message: string, tone?: "info" | "success" | "error", duration?: number | null) => void;
+  toggleManualPublished: (client: ClientInfo) => Promise<void>;
+  toggleStatusWarnings: (client: ClientInfo) => Promise<void>;
+  handleSortDragOver: (event: DragEvent<HTMLDivElement>) => Promise<void>;
+  setDragTarget: Dispatch<SetStateAction<string | null>>;
+  handleDropEvent: (event: DragEvent<HTMLDivElement>, client: ClientInfo) => void;
+  setPendingPromotion: Dispatch<SetStateAction<ClientInfo | null>>;
+  handleFixClient: (client: ClientInfo) => Promise<void>;
+  handleOpenFinal: (client: ClientInfo) => Promise<void>;
+  handleOpenFileLocation: (path: string) => Promise<void>;
+  setSelectedVersionByClient: Dispatch<SetStateAction<Record<string, string>>>;
+  openFrameIoSettings: () => void;
+  setPendingFrameIoUpload: Dispatch<SetStateAction<{ path: string; clientKey: string; version: number; projectName: string; projectPath: string; } | null>>;
+  uploadApprovalToFrameIo: (path: string, clientKey: string, productionProjectName: string, productionProjectPath: string) => Promise<void>;
+  copyFrameIoShareLink: (url: string) => Promise<boolean>;
+  removeFrameIoUpload: (path: string, clientKey: string, productionProjectPath: string, version: number) => void;
+};
+
+// Keep event handlers stable across menu/poll updates, while calling the latest
+// committed implementation so actions never use stale project or status state.
+function useClientRowActions(actions: ClientRowActions): ClientRowActions {
+  const latest = useRef(actions);
+  useLayoutEffect(() => { latest.current = actions; });
+  const [stable] = useState(() => Object.fromEntries(
+    Object.keys(actions).map((key) => [key, (...args: never[]) => {
+      const action = latest.current[key as keyof ClientRowActions] as (...values: never[]) => unknown;
+      return action(...args);
+    }]),
+  ) as ClientRowActions);
+  return stable;
+}
+
+type ClientListRowProps = {
+  client: ClientInfo;
+  index: number;
+  screen: "sort" | "home";
+  frameIoProgress: Record<string, FrameIoProgress>;
+  frameIoConfig: { accountId: string; projectId: string };
+  frameIoBusyPath: string | null;
+  busy: boolean;
+  projectRoot: string;
+  advancedMode: boolean;
+  publishingClientPath: string | null;
+  publishProgress: PublishProgress | null;
+  hoverClientRef: RefObject<string | null>;
+  workspaceTypeNames: Record<string, string>;
+  frameIoConfigured: boolean;
+  activeProject: ProjectRootOption | undefined;
+  clientIsCached: boolean;
+  expanded: boolean;
+  manuallyPublished: boolean;
+  warningsSuppressed: boolean;
+  publishFailedOverride: boolean;
+  selectedVersion: string | undefined;
+  dragOver: boolean;
+  dragKinds: string[] | null;
+  transferProgress: SortProgress | null;
+  pendingDrop: PendingClientDrop | null;
+  creatingStudio: boolean;
+  studioRequest: number;
+  actions: ClientRowActions;
+};
+
+const ClientListRow = memo(function ClientListRow({
+  client, index, screen, frameIoProgress, frameIoConfig, frameIoBusyPath, busy, projectRoot, advancedMode, publishingClientPath, publishProgress, hoverClientRef, workspaceTypeNames, frameIoConfigured, activeProject, clientIsCached, expanded, manuallyPublished, warningsSuppressed, publishFailedOverride, selectedVersion, dragOver, dragKinds, transferProgress, pendingDrop, creatingStudio, studioRequest, actions,
+}: ClientListRowProps) {
+  const { confirmClientDrop, updateClientDropChoices, cancelClientDrop, toggleClientExpanded, openPepperContextMenu, handleOpenFolder, copyFromContextMenu, handleQuickCreateSession, refreshClients, handleUnpublish, showToast, toggleManualPublished, toggleStatusWarnings, handleSortDragOver, setDragTarget, handleDropEvent, setPendingPromotion, handleFixClient, handleOpenFinal, handleOpenFileLocation, setSelectedVersionByClient, openFrameIoSettings, setPendingFrameIoUpload, uploadApprovalToFrameIo, copyFrameIoShareLink, removeFrameIoUpload } = actions;
+
+  const label = parseClientLabel(client.name);
+
+  const droppable = screen === "sort" && client.status !== "Not a client" && !clientIsCached && !pendingDrop && !transferProgress;
+  const exports = client.export_status;
+  const version = exports.latest_version ?? exports.final_version;
+  const sortedApprovalVersions = useMemo(() => [...exports.approval_versions].sort((left, right) => {
+    const leftSuperseded = left.relative_path.split(/[\\/]/).some((part) => part.toLowerCase() === "superseded");
+    const rightSuperseded = right.relative_path.split(/[\\/]/).some((part) => part.toLowerCase() === "superseded");
+    return right.version - left.version
+      || Number(leftSuperseded) - Number(rightSuperseded)
+      || Date.parse(right.added_at) - Date.parse(left.added_at)
+      || right.filename.localeCompare(left.filename);
+  }), [exports.approval_versions]);
+  const latestApprovalVersion = sortedApprovalVersions[0];
+  const creatingApprovalVersion = exports.approval_in_progress
+    && exports.approval_progress_version !== null
+    && !sortedApprovalVersions.some((approval) => approval.version === exports.approval_progress_version);
+  const latestApprovalIsRendering = exports.approval_in_progress
+    && exports.approval_progress_version !== null
+    && latestApprovalVersion?.version === exports.approval_progress_version;
+  const latestApprovalPath = latestApprovalVersion
+    ? `${client.path.replace(/[\\/]+$/, "")}\\03_EXPORTS\\${latestApprovalVersion.relative_path.replace(/[\\/]+/g, "\\")}`
+    : null;
+  const latestFrameIoProgress = latestApprovalPath ? frameIoProgress[latestApprovalPath] : undefined;
+  const latestFrameIoRecord = latestApprovalVersion?.frameio;
+  const latestFrameIoRecordMatchesDestination = latestFrameIoRecord?.destination_account_id === frameIoConfig.accountId
+    && latestFrameIoRecord?.destination_project_id === frameIoConfig.projectId;
+  const latestFrameIoState = latestFrameIoProgress?.state ?? (latestFrameIoRecordMatchesDestination ? latestFrameIoRecord?.state : undefined);
+  const latestFrameIoBusy = latestApprovalPath !== null && frameIoBusyPath === latestApprovalPath;
+  const latestFrameIoShareUrl = latestFrameIoProgress?.state === "ready" && latestFrameIoProgress.share_url
+    ? latestFrameIoProgress.share_url
+    : latestFrameIoBusy || latestFrameIoState !== "ready" ? null : latestFrameIoProgress?.share_url ?? (latestFrameIoRecordMatchesDestination ? latestFrameIoRecord?.share_url : null);
+  const latestFrameIoShareRetryAvailable = latestFrameIoState === "share_needs_reconciliation"
+    || latestFrameIoState === "creating_share"
+    || latestFrameIoState === "updating_share"
+    || latestFrameIoState === "share_asset_added"
+    || (latestFrameIoState === "ready" && latestFrameIoRecordMatchesDestination && !latestFrameIoRecord?.share_url);
+  const latestFrameIoHasUnfinishedJob = Boolean(latestFrameIoState && !["ready", "removed", "updating_share", "share_asset_added"].includes(latestFrameIoState)
+    && !latestFrameIoBusy && !latestFrameIoShareRetryAvailable);
+  const uploadPercent = latestFrameIoProgress && latestFrameIoProgress.total > 0
+    ? Math.max(0, Math.min(100, Math.floor(latestFrameIoProgress.uploaded / latestFrameIoProgress.total * 100)))
+    : null;
+  const approvalProgressPercent = latestFrameIoState === "uploading" && uploadPercent !== null
+    ? Math.floor(uploadPercent * 0.8)
+    : latestFrameIoState === "finalizing_review" ? 84
+      : latestFrameIoState === "creating_version_stack" ? 88
+        : latestFrameIoState === "updating_share" || latestFrameIoState === "share_asset_added" ? 92
+          : latestFrameIoState === "creating_share" ? 96
+            : latestFrameIoState === "ready" ? 100 : 0;
+  const publishingThisClient = publishingClientPath === client.path;
+  const publishingProgressPercent = publishingThisClient && publishProgress?.client_path === client.path && publishProgress.total > 0
+    ? Math.max(0, Math.min(100, Math.floor(publishProgress.completed / publishProgress.total * 100)))
+    : null;
+  const operationProgressActive = publishingThisClient || latestFrameIoBusy;
+  const frameIoUploadLabel = latestFrameIoState === "uploading"
+    ? uploadPercent !== null ? `Uploading ${uploadPercent}%` : "Uploading…"
+    : latestFrameIoState === "processing" ? "Processing on Frame.io…"
+      : latestFrameIoState === "creating_version_stack" ? "Adding version…"
+        : latestFrameIoState === "updating_share" ? "Updating share link…"
+          : latestFrameIoState === "creating_share" ? "Creating share link…"
+            : latestFrameIoState === "finalizing_review" ? "Preparing review link…"
+              : latestFrameIoState === "preparing" ? "Preparing upload…" : "Sending for review…";
+  const latestApprovalShared = latestApprovalVersion?.version === exports.latest_version
+    && (latestFrameIoState === "ready" || Boolean(latestFrameIoShareUrl));
+
+  const published = manuallyPublished || isFinalised(client);
+  const publishFailed = exports.publish_failed || publishFailedOverride;
+  const cleanExportInProgress = exports.approval_in_progress
+    && exports.approval_progress_phase?.toLowerCase() === "waiting for export to stabilize";
+  const exportProgressLabel = cleanExportInProgress
+    ? "Clean export in progress"
+    : "Approval export in progress";
+  const exportLabel = manuallyPublished
+    ? "FINAL"
+    : client.exportStatusLoading
+    ? "Loading exports…"
+    : exports.approval_in_progress
+      ? exportProgressLabel
+    : exports.issue
+    ? "Check exports"
+    : published
+      ? "FINAL"
+      : exports.latest_filename
+        ? exports.final_filename
+          ? exports.final_version !== null && exports.latest_version !== null && exports.final_version < exports.latest_version
+            ? "FINAL outdated" : "FINAL unverified"
+          : latestApprovalShared ? "Shared"
+            : exports.approval_ready ? "Approval ready" : "Export ready"
+        : "Awaiting export";
+  const exportNeedsAttention = Boolean(
+    exports.issue || exportLabel === "FINAL outdated" || exportLabel === "FINAL unverified"
+  );
+  const exportDisplayVersion = exports.approval_in_progress
+    ? exports.approval_progress_version ?? version
+    : latestApprovalVersion?.version ?? version;
+  const exportStatusSummary = exportDisplayVersion !== null && exportLabel !== "FINAL"
+    ? (
+      <span className="export-status-summary">
+        <span className="version-label export-status-version">V{exportDisplayVersion}</span>
+        <span className="export-status-label">{exportLabel}</span>
+      </span>
+    )
+    : <span className="export-status-label">{exportLabel}</span>;
+  const tooltipVersionNumbers = Array.from(new Set([
+    ...sortedApprovalVersions.map((approval) => approval.version),
+    ...(creatingApprovalVersion && exports.approval_progress_version !== null
+      ? [exports.approval_progress_version]
+      : []),
+  ])).sort((left, right) => right - left);
+  const versionCreatedAt = exports.versions
+    .map((item) => Date.parse(item.added_at))
+    .filter(Number.isFinite);
+  const firstVersionAt = versionCreatedAt.length ? Math.min(...versionCreatedAt) : null;
+  const finalPublishedAt = exports.final_published_at ? Date.parse(exports.final_published_at) : Number.NaN;
+  const timeToFinal = firstVersionAt !== null
+    && Number.isFinite(finalPublishedAt)
+    && finalPublishedAt >= firstVersionAt
+    ? formatAverageDuration(finalPublishedAt - firstVersionAt)
+    : null;
+  const publishedVersionDetails = !manuallyPublished && isFinalised(client)
+    ? [timeToFinal && `Time from first version to FINAL: ${timeToFinal}`]
+    : [];
+  const exportTooltipDetails = manuallyPublished
+    ? ["Manually marked as published in Advanced mode"]
+    : client.exportStatusLoading
+      ? ["Checking this client's exports…"]
+      : isFinalised(client)
+        ? publishedVersionDetails.filter((detail): detail is string => Boolean(detail))
+      : [
+        exports.issue,
+        exports.approval_in_progress && (cleanExportInProgress
+          ? "Clean export is being written and checked for stability"
+          : `Approval copy is being rendered and validated${exports.approval_progress_phase ? ` (${exports.approval_progress_phase})` : ""}`),
+        exports.final_filename && `FINAL: ${exports.final_filename}`,
+      ].filter((detail): detail is string => Boolean(detail));
+  const lastApprovalVersion = sortedApprovalVersions[0];
+  const pendingVersion = exports.approval_progress_version;
+  const playableApprovalVersions = sortedApprovalVersions.filter((approval) =>
+    !exports.approval_in_progress || approval.version !== pendingVersion,
+  );
+  const selectedApprovalVersion = playableApprovalVersions.find(
+    (item) => item.relative_path === selectedVersion,
+  ) ?? playableApprovalVersions[0];
+  const selectedApprovalPath = selectedApprovalVersion
+    ? `${client.path.replace(/[\\/]+$/, "")}\\03_EXPORTS\\${selectedApprovalVersion.relative_path.replace(/[\\/]+/g, "\\")}`
+    : null;
+  const pendingApprovalEntry = creatingApprovalVersion && exports.approval_progress_version !== null
+    ? (
+      <div
+        className="version-entry version-pending"
+        aria-label={`V${exports.approval_progress_version} ${exportProgressLabel.toLowerCase()}`}
+        title={exportProgressLabel}
+      >
+        <div className="version-option" aria-disabled="true">
+          <span className="version-option-heading">
+            <span className="version-option-number version-label">V{exports.approval_progress_version}</span>
+            <LoaderCircle className="approval-progress-spinner" size={15} aria-hidden="true" />
+          </span>
+          <span className="version-state">{cleanExportInProgress ? "Exporting" : "Rendering"}</span>
+        </div>
+      </div>
+    )
+    : null;
+  return (
+    <Fragment key={client.path}>
+    <div
+      className={`table-row client-row ${pendingDrop ? "client-drop-confirm-active" : ""} ${transferProgress ? "client-row-transfer-active" : ""} ${clientIsCached ? "cached-client-row" : ""} ${droppable ? "droppable-row" : ""} ${
+        dragOver ? "drag-over media-drop-hover" : ""
+      } ${published ? "published-row" : ""} ${expanded ? "expanded-row" : ""}`}
+      style={{ animationDelay: `${Math.min(index * 18, 180)}ms` }}
+      data-client-name={client.name}
+      data-client={droppable ? client.name : undefined}
+      onClick={() => { if (!dragOver && !pendingDrop && !transferProgress) toggleClientExpanded(client.name); }}
+      onContextMenu={(event) => openPepperContextMenu(event, label.name, [
+        { label: "Open client folder", action: () => void handleOpenFolder(client.path) },
+        { label: "Copy client name", action: () => copyFromContextMenu(client.name, "Client name") },
+        ...(isHuddleClientType(client.client_type) && client.huddle_template === "VIDEO_CALL" && client.status !== "Not a client" ? [{ label: creatingStudio ? "Creating session?" : "Create session", action: () => void handleQuickCreateSession(client), disabled: creatingStudio || clientIsCached || busy, separatorBefore: true }] : []),
+        { label: "Refresh project", action: () => void refreshClients(projectRoot, true, true, true) },
+        ...(advancedMode && client.status !== "Not a client" ? [
+          ...(published ? [{ label: "Unpublish and return to pending", action: () => void handleUnpublish(client), separatorBefore: true, disabled: Boolean(busy || publishingClientPath) }] : []),
+          ...(label.type === "HUDDLE" ? [{ label: client.huddle_template === "VIDEO_CALL" ? "Interview type: Video Call" : "Set interview type: Video Call", action: () => { void invoke("set_client_huddle_template", { clientPath: client.path, huddleTemplate: "VIDEO_CALL" }).then(() => { showToast("Huddle interview type saved as Video Call.", "success"); void refreshClients(projectRoot, true, true, true); }).catch(error => showToast(`Could not save interview type: ${String(error)}`, "error", 7000)); }, separatorBefore: true, disabled: client.huddle_template === "VIDEO_CALL" }] : []),
+          { label: manuallyPublished ? "Remove published override" : "Mark as published", action: () => void toggleManualPublished(client), separatorBefore: true, disabled: !manuallyPublished && isFinalised(client) },
+          { label: warningsSuppressed ? "Show status warnings and Fix action" : "Hide status warnings and Fix action", action: () => void toggleStatusWarnings(client) },
+        ] : []),
+      ])}
+      onDragOver={
+        droppable
+          ? (event) => {
+              if (!event.dataTransfer.types.includes("Files")) return;
+              handleSortDragOver(event);
+              mediaDropTarget(event.clientX, event.clientY);
+              hoverClientRef.current = client.name;
+              setDragTarget(client.name);
+            }
+          : undefined
+      }
+      onDragEnter={
+        droppable
+          ? (event) => {
+              if (!event.dataTransfer.types.includes("Files")) return;
+              hoverClientRef.current = client.name;
+              setDragTarget(client.name);
+            }
+          : undefined
+      }
+      onDragLeave={
+        droppable
+          ? (event) => {
+              if (event.currentTarget.contains(event.relatedTarget as Node | null)) return;
+              const bounds = event.currentTarget.getBoundingClientRect();
+              if (event.clientX >= bounds.left && event.clientX < bounds.right
+                && event.clientY >= bounds.top && event.clientY < bounds.bottom) return;
+              if (hoverClientRef.current === client.name) {
+                hoverClientRef.current = null;
+              }
+              setDragTarget((current) =>
+                current === client.name ? null : current
+              );
+            }
+          : undefined
+      }
+      onDrop={droppable ? (event) => handleDropEvent(event, client) : undefined}
+    >
+      {pendingDrop && <ClientDropConfirm folder={pendingDrop.folder} clientName={label.name} preview={pendingDrop.preview} error={pendingDrop.error} disabled={busy} choices={pendingDrop.choices} onChoicesChange={choices => updateClientDropChoices(client.path, choices)} onConfirm={choices => confirmClientDrop(client.path, choices)} onCancel={() => cancelClientDrop(client.path)} />}
+      {transferProgress && <ClientRowTransfer progress={transferProgress} />}
+      {droppable && <ClientMediaDrop key={client.path} clientPath={client.path} kinds={dragKinds} active={dragOver} />}
+      <button
+        type="button"
+        className="client-row-disclosure"
+        aria-expanded={expanded}
+        aria-label={`${expanded ? "Collapse" : "Expand"} ${label.name} client workspace`}
+      />
+      <div>
+        <div className="client-title">
+          <span className="client-expand-icon" aria-hidden="true">
+            {expanded ? <ChevronDown size={16} /> : <ChevronRight size={16} />}
+          </span>
+          <ClientLabel name={client.name} type={client.client_type} typeNames={workspaceTypeNames} season={client.season}/>
+        </div>
+      </div>
+      <div className={`client-statuses ${clientIsCached ? "" : !client.exportStatusLoading ? "client-status-enter" : ""}`}>
+        {operationProgressActive ? (
+          <span className="client-operation-progress">
+            <progress
+              className="frameio-upload-progress"
+              value={publishingThisClient ? publishingProgressPercent ?? 0 : approvalProgressPercent}
+              max={100}
+              aria-label={publishingThisClient ? "Publishing export" : "Uploading approval to Frame.io"}
+            />
+          </span>
+        ) : <>
+        {!clientIsCached && client.status !== "OK" && (!warningsSuppressed || client.status === "Not a client") && (
+        <span
+          className={`badge ${client.status
+            .toLowerCase()
+            .replace(/\s/g, "-")}`}
+        >
+          {client.status}
+        </span>
+        )}
+        {!clientIsCached && client.status !== "Not a client" && !(warningsSuppressed && exportNeedsAttention && exportLabel !== "FINAL" && !exports.approval_in_progress) && (
+          <>
+            {client.exportStatusLoading ? (
+              <span className="client-status-space" aria-hidden="true" />
+            ) : (
+              <span className="client-export-status">
+                <ExportStatusTooltip
+                  id={`export-versions-tooltip-${index}`}
+                  details={exportTooltipDetails}
+                  versions={tooltipVersionNumbers}
+                  enabled={exportLabel !== "Awaiting export"}
+                >
+                  {exports.approval_in_progress ? (
+                    <span className="badge export-ready export-progress">
+                      <LoaderCircle className="approval-progress-spinner" size={13} aria-hidden="true" />
+                      {exportStatusSummary}
+                    </span>
+                  ) : exportNeedsAttention && !warningsSuppressed ? (
+                    <span className="badge export-warning">{exportStatusSummary}</span>
+                  ) : exportLabel === "FINAL" ? (
+                    <span className="status-text final-state" aria-label="Published">
+                      <Check size={14} aria-hidden="true" />
+                    </span>
+                  ) : exportLabel === "Shared" ? (
+                    <span className="status-text shared-state">
+                      <Link2 size={14} aria-hidden="true" /> {exportStatusSummary}
+                    </span>
+                  ) : exportLabel === "Awaiting export" ? (
+                    <span className="status-text empty-state"><Clapperboard size={13} aria-hidden="true" />Awaiting export</span>
+                  ) : (
+                    <span className="status-text">{exportStatusSummary}</span>
+                  )}
+                </ExportStatusTooltip>
+              </span>
+            )}
+          </>
+        )}
+        </>}
+      </div>
+      <div className="actions" onClick={(event) => event.stopPropagation()}>
+        {client.status !== "Not a client" && exports.latest_filename && !exports.issue && (!published || publishFailed || publishingClientPath === client.path) && (
+          <button
+            type="button"
+            className="ghost promote-button"
+            onClick={() => setPendingPromotion({ ...client, export_status: { ...exports, publish_failed: publishFailed } })}
+            disabled={Boolean(busy || publishingClientPath || !exports.latest_filename || exports.issue)}
+            title={`${publishFailed ? "Retry failed publish" : "Publish"} ${exports.latest_filename}`}
+          >
+            {publishFailed && publishingClientPath !== client.path ? "Failed" : <><span>Publish</span><ArrowUpRight size={13} aria-hidden="true" /></>}
+          </button>
+        )}
+        {client.status === "Missing folders" && !warningsSuppressed && (
+          <button
+            className="ghost icon-button"
+            onClick={() => handleFixClient(client)}
+            aria-label="Fix"
+            title="Fix"
+          >
+            <Wrench size={17} strokeWidth={2} aria-hidden="true" />
+          </button>
+        )}
+        {exports.final_filename && !exports.issue && (
+          <button
+            type="button"
+            className="ghost icon-button"
+            onClick={() => void handleOpenFinal(client)}
+            aria-label="Open FINAL folder"
+            title="Open FINAL folder"
+          >
+            <FolderOpen size={17} strokeWidth={1.8} aria-hidden="true" />
+          </button>
+        )}
+      </div>
+  </div>
+  <ClientDetails open={expanded && !client.exportStatusLoading}>{() => (
+      <ClientWorkspace studioRequest={studioRequest} key={client.path} projectRoot={projectRoot} clientPath={client.path} clientType={client.client_type} huddleTemplate={client.huddle_template} advancedMode={advancedMode && client.status !== "Not a client"} onContextMenu={openPepperContextMenu} reviewDefault={sortedApprovalVersions.length>0||published} hasApprovals={sortedApprovalVersions.length>0} mainPublished={Boolean(exports.final_filename)} finalPath={published&&exports.final_filename?`${client.path.replace(/[\\/]+$/, "")}\\04_FINAL\\${exports.final_filename}`:null}>
+      {sortedApprovalVersions.length === 0 ? (
+        pendingApprovalEntry
+          ? <VersionHistory label={`${label.name} approval versions`}>{pendingApprovalEntry}</VersionHistory>
+          : <div className="versions-empty">No approval copies available.</div>
+      ) : selectedApprovalVersion && selectedApprovalPath && (
+        <div className="version-browser">
+          <article className="export-preview" aria-label={`V${selectedApprovalVersion.version} preview: ${selectedApprovalVersion.filename}`}>
+            <InlineVideoPlayer
+              className="approval-video-player"
+              src={convertFileSrc(selectedApprovalPath)}
+              onContextMenu={(event) => {
+                const player = event.currentTarget.querySelector("video");
+                const video = ((event.target as HTMLElement).closest("video") ?? player) as HTMLVideoElement | null;
+                const currentSeconds = video?.currentTime ?? 0;
+                const wholeSeconds = Math.floor(currentSeconds);
+                const hours = Math.floor(wholeSeconds / 3600);
+                const minutes = Math.floor((wholeSeconds % 3600) / 60);
+                const seconds = wholeSeconds % 60;
+                const milliseconds = Math.floor((currentSeconds - wholeSeconds) * 1000);
+                const playbackTime = `${String(hours).padStart(2, "0")}:${String(minutes).padStart(2, "0")}:${String(seconds).padStart(2, "0")}.${String(milliseconds).padStart(3, "0")}`;
+                openPepperContextMenu(event, `V${selectedApprovalVersion.version} video`, [
+                  { label: video?.paused ? "Play" : "Pause", action: () => video?.paused ? void video.play() : video?.pause() },
+                  { label: video?.muted ? "Unmute" : "Mute", action: () => { if (video) video.muted = !video.muted; } },
+                  { label: `Copy timecode  ${playbackTime}`, action: () => copyFromContextMenu(playbackTime, "Timecode"), separatorBefore: true },
+                  { label: "Copy file name", action: () => copyFromContextMenu(selectedApprovalVersion.filename, "File name") },
+                  { label: "Copy video path", action: () => copyFromContextMenu(selectedApprovalPath, "Video path") },
+                  { label: "Open containing folder", action: () => void handleOpenFileLocation(selectedApprovalPath) },
+                ]);
+              }}
+            />
+          </article>
+          <VersionHistory label={`${label.name} approval versions`}>
+            {pendingApprovalEntry}
+            {sortedApprovalVersions.map((approvalVersion) => {
+              const approvalIsBeingRendered = exports.approval_in_progress
+                && approvalVersion.version === exports.approval_progress_version;
+              const isLatest = approvalVersion.relative_path === lastApprovalVersion?.relative_path;
+              const versionRecord = approvalVersion.frameio?.state === "ready"
+                && approvalVersion.frameio?.file_id
+                && approvalVersion.frameio?.destination_account_id === frameIoConfig.accountId
+                && approvalVersion.frameio?.destination_project_id === frameIoConfig.projectId
+                ? approvalVersion.frameio : null;
+              const versionShareUrl = approvalIsBeingRendered ? null : isLatest ? latestFrameIoShareUrl : versionRecord?.share_url;
+              const versionLinkDuplicatesLatest = !isLatest
+                && Boolean(versionShareUrl && latestFrameIoShareUrl && versionShareUrl === latestFrameIoShareUrl);
+              const hasEarlierApproval = isLatest && sortedApprovalVersions.some((version) => version.version < approvalVersion.version);
+              const hasEarlierReviewLinkForDestination = hasEarlierApproval && sortedApprovalVersions.some((version) =>
+                version.version < approvalVersion.version
+                && version.frameio?.state === "ready"
+                && Boolean(version.frameio.share_url)
+                && version.frameio.destination_account_id === frameIoConfig.accountId
+                && version.frameio.destination_project_id === frameIoConfig.projectId);
+              const versionBusy = isLatest && latestFrameIoBusy;
+              const versionError = versionRecord?.last_error
+                ?? (isLatest && /fail|error/.test(latestFrameIoState ?? "") ? latestFrameIoProgress?.message : null);
+              const versionFailed = !approvalIsBeingRendered && !versionBusy && !versionShareUrl
+                && Boolean(versionError || /fail|error/.test(versionRecord?.state ?? ""));
+              const versionStatus = approvalIsBeingRendered ? cleanExportInProgress ? "Exporting" : "Rendering"
+                : versionBusy ? frameIoUploadLabel
+                  : versionFailed ? "Failed"
+                    : versionShareUrl && !versionLinkDuplicatesLatest ? "Shared"
+                      : isLatest && latestFrameIoShareRetryAvailable ? "Link needed"
+                        : isLatest && latestFrameIoHasUnfinishedJob ? "Needs attention" : null;
+              const selected = !approvalIsBeingRendered
+                && approvalVersion.relative_path === selectedApprovalVersion?.relative_path;
+              return (
+                <div
+                  className={`version-entry ${selected ? "selected" : ""} ${isLatest && !approvalIsBeingRendered ? "latest-version" : ""} ${approvalIsBeingRendered ? "version-pending" : ""}`}
+                  key={`${approvalVersion.version}-${approvalVersion.filename}`}
+                  onContextMenu={(event) => openPepperContextMenu(event, `V${approvalVersion.version}`, approvalIsBeingRendered ? [
+                    { label: "Creating approval copy", action: () => undefined, disabled: true },
+                  ] : [
+                    { label: "Select version", action: () => setSelectedVersionByClient((current) => ({ ...current, [client.name]: approvalVersion.relative_path })) },
+                    ...(versionRecord && activeProject ? [{
+                      label: "Remove from Frame.io",
+                      separatorBefore: true,
+                      action: () => removeFrameIoUpload(`${client.path.replace(/[\\/]+$/, "")}\\03_EXPORTS\\${approvalVersion.relative_path.replace(/[\\/]+/g, "\\")}`, client.name, activeProject.path, approvalVersion.version),
+                    }] : []),
+                    { label: "Copy version name", action: () => copyFromContextMenu(`V${approvalVersion.version}`, "Version name") },
+                    { label: "Copy file name", action: () => copyFromContextMenu(approvalVersion.filename, "File name") },
+                    { label: "Copy file path", action: () => copyFromContextMenu(`${client.path.replace(/[\\/]+$/, "")}\\03_EXPORTS\\${approvalVersion.relative_path.replace(/[\\/]+/g, "\\")}`, "File path") },
+                    { label: "Open file location", action: () => void handleOpenFileLocation(`${client.path.replace(/[\\/]+$/, "")}\\03_EXPORTS\\${approvalVersion.relative_path.replace(/[\\/]+/g, "\\")}`) },
+                  ])}
+                >
+                  <button
+                    type="button"
+                    aria-pressed={selected}
+                    aria-label={`Preview V${approvalVersion.version}${isLatest ? ", latest version" : ""}`}
+                    aria-disabled={approvalIsBeingRendered}
+                    title={approvalVersion.filename}
+                    className={`version-option ${approvalIsBeingRendered ? "version-option-rendering" : ""}`}
+                    disabled={approvalIsBeingRendered}
+                    onClick={() => setSelectedVersionByClient((current) => ({
+                      ...current,
+                      [client.name]: approvalVersion.relative_path,
+                    }))}
+                  >
+                    <span className="version-option-heading">
+                      <span className="version-option-number version-label">V{approvalVersion.version}</span>
+                      {approvalIsBeingRendered ? (
+                        <span role="img" aria-label={exportProgressLabel} title={exportProgressLabel}>
+                          <LoaderCircle className="approval-progress-spinner" size={15} aria-hidden="true" />
+                        </span>
+                      ) : (
+                        isLatest && <span className="version-latest">Latest</span>
+                      )}
+                    </span>
+                    {!approvalIsBeingRendered && <time dateTime={approvalVersion.added_at} title={formatUiDateTime(approvalVersion.added_at)}>
+                      {new Date(approvalVersion.added_at).toLocaleString(undefined, { day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" })}
+                    </time>}
+                    {versionStatus && <span className={`version-state ${versionFailed ? "failed" : ""}`} title={versionError ?? undefined}>{versionStatus}</span>}
+                  </button>
+                  {isLatest && latestApprovalPath && !approvalIsBeingRendered && (
+                    <div className="frameio-inline-row">
+                      {latestFrameIoShareUrl ? (
+                        <button
+                          type="button"
+                          className="frameio-icon-button"
+                          title="Open review"
+                          aria-label={`Open V${approvalVersion.version} review`}
+                          onClick={() => void invoke("frameio_open_external_url", { url: latestFrameIoShareUrl }).catch((err) => showToast(String(err), "error", 7000))}
+                        >
+                          <Link2 size={15} aria-hidden="true" />
+                        </button>
+                      ) : latestFrameIoHasUnfinishedJob ? null : !frameIoConfigured ? (
+                        <button
+                          type="button"
+                          className="frameio-icon-button"
+                          title="Set up Frame.io review delivery"
+                          aria-label="Set up Frame.io review delivery"
+                          onClick={openFrameIoSettings}
+                        >
+                          <Settings2 size={16} aria-hidden="true" />
+                        </button>
+                      ) : (
+                        <button
+                          type="button"
+                          className="frameio-icon-button"
+                          title={latestApprovalIsRendering
+                            ? "Wait until this approval version has finished rendering"
+                            : latestFrameIoBusy ? frameIoUploadLabel : "Send for review"}
+                          aria-label={latestApprovalIsRendering
+                            ? "Approval export in progress"
+                            : latestFrameIoBusy ? frameIoUploadLabel : "Send for review"}
+                          disabled={client.exportStatusLoading || !activeProject || frameIoBusyPath === latestApprovalPath || latestApprovalIsRendering}
+                          onClick={() => {
+                            if (!activeProject) return;
+                            if (hasEarlierApproval && !hasEarlierReviewLinkForDestination) {
+                              setPendingFrameIoUpload({ path: latestApprovalPath, clientKey: client.name, version: approvalVersion.version, projectName: activeProject.name, projectPath: activeProject.path });
+                            } else {
+                              void uploadApprovalToFrameIo(latestApprovalPath, client.name, activeProject.name, activeProject.path);
+                            }
+                          }}
+                        >
+                          {frameIoBusyPath === latestApprovalPath
+                            ? <LoaderCircle className="approval-progress-spinner" size={16} aria-hidden="true" />
+                            : <CloudUpload size={16} aria-hidden="true" />}
+                        </button>
+                      )}
+                      {latestFrameIoShareUrl ? (
+                        <CopyReviewLinkButton url={latestFrameIoShareUrl} version={approvalVersion.version} onCopy={copyFrameIoShareLink} />
+                      ) : null}
+                    </div>
+                  )}
+                  {!isLatest && versionShareUrl && !versionLinkDuplicatesLatest && <div className="frameio-inline-row">
+                    <button type="button" className="frameio-icon-button" title="Open review" aria-label={`Open V${approvalVersion.version} review`}
+                      onClick={() => void invoke("frameio_open_external_url", { url: versionShareUrl }).catch((err) => showToast(String(err), "error", 7000))}>
+                      <Link2 size={15} aria-hidden="true" />
+                    </button>
+                    <CopyReviewLinkButton url={versionShareUrl} version={approvalVersion.version} onCopy={copyFrameIoShareLink} />
+                  </div>}
+                  {versionFailed && versionError && <span className="version-delivery-message" title={versionError}>{versionError}</span>}
+                </div>
+              );
+            })}
+          </VersionHistory>
+        </div>
+      )}
+      </ClientWorkspace>
+  )}</ClientDetails>
+  </Fragment>
+              );
+});
+
 export default function App() {
   const [screen] = useState<"home" | "sort">("sort");
   const [ingestOpen, setIngestOpen] = useState(false);
+  const [ingestOperationBusy, setIngestOperationBusy] = useState(false);
   const [ingestProgress,setIngestProgress]=useState<IngestProgress|null>(null);
   const [projectRoot, setProjectRoot] = useState<string>("");
+  const [workspaceRoot, setWorkspaceRoot] = useState<string>("");
+  const workspaceRootRef = useRef(workspaceRoot);
+  const [workspaceDiscovery, setWorkspaceDiscovery] = useState<WorkspaceDiscovery | null>(null);
+  const [workspaceConfig, setWorkspaceConfig] = useState<WorkspaceConfig | null>(null);
+  const [workspaceSetupRequired, setWorkspaceSetupRequired] = useState(false);
+  const [workspaceLocalMappings, setWorkspaceLocalMappings] = useState<Record<string, string>>({});
   const ingestOpenRef=useRef(ingestOpen);ingestOpenRef.current=ingestOpen;
-  useEffect(()=>{let active=true;const poll=async()=>{if(!projectRoot)return;try{const current=await invoke<IngestProgress|null>("ingest_progress",{projectRoot});if(active)setIngestProgress(current);}catch{}};void poll();const timer=window.setInterval(()=>void poll(),1500);return()=>{active=false;window.clearInterval(timer);};},[projectRoot]);
+  useEffect(() => {
+    if (!projectRoot) return;
+    let active = true;
+    let timer: number | undefined;
+    const poll = async () => {
+      try {
+        const next = await invoke<IngestProgress | null>("ingest_progress", { projectRoot });
+        if (active) setIngestProgress(current =>
+          current?.project_root === next?.project_root && current?.phase === next?.phase
+            && current?.source === next?.source && current?.completed === next?.completed
+            && current?.total === next?.total ? current : next);
+      } catch { /* Keep the last known state during a temporary disconnect. */ }
+      finally { if (active) timer = window.setTimeout(() => void poll(), 1500); }
+    };
+    void poll();
+    return () => { active = false; window.clearTimeout(timer); };
+  }, [projectRoot]);
 
   const [projectRoots, setProjectRoots] = useState<ProjectRootOption[]>([]);
   const [showProjectMenu, setShowProjectMenu] = useState(false);
@@ -430,13 +1025,15 @@ export default function App() {
   const [restreamError, setRestreamError] = useState("");
   const [frameIoProgress, setFrameIoProgress] = useState<Record<string, FrameIoProgress>>({});
   const [frameIoBusyPath, setFrameIoBusyPath] = useState<string | null>(null);
+  const [publishProgress, setPublishProgress] = useState<PublishProgress | null>(null);
   const [pendingFrameIoUpload, setPendingFrameIoUpload] = useState<{ path: string; clientKey: string; version: number; projectName: string; projectPath: string } | null>(null);
+  const [pendingFrameIoRemoval, setPendingFrameIoRemoval] = useState<{ path: string; clientKey: string; productionProjectPath: string; version: number } | null>(null);
   const pendingFrameIoVersion = pendingFrameIoUpload?.version
     ?? pendingFrameIoUpload?.path.match(/_V(\d+)(?=[_.\s-]|$)/i)?.[1];
   const frameIoUploadDialogRef = useRef<HTMLDialogElement | null>(null);
+  const frameIoRemoveDialogRef = useRef<HTMLDialogElement | null>(null);
   const [clientSort, setClientSort] = useState<ClientSort>({ column: "name", direction: "asc" });
   const [publishingClientPath, setPublishingClientPath] = useState<string | null>(null);
-  const [publishingStage, setPublishingStage] = useState<"publishing" | "refreshing" | null>(null);
   const [publishFailedClientPaths, setPublishFailedClientPaths] = useState<Set<string>>(new Set());
   const [pendingPromotion, setPendingPromotion] = useState<ClientInfo | null>(null);
   const [promotionClips, setPromotionClips] = useState<PromotionClip[]>([]);
@@ -472,7 +1069,7 @@ export default function App() {
     };
     window.addEventListener("pointerdown", closeOnPointerDown);
     window.addEventListener("keydown", closeOnKeyDown);
-    return () => {
+      return () => {
       window.removeEventListener("pointerdown", closeOnPointerDown);
       window.removeEventListener("keydown", closeOnKeyDown);
     };
@@ -495,6 +1092,11 @@ export default function App() {
       frameIoUploadDialogRef.current?.showModal();
     }
   }, [pendingFrameIoUpload]);
+  useEffect(() => {
+    if (pendingFrameIoRemoval && !frameIoRemoveDialogRef.current?.open) {
+      frameIoRemoveDialogRef.current?.showModal();
+    }
+  }, [pendingFrameIoRemoval]);
   const [loading, setLoading] = useState(false);
   const [clientCacheLoadedRoot, setClientCacheLoadedRoot] = useState<string | null>(null);
   const [clientListRevealedRoot, setClientListRevealedRoot] = useState<string | null>(null);
@@ -507,6 +1109,9 @@ export default function App() {
   const [showNonClients, setShowNonClients] = useState(false);
   const [mode] = useState<string>("AUTO");
   const [progress, setProgress] = useState<SortProgress | null>(null);
+  const [sortingClientPath, setSortingClientPath] = useState<string | null>(null);
+  const [pendingClientDrops, setPendingClientDrops] = useState<Record<string, PendingClientDrop>>({});
+  const pendingClientDropsRef = useRef<Record<string, PendingClientDrop>>({});
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [lastSummary, setLastSummary] = useState<string>("");
@@ -521,40 +1126,38 @@ export default function App() {
   const [suppressedStatusPaths, setSuppressedStatusPaths] = useState<Record<string, boolean>>({});
   const [newClientName, setNewClientName] = useState("");
   const [showNewClientForm, setShowNewClientForm] = useState(false);
-  const [newClientType, setNewClientType] = useState<ClientType>("EXHIBITOR");
-  const [customClientType, setCustomClientType] = useState("");
+  const [newClientType, setNewClientType] = useState<string>("exhibitor");
   const [creatingClient, setCreatingClient] = useState(false);
+  const closeAfterConfirmationRef = useRef(false);
+  const closeOperationActiveRef = useRef(false);
+  const updateInProgressRef = useRef(false);
+  closeOperationActiveRef.current = Boolean(busy || publishingClientPath || frameIoBusyPath || creatingClient || ingestOperationBusy);
+  useEffect(() => {
+    let active = true;
+    const unlistenPromise = getCurrentWindow().onCloseRequested(async (event) => {
+      if (updateInProgressRef.current) { event.preventDefault(); return; }
+      if (closeAfterConfirmationRef.current || !closeOperationActiveRef.current) return;
+      event.preventDefault();
+      const shouldClose = await confirm("An operation is still running. Closing Pepper may interrupt it. Close Pepper anyway?", { title: "Pepper is busy", kind: "warning" });
+      if (!active || !shouldClose) return;
+      closeAfterConfirmationRef.current = true;
+      await getCurrentWindow().close();
+    });
+    return () => { active = false; void unlistenPromise.then((unlisten) => unlisten()); };
+  }, []);
+
+  useEffect(() => {
+    const pending = listen<PublishProgress>("publish-progress", (event) => setPublishProgress(event.payload));
+    return () => { pending.then((unlisten) => unlisten()).catch(() => undefined); };
+  }, []);
   const [huddleTemplate, setHuddleTemplate] = useState<HuddleTemplate>("VIDEO_CALL");
   const projectRootRef = useRef(projectRoot);
   const tableScrollRef = useRef<HTMLDivElement | null>(null);
-  useEffect(() => {
-    const expandedName = expandedClients.values().next().value as string | undefined;
-    if (!expandedName) return;
-    const container = tableScrollRef.current;
-    const row = Array.from(container?.querySelectorAll<HTMLElement>(".client-row") ?? [])
-      .find((candidate) => candidate.dataset.clientName === expandedName);
-    const content = container?.querySelector<HTMLElement>(".client-list");
-    if (!container || !row || !content) return;
-    const reserveScrollSpace = () => {
-      // Leave enough content below this row to reach the top, including for
-      // the last client and when a workspace tab becomes shorter.
-      const rowTop = row.getBoundingClientRect().top - content.getBoundingClientRect().top;
-      content.style.minHeight = `${Math.ceil(rowTop + container.clientHeight)}px`;
-    };
-    reserveScrollSpace();
-    const observer = new ResizeObserver(reserveScrollSpace);
-    observer.observe(container);
-    const frame = window.requestAnimationFrame(() => {
-      const rowOffset = row.getBoundingClientRect().top - container.getBoundingClientRect().top - container.clientTop;
-      container.scrollTo({ top: container.scrollTop + rowOffset, behavior: "smooth" });
-    });
-    return () => {
-      window.cancelAnimationFrame(frame);
-      observer.disconnect();
-      content.style.removeProperty("min-height");
-    };
-  }, [expandedClients]);
+  useClientScrollPosition(tableScrollRef, expandedClients.values().next().value as string | undefined);
   const [dragTarget, setDragTarget] = useState<string | null>(null);
+  const [dragKinds, setDragKinds] = useState<string[] | null>(null);
+  const dragSessionRef = useRef(0);
+  const nativeDragEventRef = useRef(0);
   const hoverClientRef = useRef<string | null>(null);
   const clientsRef = useRef<ClientInfo[]>([]);
   clientsRef.current = clients;
@@ -606,20 +1209,22 @@ export default function App() {
   const [dragActive, setDragActive] = useState(false);
   const [checkingForUpdates, setCheckingForUpdates] = useState(false);
   const [settingsUpdateStatus, setSettingsUpdateStatus] = useState("");
-  const [pendingUpdate, setPendingUpdate] = useState<Update | null>(null);
-  const [installingUpdate, setInstallingUpdate] = useState(false);
-  const updateNotes = pendingUpdate?.body
-    ?.split(/\r?\n/)
-    .filter((line) => !/^Automatic signed Pepper build for commit\b/i.test(line.trim()))
-    .join("\n")
-    .trim();
+  const [pendingUpdate, setPendingUpdate] = useState<PepperUpdate | null>(null);
+
+  const dismissUpdate = () => {
+    if (updateInProgressRef.current) return;
+    void pendingUpdate?.close().catch(err => console.warn("Could not release update", err));
+    setPendingUpdate(null);
+  };
 
   const checkForUpdates = async (showResult = true) => {
-    if (checkingForUpdates) return;
+    if (checkingForUpdates || pendingUpdate || updateInProgressRef.current) return;
     setCheckingForUpdates(true);
     if (showResult) setSettingsUpdateStatus("");
     try {
-      const update = await check();
+      const update = import.meta.env.DEV
+        ? (await import("./components/devUpdate")).createDevUpdate()
+        : await check();
       if (!update) {
         if (showResult) {
           setSettingsUpdateStatus("Pepper is up to date.");
@@ -677,19 +1282,8 @@ export default function App() {
     applySize();
   }, [screen]);
 
-
   useEffect(() => {
     const loadConfig = async () => {
-      const projectRootsPromise = invoke<ProjectRootOption[]>("list_project_roots")
-        .then((roots) => {
-          setProjectRoots(roots);
-          return roots;
-        })
-        .catch((err) => {
-          console.error("Unable to load project folders", err);
-          setError(`Unable to load project folders: ${String(err)}`);
-          return null;
-        });
       void invoke<ProjectShowCatalog>("get_project_show_catalog")
         .then((catalog) => {
           const sortedCatalog = { ...catalog, shows: alphabetizeProjectShows(catalog.shows) };
@@ -699,6 +1293,7 @@ export default function App() {
         .catch((err) => setProjectCreateError(`Could not load the local show list: ${String(err)}`));
       await CONFIG_STORE.init();
       const savedRoot = await CONFIG_STORE.get<string>("projectRoot");
+      const savedWorkspaceRoot = await CONFIG_STORE.get<string>("workspaceRoot");
       const savedShowNonClients = await CONFIG_STORE.get<boolean>("showNonClients");
       const savedMode = await CONFIG_STORE.get<string>("lastMode");
       const savedAlwaysOnTop = await CONFIG_STORE.get<boolean>("alwaysOnTop");
@@ -732,15 +1327,68 @@ export default function App() {
           .catch((err) => console.warn("Frame.io destination verification is unavailable", err));
       }
       const migratedRoots = (await CONFIG_STORE.get<string[]>("legacyFinalMigrationRoots")) ?? [];
+      const defaultWorkspaceRoot = await invoke<string>("default_workspace_root").catch(() => "");
+      const legacyParent = typeof savedRoot === "string" ? savedRoot.replace(/[\\/][^\\/]+$/, "") : "";
+      const workspaceRootValue = typeof savedWorkspaceRoot === "string" && savedWorkspaceRoot
+        ? savedWorkspaceRoot
+        : legacyParent || defaultWorkspaceRoot;
+      setWorkspaceRoot(workspaceRootValue);
+      workspaceRootRef.current = workspaceRootValue;
+      if (workspaceRootValue && workspaceRootValue !== savedWorkspaceRoot) {
+        await CONFIG_STORE.set("workspaceRoot", workspaceRootValue);
+        await CONFIG_STORE.save();
+      }
+      const projectRootsPromise = invoke<ProjectRootOption[]>("list_project_roots", { workspaceRoot: workspaceRootValue })
+        .then((roots) => { setProjectRoots(roots); return roots; })
+        .catch((err) => {
+          console.error("Unable to load project folders", err);
+          setError(`Unable to load project folders: ${String(err)}`);
+          return null;
+        });
+      const workspaceStatePromise = invoke<WorkspaceDiscovery>("workspace_discover", { root: workspaceRootValue })
+        .catch((err) => ({ status: "unavailable", root: workspaceRootValue, config: null, writable: false, message: String(err), lock: null } as WorkspaceDiscovery));
+      const [discovery, cachedWorkspace] = await Promise.all([
+        workspaceStatePromise,
+        CONFIG_STORE.get<WorkspaceConfig>(`workspaceCache:${workspaceRootValue.toLowerCase()}`).catch(() => null),
+      ]);
+      setWorkspaceDiscovery(discovery);
+      if (discovery.status === "valid" && discovery.config) {
+        setWorkspaceConfig(discovery.config);
+        setProjectShowCatalog({ path: "Shared workspace", shows: discovery.config.projectShowNames.map((name) => ({ name })) });
+        setWorkspaceSetupRequired(false);
+        await CONFIG_STORE.set(`workspaceCache:${workspaceRootValue.toLowerCase()}`, discovery.config);
+        const mappings = await CONFIG_STORE.get<Record<string, string>>(`workspaceResourceMappings:${discovery.config.workspaceId}`).catch(() => ({}));
+        setWorkspaceLocalMappings(mappings ?? {});
+      } else if (discovery.status === "absent") {
+        setWorkspaceConfig(null);
+        setWorkspaceSetupRequired(true);
+        setShowAdvancedMenu(true);
+        setSettingsSection("workspace");
+      } else {
+        setWorkspaceConfig(cachedWorkspace ?? null);
+        setWorkspaceSetupRequired(false);
+        if (cachedWorkspace) {
+          const mappings = await CONFIG_STORE.get<Record<string, string>>(`workspaceResourceMappings:${cachedWorkspace.workspaceId}`).catch(() => ({}));
+          setWorkspaceLocalMappings(mappings ?? {});
+        }
+        setError(discovery.message ?? "Workspace settings are unavailable.");
+      }
       const roots = await projectRootsPromise;
-      const savedRootPath = typeof savedRoot === "string" ? savedRoot.replace(/[\\/]+$/, "").toLowerCase() : "";
-      const matchingRoot = roots?.find((project) => project.path.replace(/[\\/]+$/, "").toLowerCase() === savedRootPath);
-      // If project enumeration succeeded, a missing saved root was removed or
-      // renamed. Fall back to the first available project. If enumeration
-      // failed, preserve the saved path because the NAS may simply be offline.
+      const savedRootValue = typeof savedRoot === "string" ? savedRoot : "";
+      const savedRootPath = savedRootValue.replace(/[\\/]+$/, "").toLowerCase();
+      const savedRootParts = savedRootValue.split(/[\\/]/).filter(Boolean);
+      const savedProjectName = savedRootParts[savedRootParts.length - 1]?.toLowerCase();
+      const matchingRoot = roots?.find((project) => project.path.replace(/[\\/]+$/, "").toLowerCase() === savedRootPath)
+        ?? roots?.find((project) => project.name.toLowerCase() === savedProjectName);
+      // Preserve a saved selection if it is absent from enumeration. It may be
+      // temporarily unavailable or renamed, and choosing another project
+      // silently could expose the wrong project as the active workspace.
       const startupRoot = roots === null
-        ? (typeof savedRoot === "string" ? savedRoot : "")
-        : matchingRoot?.path ?? roots[0]?.path ?? "";
+        ? savedRootValue
+        : matchingRoot?.path ?? (savedRootValue.startsWith(workspaceRootValue) ? savedRootValue : roots[0]?.path || "");
+      if (roots !== null && savedRootValue && !matchingRoot) {
+        setError("The saved project folder is unavailable. Pepper kept the saved selection; reconnect it or choose another project.");
+      }
       if (roots !== null && startupRoot !== savedRoot) {
         await saveConfigValue("projectRoot", startupRoot);
       }
@@ -852,7 +1500,9 @@ export default function App() {
         if (scanProgressVisibleRef.current) {
           setScanProgress({ phase: "exports", completed: scan.completed, total: scan.total });
         }
-        setClients((current) => current.map((client) => {
+        setClients((current) => {
+          let changed = false;
+          const next = current.map((client) => {
           const update = scan.export_updates.find((item) => item.name === client.name);
           if (!update) return client;
           const keepProgress = approvalProgressActiveRef.current.has(client.name);
@@ -869,8 +1519,11 @@ export default function App() {
             : update.export_status;
           const unchanged = JSON.stringify(client.export_status) === JSON.stringify(exportStatus);
           if (unchanged && !client.exportStatusLoading) return client;
+          changed = true;
           return { ...client, export_status: exportStatus, exportStatusLoading: false };
-        }));
+          });
+          return changed ? next : current;
+        });
       } else {
         setClientListRevealedRoot(scan.project_root);
         cachedClientNamesRef.current = new Set();
@@ -1086,7 +1739,7 @@ export default function App() {
       if (message.includes(uploadCompletedPrefix)) {
         const detail = message.slice(message.indexOf(uploadCompletedPrefix) + uploadCompletedPrefix.length).trim();
         setFrameIoProgress((current) => ({ ...current, [path]: { approval_path: path, state: "share_needs_reconciliation", uploaded: 1, total: 1, message: `Video uploaded; share link needs retry. ${detail}`, share_url: null } }));
-        showToast(`Video upload completed, but the share link was not created. Retry share link on this client row; Pepper will not upload the video again. ${detail}`, "error", null);
+        showToast(`Video uploaded; the review link still needs verification. Use Send for review again to retry without uploading the video again. ${detail}`, "error", null);
       } else {
         showToast(message, "error", 8000);
       }
@@ -1108,6 +1761,37 @@ export default function App() {
     } catch (err) {
       showToast(`Could not copy Frame.io share link: ${String(err)}`, "error", 7000);
       return false;
+    }
+  };
+
+  const removeFrameIoUpload = (path: string, clientKey: string, productionProjectPath: string, version: number) => {
+    if (frameIoBusyPath === path) return;
+    setPendingFrameIoRemoval({ path, clientKey, productionProjectPath, version });
+  };
+
+  const confirmRemoveFrameIoUpload = async () => {
+    const removal = pendingFrameIoRemoval;
+    if (!removal || frameIoBusyPath === removal.path) return;
+    setPendingFrameIoRemoval(null);
+    const { path, clientKey, productionProjectPath } = removal;
+    setFrameIoBusyPath(path);
+    try {
+      await invoke("frameio_remove_upload", {
+        approvalPath: path,
+        clientId: frameIoConfig.clientId,
+        accountId: frameIoConfig.accountId,
+        projectId: frameIoConfig.projectId,
+        productionProjectPath,
+      });
+      setFrameIoProgress((current) => ({ ...current, [path]: { approval_path: path, state: "removed", uploaded: 0, total: 0, message: null, share_url: null } }));
+      showToast("Uploaded version removed from Frame.io. The local approval copy is unchanged.", "success");
+    } catch (error) {
+      showToast(String(error), "error", 8000);
+    } finally {
+      setFrameIoBusyPath(null);
+      if (projectRootRef.current === productionProjectPath) {
+        void refreshClients(productionProjectPath, false, false, false, [clientKey]).catch(console.error);
+      }
     }
   };
 
@@ -1141,6 +1825,7 @@ export default function App() {
   useEffect(() => {
     projectRootRef.current = projectRoot;
   }, [projectRoot]);
+  useEffect(() => { workspaceRootRef.current = workspaceRoot; }, [workspaceRoot]);
 
   useEffect(() => {
     try { localStorage.setItem(NOTIFICATION_STORE_KEY, JSON.stringify(notificationHistory)); }
@@ -1190,10 +1875,9 @@ export default function App() {
   }, []);
 
   useEffect(() => {
-    if (!showAdvancedMenu && !showProjectMenu) return;
+    if (!showProjectMenu) return;
     const onKey = (event: KeyboardEvent) => {
       if (event.key === "Escape") {
-        setShowAdvancedMenu(false);
         setShowProjectMenu(false);
         setProjectSearch("");
       }
@@ -1202,7 +1886,7 @@ export default function App() {
     return () => {
       window.removeEventListener("keydown", onKey);
     };
-  }, [showAdvancedMenu, showProjectMenu]);
+  }, [showProjectMenu]);
 
   const availableProjectRoots = useMemo(() => {
     const roots = [...projectRoots];
@@ -1225,7 +1909,6 @@ export default function App() {
   const frameIoConfigured = Boolean(frameIoConfig.clientId && frameIoConfig.scopes
     && frameIoConfig.accountId === PEPPER_FRAMEIO_ACCOUNT_ID
     && frameIoConfig.projectId);
-
 
   const sortedClients = useMemo(() => {
     const filtered = clients.filter((client) => showNonClients || client.status !== "Not a client");
@@ -1256,26 +1939,40 @@ export default function App() {
   const clientListReady = clientCacheLoadedRoot === projectRoot
     && (!loading || clientListRevealedRoot === projectRoot || clients.length > 0 || scanProgress?.phase !== "clients");
 
-  const isMariyaMeetsRoot = isMariyaProject(projectRoot);
+  const normalizeProjectPath = (path: string) => path.replace(/^\\\\\?\\/, "").replace(/[\\/]+/g, "\\").replace(/\\+$/, "").toLowerCase();
+  const normalizedWorkspacePath = normalizeProjectPath(workspaceRoot);
+  const normalizedProjectPath = normalizeProjectPath(projectRoot);
+  const projectPathPrefix = normalizedWorkspacePath ? `${normalizedWorkspacePath}\\` : "";
+  const currentProjectRelativePath = projectPathPrefix && normalizedProjectPath.startsWith(projectPathPrefix)
+    ? normalizedProjectPath.slice(projectPathPrefix.length).replace(/\\/g, "/")
+    : normalizedProjectPath.split("\\").pop() ?? "";
+  const currentProjectFolderName = normalizedProjectPath.split("\\").pop() ?? "";
+  const currentWorkspaceProject = workspaceConfig?.projects.find((item) => item.relativePath.replace(/[\\/]+/g, "/").toLowerCase() === currentProjectRelativePath)
+    ?? workspaceConfig?.projects.find((item) => item.name.toLowerCase() === currentProjectFolderName);
+  const projectProfile = workspaceConfig?.profiles.find((profile) => currentWorkspaceProject && profile.projectIds.some((id) => id.toLowerCase() === currentWorkspaceProject.id.toLowerCase()));
+  const profileClientTypes = projectProfile?.allowedClientTypeIds.map((id) => workspaceConfig?.clientTypes.find((type) => type.id.toLowerCase() === id.toLowerCase())).filter((type): type is NonNullable<typeof type> => Boolean(type)) ?? [];
+  const projectClientTypes = projectProfile ? profileClientTypes : [];
+  const defaultProjectClientType = projectClientTypes.find((type) => type.id.toLowerCase() === projectProfile?.defaultClientTypeId.toLowerCase())?.id ?? "";
+  const selectedWorkspaceClientType = projectClientTypes.find((type) => type.id.toLowerCase() === newClientType.toLowerCase());
+  const workspaceTypeNames = useMemo(() => Object.fromEntries((workspaceConfig?.clientTypes ?? []).map((type) => [type.id.toLowerCase(), type.name])), [workspaceConfig?.clientTypes]);
   const clientSections = useMemo(() => {
     const sections: { season: string | null; start: number; clients: ClientInfo[] }[] = [];
     visibleClients.forEach((client, index) => {
-      const season = isMariyaMeetsRoot ? client.season ?? null : null;
+      const season = client.season ?? null;
       const last = sections[sections.length - 1];
       if (last && last.season === season) last.clients.push(client);
       else sections.push({ season, start: index, clients: [client] });
     });
     return sections;
-  }, [visibleClients, isMariyaMeetsRoot]);
+  }, [visibleClients]);
   useEffect(() => {
     setShowNewClientForm(false);
     setNewClientName("");
-    setNewClientType(defaultClientType(projectRoot));
-    setCustomClientType("");
+    setNewClientType(defaultProjectClientType);
     setHuddleTemplate("VIDEO_CALL");
-  }, [projectRoot, isMariyaMeetsRoot]);
-  const needsMariyaSeason = isMariyaMeetsRoot && newClientType === "MARIYAMEETS";
-  const mariyaSeasons = useMariyaSeasons(projectRoot, showNewClientForm && needsMariyaSeason);
+  }, [projectRoot, defaultProjectClientType]);
+  const needsProjectSeason = Boolean(selectedWorkspaceClientType?.features.includes("seasons"));
+  const projectSeasons = useProjectSeasons(projectRoot, showNewClientForm && needsProjectSeason);
 
   const advancedStats = useMemo(() => {
     const clientsWithExports = clients.filter((client) =>
@@ -1341,26 +2038,8 @@ export default function App() {
     sortableClientsRef.current = sortableClients;
   }, [sortableClients]);
 
-  const resolveDropClient = () => {
-    if (hoverClientRef.current) return hoverClientRef.current;
-    const cursor = lastCursorRef.current;
-    if (!cursor) return null;
-    const rows = Array.from(
-      document.querySelectorAll<HTMLElement>(".droppable-row[data-client]")
-    );
-    for (const row of rows) {
-      const rect = row.getBoundingClientRect();
-      if (
-        cursor.x >= rect.left &&
-        cursor.x <= rect.right &&
-        cursor.y >= rect.top &&
-        cursor.y <= rect.bottom
-      ) {
-        return row.dataset.client ?? null;
-      }
-    }
-    return null;
-  };
+  const sortDropRef = useRef(queueClientDrop);
+  useLayoutEffect(() => { sortDropRef.current = queueClientDrop; });
 
   useEffect(() => {
     let unlisten: (() => void) | null = null;
@@ -1374,13 +2053,28 @@ export default function App() {
           return;
         }
         if (screen !== "sort") return;
+        const dragEvent = ++nativeDragEventRef.current;
         if (payload.type === "leave") {
+          dragSessionRef.current++;
+          setDragKinds(null);
           setDragTarget(null);
           hoverClientRef.current = null;
           setDragActive(false);
           return;
         }
 
+        if (payload.type === "enter") {
+          const session = ++dragSessionRef.current;
+          setDragKinds(null);
+          void invoke<string[]>("media_drop_kinds", { paths: payload.paths }).then(kinds => {
+            if (session === dragSessionRef.current) setDragKinds(kinds);
+          }).catch(error => {
+            if (session === dragSessionRef.current) {
+              setDragKinds([]);
+              showToast(`Could not inspect dropped files: ${String(error)}`, "error");
+            }
+          });
+        }
         setDragActive(true);
         if (DEBUG_ENABLED) {
           setDebugInfo({
@@ -1403,47 +2097,25 @@ export default function App() {
           }, 8000);
         }
 
-        // Hover highlighting is driven by cursor polling for accuracy.
-
+        const scale = await appWindow.scaleFactor();
+        if (dragEvent !== nativeDragEventRef.current) return;
+        const point = { x: payload.position.x / scale, y: payload.position.y / scale };
+        const target = mediaDropTarget(point.x, point.y);
+        hoverClientRef.current = target.client ?? null;
+        setDragTarget(target.client ?? null);
         if (payload.type === "drop") {
-          const dropClient = resolveDropClient();
+          dragSessionRef.current++;
           setDragTarget(null);
+          hoverClientRef.current = null;
           setDragActive(false);
-          if (!dropClient) {
-            setError("Drop files on a client row.");
+          if (!target.client || (!target.folder && !target.mixed)) {
+            showToast("Drop files on a media folder.", "info");
             return;
           }
-          const client = sortableClientsRef.current.find(
-            (entry) => entry.name === dropClient
-          );
-          if (!client) {
-            setError("Drop target not found.");
-            return;
+          const client = sortableClientsRef.current.find(entry => entry.name === target.client);
+          if (client && payload.paths.length) {
+            void sortDropRef.current(client, payload.paths, undefined, target.folder);
           }
-          if (!payload.paths || payload.paths.length === 0) {
-            setError("No files were dropped.");
-            return;
-          }
-          const allowed = acceptedForMode(mode);
-          if (allowed) {
-            const filtered = payload.paths.filter((path) => {
-              const ext = getExtension(path);
-              return !ext || allowed.includes(ext);
-            });
-            const skipped = payload.paths.length - filtered.length;
-            if (filtered.length === 0) {
-              setError(
-                `Mode ${mode} only accepts: ${allowed.join(", ")}. Files dropped: ${payload.paths
-                  .map(getExtension)
-                  .filter(Boolean)
-                  .join(", ") || "no extensions"}`
-              );
-              return;
-            }
-            handleSortDrop(client, filtered, { queued: filtered.length, skipped });
-            return;
-          }
-          handleSortDrop(client, payload.paths, { queued: payload.paths.length, skipped: 0 });
         }
       });
       unlisten = unlistenFn;
@@ -1473,6 +2145,7 @@ export default function App() {
           x: (cursor.x - innerPos.x) / scale,
           y: (cursor.y - innerPos.y) / scale,
         };
+        if (cancelled) return;
         const adjusted = { x: local.x, y: local.y + CURSOR_Y_OFFSET };
         lastCursorRef.current = local;
         if (DEBUG_ENABLED) {
@@ -1506,12 +2179,9 @@ export default function App() {
             setDebugInfo(null);
           }, 8000);
         }
-        const target = document.elementFromPoint(adjusted.x, adjusted.y);
-        const row = target?.closest?.(".droppable-row") as HTMLElement | null;
-        if (row?.dataset?.client) {
-          hoverClientRef.current = row.dataset.client;
-          setDragTarget(row.dataset.client);
-        }
+        const drop = mediaDropTarget(local.x, local.y);
+        hoverClientRef.current = drop.client ?? null;
+        setDragTarget(drop.client ?? null);
       } catch {
         // ignore polling errors
       } finally {
@@ -1730,8 +2400,7 @@ export default function App() {
     }
     let cancelled = false;
     const pollApprovalProgress = async () => {
-      if (cancelled || approvalProgressPollInFlightRef.current
-        || document.visibilityState !== "visible" || !document.hasFocus()) return;
+      if (cancelled || approvalProgressPollInFlightRef.current) return;
       const clientNames = clientsRef.current
         .filter((client) => client.status !== "Not a client")
         .map((client) => client.name);
@@ -1765,7 +2434,9 @@ export default function App() {
           }
         }
         approvalProgressActiveRef.current = nextActive;
-        setClients((current) => current.map((client) => {
+        setClients((current) => {
+          let changed = false;
+          const next = current.map((client) => {
           const progress = byClient.get(client.name);
           const completing = approvalProgressCompletionPendingRef.current.has(client.name);
           const inProgress = Boolean(progress) || completing;
@@ -1777,6 +2448,7 @@ export default function App() {
           if (client.export_status.approval_in_progress === inProgress
             && client.export_status.approval_progress_phase === phase
             && client.export_status.approval_progress_version === pendingVersion) return client;
+          changed = true;
           return {
             ...client,
             export_status: {
@@ -1786,7 +2458,9 @@ export default function App() {
               approval_progress_version: pendingVersion,
             },
           };
-        }));
+          });
+          return changed ? next : current;
+        });
         if (approvalProgressRefreshPendingRef.current.size
           && !busyRef.current && clientsScansInFlightRef.current === 0) {
           const completedClients = Array.from(approvalProgressRefreshPendingRef.current);
@@ -1866,10 +2540,19 @@ export default function App() {
     setProjectCreateError("");
     try {
       const created = await invoke<ProjectRootOption>("create_project_folder", {
+        workspaceRoot,
         showName,
         year: projectYear,
       });
-      const roots = await invoke<ProjectRootOption[]>("list_project_roots");
+      if (workspaceConfig) {
+        try {
+          const updatedConfig = await invoke<WorkspaceConfig>("workspace_register_project", { workspaceRoot, projectPath: created.path, name: created.name });
+          await handleWorkspaceSaved(workspaceRoot, updatedConfig);
+        } catch (registrationError) {
+          setError(`Project folder created, but it could not be added to shared workspace settings: ${String(registrationError)}`);
+        }
+      }
+      const roots = await invoke<ProjectRootOption[]>("list_project_roots", { workspaceRoot });
       setProjectRoots(roots);
       setShowProjectCreate(false);
       setShowProjectMenu(false);
@@ -1878,6 +2561,60 @@ export default function App() {
       setProjectCreateError(String(err));
     } finally {
       setProjectCreateBusy(false);
+    }
+  };
+
+  const handleWorkspaceSaved = async (root: string, config: WorkspaceConfig) => {
+    if (root.replace(/[\\/]+$/, "").toLowerCase() !== workspaceRootRef.current.replace(/[\\/]+$/, "").toLowerCase()) return;
+    const firstSetup = workspaceSetupRequired;
+    setWorkspaceConfig(config);
+    setProjectShowCatalog({ path: "Shared workspace", shows: config.projectShowNames.map((name) => ({ name })) });
+    setWorkspaceSetupRequired(false);
+    setWorkspaceDiscovery({ status: "valid", root, config, writable: workspaceDiscovery?.writable ?? true, message: null, lock: null });
+    await CONFIG_STORE.set(`workspaceCache:${root.toLowerCase()}`, config);
+    await CONFIG_STORE.set(`workspaceResourceMappings:${config.workspaceId}`, workspaceLocalMappings);
+    await CONFIG_STORE.save();
+    if (firstSetup) setShowAdvancedMenu(false);
+  };
+
+  const handleWorkspaceRootSelected = async (nextRoot: string) => {
+    const root = nextRoot.trim().replace(/[\\/]+$/, "");
+    if (!root || root.replace(/[\\/]+$/, "").toLowerCase() === workspaceRootRef.current.replace(/[\\/]+$/, "").toLowerCase()) return;
+    setWorkspaceRoot(root);
+    workspaceRootRef.current = root;
+    setWorkspaceDiscovery(null);
+    setWorkspaceConfig(null);
+    setWorkspaceLocalMappings({});
+    await CONFIG_STORE.set("workspaceRoot", root);
+    await CONFIG_STORE.save();
+    const [discovery, roots] = await Promise.all([
+      invoke<WorkspaceDiscovery>("workspace_discover", { root }).catch((cause) => ({ status: "unavailable", root, config: null, writable: false, message: String(cause), lock: null } as WorkspaceDiscovery)),
+      invoke<ProjectRootOption[]>("list_project_roots", { workspaceRoot: root }).catch((cause) => { setError(`Unable to load projects from this workspace: ${String(cause)}`); return null; }),
+    ]);
+    setWorkspaceDiscovery(discovery);
+    if (discovery.status === "valid" && discovery.config) {
+      setWorkspaceConfig(discovery.config);
+      setProjectShowCatalog({ path: "Shared workspace", shows: discovery.config.projectShowNames.map((name) => ({ name })) });
+      setWorkspaceSetupRequired(false);
+      const mappings = await CONFIG_STORE.get<Record<string, string>>(`workspaceResourceMappings:${discovery.config.workspaceId}`).catch(() => ({}));
+      setWorkspaceLocalMappings(mappings ?? {});
+      await CONFIG_STORE.set(`workspaceCache:${root.toLowerCase()}`, discovery.config);
+    } else if (discovery.status === "absent") {
+      setWorkspaceSetupRequired(true);
+      setSettingsSection("workspace");
+      setShowAdvancedMenu(true);
+    } else {
+      const cached = await CONFIG_STORE.get<WorkspaceConfig>(`workspaceCache:${root.toLowerCase()}`).catch(() => null);
+      setWorkspaceConfig(cached ?? null);
+      setWorkspaceSetupRequired(false);
+      setError(discovery.message ?? "Workspace settings could not be loaded.");
+    }
+    if (roots) {
+      setProjectRoots(roots);
+      const currentParts = projectRootRef.current.split(/[\\/]/).filter(Boolean);
+      const currentName = currentParts[currentParts.length - 1]?.toLowerCase();
+      const nextProject = roots.find((item) => item.name.toLowerCase() === currentName)?.path ?? roots[0]?.path ?? "";
+      await changeProjectRoot(nextProject);
     }
   };
 
@@ -1952,21 +2689,25 @@ export default function App() {
       return;
     }
     const baseName = newClientName.trim();
-    if (!baseName || (needsMariyaSeason && (mariyaSeasons.loading || mariyaSeasons.creating || !mariyaSeasons.season))) return;
-    const customType = normalizeClientInput(customClientType).toUpperCase();
-    if (newClientType === "CUSTOM" && !customType) {
-      setError("Enter a custom mode name.");
+    if (!workspaceConfig || workspaceDiscovery?.status !== "valid") {
+      setError("A validated shared workspace configuration is required before creating clients.");
       return;
     }
-    const normalized = `${normalizeClientInput(baseName)}_${newClientType === "CUSTOM" ? customType : newClientType}`;
+    if (!currentWorkspaceProject) {
+      setError(`Project folder "${projectRoot.split(/[\\/]/).filter(Boolean).pop() ?? projectRoot}" is missing from the shared workspace project catalog.`);
+      return;
+    }
+    if (!projectProfile) {
+      setError(`No workspace profile is assigned to "${currentWorkspaceProject.name}". Assign it in Workspace settings > Project profiles.`);
+      return;
+    }
+    if (!projectClientTypes.length) {
+      setError(`Workspace profile "${projectProfile.name}" has no valid client types assigned.`);
+      return;
+    }
+    if (!baseName || (needsProjectSeason && (projectSeasons.loading || projectSeasons.creating || !projectSeasons.season))) return;
+    const normalized = `${normalizeClientInput(baseName)}_${newClientType.toUpperCase()}`;
     if (!normalized) return;
-    const parsed = parseClientLabel(normalized);
-    if (!parsed.type && newClientType !== "CUSTOM") {
-      setError(
-        "Client name must include a valid client mode."
-      );
-      return;
-    }
 
     setCreatingClient(true);
     setError(null);
@@ -1975,12 +2716,12 @@ export default function App() {
         projectRoot,
         clientName: normalized,
         clientType: newClientType,
-        season: needsMariyaSeason ? mariyaSeasons.season : null,
-        huddleTemplate: newClientType === "HUDDLE" ? huddleTemplate : null,
+        season: needsProjectSeason ? projectSeasons.season : null,
+        huddleTemplate: (selectedWorkspaceClientType?.featureOptions.premiere_project?.length ?? 0) > 1 ? huddleTemplate : null,
+        resourceMappings: workspaceLocalMappings,
       });
       setNewClientName("");
-      setNewClientType(defaultClientType(projectRoot));
-      setCustomClientType("");
+      setNewClientType(defaultProjectClientType);
       setHuddleTemplate("VIDEO_CALL");
       setShowNewClientForm(false);
         await refreshClients(undefined, false);
@@ -2007,11 +2748,12 @@ export default function App() {
     const exportStatus = client.export_status;
     if (!exportStatus.latest_filename || exportStatus.issue) return;
     setPublishingClientPath(client.path);
-    setPublishingStage("publishing");
+    setPublishProgress({ client_path: client.path, stage: "main", completed: 0, total: 0 });
     setPromotionError("");
     setError(null);
     try {
       const selectedClips=promotionClips.filter(clip=>promotionClipSelection.has(clip.name)).map(({name,size,modified_ms,sha256})=>({name,size,modified_ms,sha256}));
+      setPendingPromotion(null);
       const message = await invoke<string>("promote_latest_export", {clientPath:client.path,expectedFilename:exportStatus.latest_filename,selectedClips});
       setPublishFailedClientPaths((current) => {
         const next = new Set(current);
@@ -2020,7 +2762,6 @@ export default function App() {
       });
       showToast(message, "success");
       setPendingPromotion(null);
-      setPublishingStage("refreshing");
       try {
         await refreshClients(projectRoot, false, true, false, [client.name]);
       } catch (err) {
@@ -2032,7 +2773,7 @@ export default function App() {
       void refreshClients(projectRoot, false, true, false, [client.name]).catch((refreshError) => console.warn("Could not refresh failed publish status", refreshError));
     } finally {
       setPublishingClientPath(null);
-      setPublishingStage(null);
+      setPublishProgress(null);
     }
   };
 
@@ -2049,7 +2790,6 @@ export default function App() {
 
   const handleUnpublish = async (client: ClientInfo) => {
     setPublishingClientPath(client.path);
-    setPublishingStage("publishing");
     setError(null);
     try {
       let message = "Published override removed";
@@ -2063,14 +2803,12 @@ export default function App() {
         setManualPublishedPaths(next);
       }
       showToast(message, "success");
-      setPublishingStage("refreshing");
       await refreshClients(undefined, false, true);
     } catch (error) {
       setError(`Could not unpublish client: ${String(error)}`);
       void refreshClients(undefined, false, true).catch((refreshError) => console.warn("Could not refresh client after unpublish failure", refreshError));
     } finally {
       setPublishingClientPath(null);
-      setPublishingStage(null);
     }
   };
 
@@ -2095,12 +2833,55 @@ export default function App() {
       }));
   };
 
-  const handleSortDrop = async (
+  function cancelClientDrop(clientPath: string) {
+    const next = { ...pendingClientDropsRef.current };
+    delete next[clientPath];
+    pendingClientDropsRef.current = next;
+    setPendingClientDrops(next);
+  }
+
+  function updateClientDropChoices(clientPath: string, choices: DropChoices) {
+    const pending = pendingClientDropsRef.current[clientPath];
+    if (!pending) return;
+    pendingClientDropsRef.current = { ...pendingClientDropsRef.current, [clientPath]: { ...pending, choices } };
+    setPendingClientDrops(pendingClientDropsRef.current);
+  }
+
+  function confirmClientDrop(clientPath: string, choices: DropChoices) {
+    const pending = pendingClientDropsRef.current[clientPath];
+    if (!pending?.preview || pending.error || busyRef.current) return;
+    const groups = pending.preview.groups ?? [];
+    if (groups.some(group => !choices[group.kind])) return;
+    const routes = groups.map(group => ({ folder: choices[group.kind], paths: group.paths }));
+    cancelClientDrop(clientPath);
+    void handleSortDrop(pending.client, pending.preview.paths, undefined, routes.length ? undefined : pending.folder, pending.projectRoot, routes.length ? routes : undefined);
+  }
+
+  async function queueClientDrop(client: ClientInfo, paths: string[], _meta?: { queued: number; skipped: number }, folder?: string) {
+    if (busyRef.current || !paths.length) return;
+    const pending: PendingClientDrop = { id: crypto.randomUUID(), client, projectRoot: projectRootRef.current, paths, folder: folder ?? "", preview: null, error: null, choices: {} };
+    pendingClientDropsRef.current = { ...pendingClientDropsRef.current, [client.path]: pending };
+    setPendingClientDrops(pendingClientDropsRef.current);
+    try {
+      const preview = await invoke<DropPreview>("media_drop_preview", { clientPath: client.path, destinationFolder: folder ?? null, paths });
+      if (pendingClientDropsRef.current[client.path]?.id !== pending.id) return;
+      pendingClientDropsRef.current = { ...pendingClientDropsRef.current, [client.path]: { ...pending, preview } };
+    } catch (error) {
+      if (pendingClientDropsRef.current[client.path]?.id !== pending.id) return;
+      pendingClientDropsRef.current = { ...pendingClientDropsRef.current, [client.path]: { ...pending, error: String(error) } };
+    }
+    setPendingClientDrops(pendingClientDropsRef.current);
+  }
+
+  async function handleSortDrop(
     client: ClientInfo,
     paths: string[],
-    meta?: { queued: number; skipped: number }
-  ) => {
-    let root = projectRoot;
+    meta?: { queued: number; skipped: number },
+    destinationFolder?: string,
+    rootOverride?: string,
+    destinationRoutes?: { folder: string; paths: string[] }[],
+  ) {
+    let root = rootOverride ?? projectRoot;
     if (!root) {
       try {
         await CONFIG_STORE.init();
@@ -2121,8 +2902,10 @@ export default function App() {
       setError("No files detected in drop.");
       return;
     }
-    if (busy) return;
+    if (busyRef.current) return;
+    busyRef.current = true;
 
+    setSortingClientPath(client.path);
     setBusy(true);
     setError(null);
     if (meta) {
@@ -2131,11 +2914,13 @@ export default function App() {
       const queued = paths.length;
       setQueueMeta({ queued, skipped: 0 });
     }
-    setProgress({ processed: 0, total: paths.length, current: "", result: "" });
+    setProgress({ processed: 0, total: paths.length, current: "", result: "", bytes_done: 0, bytes_total: 0 });
     try {
       const result = await invoke<SortResult>("sort_files", {
         projectRoot: root,
         clientName: client.name,
+        destinationFolder,
+        destinationRoutes,
         mode,
         operation: "move",
         dryRun: false,
@@ -2150,18 +2935,21 @@ export default function App() {
         result.failed ? "error" : "success",
         5000
       );
-      await refreshClients(undefined, false);
+      if (projectRootRef.current === root) await refreshClients(root, false);
     } catch (err) {
       setError(String(err));
       showToast(`Transfer failed: ${String(err)}`, "error", 5000);
     } finally {
+      setSortingClientPath(null);
+      busyRef.current = false;
       setBusy(false);
       setQueueMeta(null);
       if (pendingRefreshRef.current) {
         pendingRefreshRef.current = false;
         watcherRefreshAllRef.current = false;
         watcherChangedClientsRef.current.clear();
-        await refreshClients(root, false);
+        const visibleRoot = projectRootRef.current;
+        if (visibleRoot) await refreshClients(visibleRoot, false);
       }
     }
   };
@@ -2218,14 +3006,7 @@ export default function App() {
   };
 
   const handleOpenFinal = async (client: ClientInfo) => {
-    const filename = client.export_status.final_filename;
-    if (!filename) return;
-    const path = `${client.path.replace(/[\\/]+$/, "")}\\04_FINAL\\${filename}`;
-    try {
-      await openPath(path);
-    } catch (err) {
-      setError(`Failed to open FINAL video: ${path}. ${String(err)}`);
-    }
+    await handleOpenFolder(`${client.path.replace(/[\\/]+$/, "")}\\04_FINAL`);
   };
 
   const handleLogOpen = async () => {
@@ -2248,28 +3029,13 @@ export default function App() {
     const paths = files
       .map((file) => (file as unknown as { path?: string }).path)
       .filter((path): path is string => typeof path === "string");
-    const allowed = acceptedForMode(mode);
-    if (allowed) {
-      const filtered = paths.filter((path) => {
-        const ext = getExtension(path);
-        return !ext || allowed.includes(ext);
-      });
-      const skipped = paths.length - filtered.length;
-      if (filtered.length === 0) {
-        setError(
-          `Mode ${mode} only accepts: ${allowed.join(", ")}. Files dropped: ${paths
-            .map(getExtension)
-            .filter(Boolean)
-            .join(", ") || "no extensions"}`
-        );
-        return;
-      }
-      setDragTarget(null);
-      handleSortDrop(client, filtered, { queued: filtered.length, skipped });
-      return;
-    }
+    const target = mediaDropTarget(event.clientX, event.clientY);
     setDragTarget(null);
-    handleSortDrop(client, paths, { queued: paths.length, skipped: 0 });
+    hoverClientRef.current = null;
+    setDragActive(false);
+    if ((target.folder || target.mixed) && paths.length) {
+      void queueClientDrop(client, paths, undefined, target.folder);
+    }
   };
 
   const handleSortDragOver = async (event: DragEvent<HTMLDivElement>) => {
@@ -2298,6 +3064,10 @@ export default function App() {
       // ignore focus errors
     }
   };
+
+  const clientRowActions = useClientRowActions({
+    confirmClientDrop, updateClientDropChoices, cancelClientDrop, toggleClientExpanded, openPepperContextMenu, handleOpenFolder, copyFromContextMenu, handleQuickCreateSession, refreshClients, handleUnpublish, showToast, toggleManualPublished, toggleStatusWarnings, handleSortDragOver, setDragTarget, handleDropEvent, setPendingPromotion, handleFixClient, handleOpenFinal, handleOpenFileLocation, setSelectedVersionByClient, openFrameIoSettings, setPendingFrameIoUpload, uploadApprovalToFrameIo, copyFrameIoShareLink, removeFrameIoUpload,
+  });
 
   return (
     <div
@@ -2400,7 +3170,7 @@ export default function App() {
             onClick={() => {
               setShowNotificationMenu(false);
               setSettingsSection("general");
-              setShowAdvancedMenu((current) => !current);
+              setShowAdvancedMenu(true);
             }}
           >
             <Settings size={17} aria-hidden="true" />
@@ -2441,7 +3211,7 @@ export default function App() {
         </div>
       )}
 
-      {ingestOpen ? <IngestWorkspace projectRoot={projectRoot} projectTitle={formatProjectName(projectRoot.split(/[\\/]/).filter(Boolean).slice(-1)[0] || "Import media")} clients={clients} onBack={()=>setIngestOpen(false)} onCreateClient={async(name,clientMode,template,season)=>{await invoke("create_client",{projectRoot,clientName:`${normalizeClientInput(name)}_${clientMode}`,clientType:clientMode,season:season||null,huddleTemplate:clientMode==='HUDDLE'?template:null});await refreshClients(undefined,false);}} /> : <div className="app-content">
+      {ingestOpen ? <IngestWorkspace projectRoot={projectRoot} projectTitle={formatProjectName(projectRoot.split(/[\\/]/).filter(Boolean).slice(-1)[0] || "Import media")} clients={clients} clientTypes={projectClientTypes} defaultClientType={defaultProjectClientType} onActivityChange={setIngestOperationBusy} onBack={()=>setIngestOpen(false)} onCreateClient={async(name,clientMode,template,season)=>{await invoke("create_client",{projectRoot,clientName:`${normalizeClientInput(name)}_${clientMode.toUpperCase()}`,clientType:clientMode,season:season||null,huddleTemplate:(workspaceConfig?.clientTypes.find(type=>type.id===clientMode)?.featureOptions.premiere_project?.length??0)>1?template:null,resourceMappings:workspaceLocalMappings});await refreshClients(undefined,false);}} /> : <div className="app-content">
         <section className="panel">
           <div className="panel-project-root">
             <div className="project-switcher">
@@ -2689,42 +3459,27 @@ export default function App() {
                 </label>
                 <fieldset className="new-client-types" disabled={creatingClient}><legend>Client type</legend>
                 <div className="inline-types">
-                  {availableClientTypes(projectRoot).map((type) => (
+                  {projectClientTypes.map((type) => (
                     <button
-                      key={type}
+                      key={type.id}
                       type="button"
                       className={`type-chip ${
-                        newClientType === type ? "selected" : ""
-                      } ${type.toLowerCase()}`}
-                      aria-pressed={newClientType === type}
-                      onClick={() => setNewClientType(type)}
+                        newClientType === type.id ? "selected" : ""
+                      } ${type.id.toLowerCase()}`}
+                      aria-pressed={newClientType === type.id}
+                      onClick={() => setNewClientType(type.id)}
                     >
-                      {clientTypeLabel(type)}
+                      {clientTypeLabel(type.id, workspaceTypeNames)}
                     </button>
                   ))}
-                  {!isMariyaMeetsRoot && !isFixedClientTypeProject(projectRoot) && <button
-                    type="button"
-                    className={`type-chip custom ${newClientType === "CUSTOM" ? "selected" : ""}`}
-                    aria-pressed={newClientType === "CUSTOM"}
-                    onClick={() => setNewClientType("CUSTOM")}
-                  >
-                    CUSTOM
-                  </button>}
                 </div>
+                {workspaceConfig && !currentWorkspaceProject && <p className="client-type-config-message" role="alert">This project is missing from the shared project catalog.</p>}
+                {currentWorkspaceProject && !projectProfile && <p className="client-type-config-message" role="alert">Assign this project to a profile in Workspace settings.</p>}
+                {projectProfile && !projectClientTypes.length && <p className="client-type-config-message" role="alert">This profile has no valid client types assigned.</p>}
                 </fieldset>
-                <div className={`client-extra ${needsMariyaSeason ? "has-season" : ""} ${newClientType === "CUSTOM" || newClientType === "HUDDLE" || needsMariyaSeason ? "has-options" : ""}`}>
-                {needsMariyaSeason && <MariyaSeasonSelect selection={mariyaSeasons} />}
-                {newClientType === "CUSTOM" && (
-                  <input
-                    className="inline-input custom-mode-input"
-                    placeholder="Custom mode (e.g. WORKSHOP)"
-                    aria-label="Custom client type"
-                    disabled={creatingClient}
-                    value={customClientType}
-                    onChange={(event) => setCustomClientType(event.target.value)}
-                  />
-                )}
-                {newClientType === "HUDDLE" && (
+                <div className={`client-extra ${needsProjectSeason ? "has-season" : ""} ${needsProjectSeason || (selectedWorkspaceClientType?.featureOptions.premiere_project?.length ?? 0) > 1 ? "has-options" : ""}`}>
+                {needsProjectSeason && <ProjectSeasonSelect selection={projectSeasons} />}
+                {(selectedWorkspaceClientType?.featureOptions.premiere_project?.length ?? 0) > 1 && (
                   <InterviewTypeSelect value={huddleTemplate} onChange={setHuddleTemplate} disabled={creatingClient} />
                 )}
                 </div>
@@ -2737,8 +3492,7 @@ export default function App() {
                     title="Cancel"
                     onClick={() => {
                       setNewClientName("");
-                      setNewClientType(defaultClientType(projectRoot));
-                      setCustomClientType("");
+                      setNewClientType(defaultProjectClientType);
                       setHuddleTemplate("VIDEO_CALL");
                       setShowNewClientForm(false);
                     }}
@@ -2750,7 +3504,7 @@ export default function App() {
                     className="primary new-client-submit"
                     aria-label="Create client"
                     title="Create client"
-                    disabled={creatingClient || !newClientName.trim() || (newClientType === "CUSTOM" && !customClientType.trim()) || (needsMariyaSeason && (mariyaSeasons.loading || mariyaSeasons.creating || !mariyaSeasons.season))}
+                    disabled={creatingClient || !newClientName.trim() || !workspaceConfig || workspaceDiscovery?.status !== "valid" || !currentWorkspaceProject || !projectProfile || !projectClientTypes.length || (needsProjectSeason && (projectSeasons.loading || projectSeasons.creating || !projectSeasons.season))}
                   >
                     {creatingClient ? <LoaderCircle size={14} className="spin" aria-hidden="true" /> : <Plus size={14} aria-hidden="true" />} {creatingClient ? "Creating?" : "Create client"}
                   </button>
@@ -2789,504 +3543,40 @@ export default function App() {
               </div>
             )}
             {clientListReady && clientSections.map(section => (
-              <section key={section.clients[0].path} className={`client-section ${isMariyaMeetsRoot ? "client-season-group" : ""}`} aria-label={section.season?.replace(/^SEASON\s+/i, "Season ") || "Clients"}>
-              {section.clients.map((client, sectionIndex) => {
-                const index = section.start + sectionIndex;
-                const label = parseClientLabel(client.name);
-                const clientIsCached = cachedClientNames.has(client.name);
-                const droppable = screen === "sort" && client.status !== "Not a client" && !clientIsCached;
-                const exports = client.export_status;
-                const version = exports.latest_version ?? exports.final_version;
-                const sortedApprovalVersions = [...exports.approval_versions].sort((left, right) => {
-                  const leftSuperseded = left.relative_path.split(/[\\/]/).some((part) => part.toLowerCase() === "superseded");
-                  const rightSuperseded = right.relative_path.split(/[\\/]/).some((part) => part.toLowerCase() === "superseded");
-                  return right.version - left.version
-                    || Number(leftSuperseded) - Number(rightSuperseded)
-                    || Date.parse(right.added_at) - Date.parse(left.added_at)
-                    || right.filename.localeCompare(left.filename);
-                });
-                const latestApprovalVersion = sortedApprovalVersions[0];
-                const creatingApprovalVersion = exports.approval_in_progress
-                  && exports.approval_progress_version !== null
-                  && !sortedApprovalVersions.some((approval) => approval.version === exports.approval_progress_version);
-                const latestApprovalIsRendering = exports.approval_in_progress
-                  && exports.approval_progress_version !== null
-                  && latestApprovalVersion?.version === exports.approval_progress_version;
-                const latestApprovalPath = latestApprovalVersion
-                  ? `${client.path.replace(/[\\/]+$/, "")}\\03_EXPORTS\\${latestApprovalVersion.relative_path.replace(/[\\/]+/g, "\\")}`
-                  : null;
-                const latestFrameIoProgress = latestApprovalPath ? frameIoProgress[latestApprovalPath] : undefined;
-                const latestFrameIoRecord = latestApprovalVersion?.frameio;
-                const latestFrameIoRecordMatchesDestination = latestFrameIoRecord?.destination_account_id === frameIoConfig.accountId
-                  && latestFrameIoRecord?.destination_project_id === frameIoConfig.projectId;
-                const latestFrameIoState = latestFrameIoProgress?.state ?? (latestFrameIoRecordMatchesDestination ? latestFrameIoRecord?.state : undefined);
-                const latestFrameIoBusy = latestApprovalPath !== null && frameIoBusyPath === latestApprovalPath;
-                const latestFrameIoShareUrl = latestFrameIoProgress?.state === "ready" && latestFrameIoProgress.share_url
-                  ? latestFrameIoProgress.share_url
-                  : latestFrameIoBusy ? null : latestFrameIoProgress?.share_url ?? (latestFrameIoRecordMatchesDestination ? latestFrameIoRecord?.share_url : null);
-                const latestFrameIoShareRetryAvailable = latestFrameIoState === "share_needs_reconciliation"
-                  || latestFrameIoState === "creating_share"
-                  || (latestFrameIoState === "ready" && latestFrameIoRecordMatchesDestination && !latestFrameIoRecord?.share_url);
-                const latestFrameIoHasUnfinishedJob = Boolean(latestFrameIoState && latestFrameIoState !== "ready"
-                  && !latestFrameIoBusy && !latestFrameIoShareRetryAvailable);
-                const uploadPercent = latestFrameIoProgress && latestFrameIoProgress.total > 0
-                  ? Math.max(0, Math.min(99, Math.floor(latestFrameIoProgress.uploaded / latestFrameIoProgress.total * 100)))
-                  : null;
-                const frameIoUploadLabel = latestFrameIoState === "uploading"
-                  ? uploadPercent !== null ? `Uploading ${uploadPercent}%` : "Uploading…"
-                  : latestFrameIoState === "processing" ? "Processing on Frame.io…"
-                    : latestFrameIoState === "creating_version_stack" ? "Adding version…"
-                      : latestFrameIoState === "updating_share" ? "Updating share link…"
-                        : latestFrameIoState === "creating_share" ? "Creating share link…"
-                          : latestFrameIoState === "finalizing_review" ? "Preparing review link…"
-                            : latestFrameIoState === "preparing" ? "Preparing upload…" : "Sending for review…";
-                const latestApprovalShared = latestApprovalVersion?.version === exports.latest_version
-                  && (latestFrameIoState === "ready" || Boolean(latestFrameIoShareUrl));
-                const expanded = expandedClients.has(client.name);
-                const manuallyPublished = Boolean(manualPublishedPaths[client.path]);
-                const warningsSuppressed = Boolean(suppressedStatusPaths[client.path]);
-                const published = manuallyPublished || isFinalised(client);
-                const publishFailed = exports.publish_failed || publishFailedClientPaths.has(client.path);
-                const cleanExportInProgress = exports.approval_in_progress
-                  && exports.approval_progress_phase?.toLowerCase() === "waiting for export to stabilize";
-                const exportProgressLabel = cleanExportInProgress
-                  ? "Clean export in progress"
-                  : "Approval export in progress";
-                const exportLabel = manuallyPublished
-                  ? "FINAL"
-                  : client.exportStatusLoading
-                  ? "Loading exports…"
-                  : exports.approval_in_progress
-                    ? exportProgressLabel
-                  : exports.issue
-                  ? "Check exports"
-                  : published
-                    ? "FINAL"
-                    : exports.latest_filename
-                      ? exports.final_filename
-                        ? exports.final_version !== null && exports.latest_version !== null && exports.final_version < exports.latest_version
-                          ? "FINAL outdated" : "FINAL unverified"
-                        : latestApprovalShared ? "Shared"
-                          : exports.approval_ready ? "Approval ready" : "Export ready"
-                      : "Awaiting export";
-                const exportNeedsAttention = Boolean(
-                  exports.issue || exportLabel === "FINAL outdated" || exportLabel === "FINAL unverified"
-                );
-                const exportDisplayVersion = exports.approval_in_progress
-                  ? exports.approval_progress_version ?? version
-                  : latestApprovalVersion?.version ?? version;
-                const exportStatusSummary = exportDisplayVersion !== null && exportLabel !== "FINAL"
-                  ? (
-                    <span className="export-status-summary">
-                      <span className="version-label export-status-version">V{exportDisplayVersion}</span>
-                      <span className="export-status-label">{exportLabel}</span>
-                    </span>
-                  )
-                  : <span className="export-status-label">{exportLabel}</span>;
-                const tooltipVersionNumbers = Array.from(new Set([
-                  ...sortedApprovalVersions.map((approval) => approval.version),
-                  ...(creatingApprovalVersion && exports.approval_progress_version !== null
-                    ? [exports.approval_progress_version]
-                    : []),
-                ])).sort((left, right) => right - left);
-                const versionCreatedAt = exports.versions
-                  .map((item) => Date.parse(item.added_at))
-                  .filter(Number.isFinite);
-                const firstVersionAt = versionCreatedAt.length ? Math.min(...versionCreatedAt) : null;
-                const finalPublishedAt = exports.final_published_at ? Date.parse(exports.final_published_at) : Number.NaN;
-                const timeToFinal = firstVersionAt !== null
-                  && Number.isFinite(finalPublishedAt)
-                  && finalPublishedAt >= firstVersionAt
-                  ? formatAverageDuration(finalPublishedAt - firstVersionAt)
-                  : null;
-                const publishedVersionDetails = !manuallyPublished && isFinalised(client)
-                  ? [timeToFinal && `Time from first version to FINAL: ${timeToFinal}`]
-                  : [];
-                const exportTooltipDetails = manuallyPublished
-                  ? ["Manually marked as published in Advanced mode"]
-                  : client.exportStatusLoading
-                    ? ["Checking this client's exports…"]
-                    : isFinalised(client)
-                      ? publishedVersionDetails.filter((detail): detail is string => Boolean(detail))
-                    : [
-                      exports.issue,
-                      exports.approval_in_progress && (cleanExportInProgress
-                        ? "Clean export is being written and checked for stability"
-                        : `Approval copy is being rendered and validated${exports.approval_progress_phase ? ` (${exports.approval_progress_phase})` : ""}`),
-                      exports.final_filename && `FINAL: ${exports.final_filename}`,
-                    ].filter((detail): detail is string => Boolean(detail));
-                const lastApprovalVersion = sortedApprovalVersions[0];
-                const pendingVersion = exports.approval_progress_version;
-                const playableApprovalVersions = sortedApprovalVersions.filter((approval) =>
-                  !exports.approval_in_progress || approval.version !== pendingVersion,
-                );
-                const selectedApprovalVersion = playableApprovalVersions.find(
-                  (item) => item.relative_path === selectedVersionByClient[client.name],
-                ) ?? playableApprovalVersions[0];
-                const selectedApprovalPath = selectedApprovalVersion
-                  ? `${client.path.replace(/[\\/]+$/, "")}\\03_EXPORTS\\${selectedApprovalVersion.relative_path.replace(/[\\/]+/g, "\\")}`
-                  : null;
-                const pendingApprovalEntry = creatingApprovalVersion && exports.approval_progress_version !== null
-                  ? (
-                    <div
-                      className="version-entry version-pending"
-                      aria-label={`V${exports.approval_progress_version} ${exportProgressLabel.toLowerCase()}`}
-                      title={exportProgressLabel}
-                    >
-                      <div className="version-option" aria-disabled="true">
-                        <span className="version-option-heading">
-                          <span className="version-option-number version-label">V{exports.approval_progress_version}</span>
-                          <LoaderCircle className="approval-progress-spinner" size={15} aria-hidden="true" />
-                        </span>
-                        <span className="version-state">{cleanExportInProgress ? "Exporting" : "Rendering"}</span>
-                      </div>
-                    </div>
-                  )
-                  : null;
-                return (
-                  <Fragment key={client.path}>
-                  <div
-                    className={`table-row client-row ${clientIsCached ? "cached-client-row" : ""} ${droppable ? "droppable-row" : ""} ${
-                      dragTarget === client.name ? "drag-over" : ""
-                    } ${published ? "published-row" : ""} ${expanded ? "expanded-row" : ""}`}
-                    style={{ animationDelay: `${Math.min(index * 18, 180)}ms` }}
-                    data-client-name={client.name}
-                    data-client={droppable ? client.name : undefined}
-                    onClick={() => toggleClientExpanded(client.name)}
-                    onContextMenu={(event) => openPepperContextMenu(event, label.name, [
-                      { label: "Open client folder", action: () => void handleOpenFolder(client.path) },
-                      { label: "Copy client name", action: () => copyFromContextMenu(client.name, "Client name") },
-                      ...(client.client_type === "HUDDLE" && client.huddle_template === "VIDEO_CALL" && client.status !== "Not a client" ? [{ label: creatingStudioClients.has(client.path) ? "Creating session?" : "Create session", action: () => void handleQuickCreateSession(client), disabled: creatingStudioClients.has(client.path) || clientIsCached || busy, separatorBefore: true }] : []),
-                      { label: "Refresh project", action: () => void refreshClients(projectRoot, true, true, true) },
-                      ...(advancedMode && client.status !== "Not a client" ? [
-                        ...(published ? [{ label: "Unpublish and return to pending", action: () => void handleUnpublish(client), separatorBefore: true, disabled: Boolean(busy || publishingClientPath) }] : []),
-                        ...(label.type === "HUDDLE" ? [{ label: client.huddle_template === "VIDEO_CALL" ? "Interview type: Video Call" : "Set interview type: Video Call", action: () => { void invoke("set_client_huddle_template", { clientPath: client.path, huddleTemplate: "VIDEO_CALL" }).then(() => { showToast("Huddle interview type saved as Video Call.", "success"); void refreshClients(projectRoot, true, true, true); }).catch(error => showToast(`Could not save interview type: ${String(error)}`, "error", 7000)); }, separatorBefore: true, disabled: client.huddle_template === "VIDEO_CALL" }] : []),
-                        { label: manuallyPublished ? "Remove published override" : "Mark as published", action: () => void toggleManualPublished(client), separatorBefore: true, disabled: !manuallyPublished && isFinalised(client) },
-                        { label: warningsSuppressed ? "Show status warnings and Fix action" : "Hide status warnings and Fix action", action: () => void toggleStatusWarnings(client) },
-                      ] : []),
-                    ])}
-                    onDragOver={
-                      droppable
-                        ? (event) => {
-                            handleSortDragOver(event);
-                            hoverClientRef.current = client.name;
-                            setDragTarget(client.name);
-                          }
-                        : undefined
-                    }
-                    onDragEnter={
-                      droppable
-                        ? () => {
-                            hoverClientRef.current = client.name;
-                            setDragTarget(client.name);
-                          }
-                        : undefined
-                    }
-                    onDragLeave={
-                      droppable
-                        ? () => {
-                            if (hoverClientRef.current === client.name) {
-                              hoverClientRef.current = null;
-                            }
-                            setDragTarget((current) =>
-                              current === client.name ? null : current
-                            );
-                          }
-                        : undefined
-                    }
-                    onDrop={droppable ? (event) => handleDropEvent(event, client) : undefined}
-                  >
-                    <button
-                      type="button"
-                      className="client-row-disclosure"
-                      aria-expanded={expanded}
-                      aria-label={`${expanded ? "Collapse" : "Expand"} ${label.name} client workspace`}
-                    />
-                    <div>
-                      <div className="client-title">
-                        <span className="client-expand-icon" aria-hidden="true">
-                          {expanded ? <ChevronDown size={16} /> : <ChevronRight size={16} />}
-                        </span>
-                        <ClientLabel name={client.name} type={client.client_type} season={isMariyaMeetsRoot ? client.season : undefined}/>
-                      </div>
-                    </div>
-                    <div className={`client-statuses ${clientIsCached ? "" : !client.exportStatusLoading ? "client-status-enter" : ""}`}>
-                      {!clientIsCached && client.status !== "OK" && (!warningsSuppressed || client.status === "Not a client") && (
-                      <span
-                        className={`badge ${client.status
-                          .toLowerCase()
-                          .replace(/\s/g, "-")}`}
-                      >
-                        {client.status}
-                      </span>
-                      )}
-                      {!clientIsCached && client.status !== "Not a client" && !(warningsSuppressed && exportNeedsAttention && exportLabel !== "FINAL" && !exports.approval_in_progress) && (
-                        <>
-                          {client.exportStatusLoading ? (
-                            <span className="client-status-space" aria-hidden="true" />
-                          ) : (
-                            <span className="client-export-status">
-                              <ExportStatusTooltip
-                                id={`export-versions-tooltip-${index}`}
-                                details={exportTooltipDetails}
-                                versions={tooltipVersionNumbers}
-                                enabled={exportLabel !== "Awaiting export"}
-                              >
-                                {exports.approval_in_progress ? (
-                                  <span className="badge export-ready export-progress">
-                                    <LoaderCircle className="approval-progress-spinner" size={13} aria-hidden="true" />
-                                    {exportStatusSummary}
-                                  </span>
-                                ) : exportNeedsAttention && !warningsSuppressed ? (
-                                  <span className="badge export-warning">{exportStatusSummary}</span>
-                                ) : exportLabel === "FINAL" ? (
-                                  <span className="status-text final-state" aria-label="Published">
-                                    <Check size={14} aria-hidden="true" />
-                                  </span>
-                                ) : exportLabel === "Shared" ? (
-                                  <span className="status-text shared-state">
-                                    <Link2 size={14} aria-hidden="true" /> {exportStatusSummary}
-                                  </span>
-                                ) : exportLabel === "Awaiting export" ? (
-                                  <span className="status-text empty-state"><Clapperboard size={13} aria-hidden="true" />Awaiting export</span>
-                                ) : (
-                                  <span className="status-text">{exportStatusSummary}</span>
-                                )}
-                              </ExportStatusTooltip>
-                            </span>
-                          )}
-                        </>
-                      )}
-                    </div>
-                    <div className="actions" onClick={(event) => event.stopPropagation()}>
-                      {client.status !== "Not a client" && exports.latest_filename && !exports.issue && (!published || publishFailed) && (
-                        <button
-                          type="button"
-                          className="ghost promote-button"
-                          onClick={() => setPendingPromotion({ ...client, export_status: { ...exports, publish_failed: publishFailed } })}
-                          disabled={Boolean(busy || publishingClientPath || !exports.latest_filename || exports.issue)}
-                          title={`${publishFailed ? "Retry failed publish" : "Publish"} ${exports.latest_filename}`}
-                        >
-                          {publishingClientPath === client.path ? (
-                            <span className="publish-progress-content">
-                              <span className="publish-progress-label">{publishingStage === "refreshing" ? "Refreshing project…" : "Publishing export…"}</span>
-                              <span className="publish-progress-track" role="progressbar" aria-label={publishingStage === "refreshing" ? "Refreshing project status" : "Publishing export"} aria-valuetext={publishingStage === "refreshing" ? "Refreshing project status" : "Publishing export"}>
-                                <span className={`publish-progress-indicator ${publishingStage === "refreshing" ? "is-refreshing" : ""}`} />
-                              </span>
-                            </span>
-                          ) : publishFailed ? "Failed" : <><span>Publish</span><ArrowUpRight size={13} aria-hidden="true" /></>}
-                        </button>
-                      )}
-                      {client.status === "Missing folders" && !warningsSuppressed && (
-                        <button
-                          className="ghost icon-button"
-                          onClick={() => handleFixClient(client)}
-                          aria-label="Fix"
-                          title="Fix"
-                        >
-                          <Wrench size={17} strokeWidth={2} aria-hidden="true" />
-                        </button>
-                      )}
-                      {exports.final_filename && !exports.issue && (
-                        <button
-                          type="button"
-                          className="ghost icon-button"
-                          onClick={() => void handleOpenFinal(client)}
-                          aria-label="Open FINAL video"
-                          title="Open FINAL video"
-                        >
-                          <Clapperboard size={17} strokeWidth={1.8} aria-hidden="true" />
-                        </button>
-                      )}
-                    </div>
-                </div>
-                {expanded && !client.exportStatusLoading && (
-                  <div className="client-details">
-                    <ClientWorkspace studioRequest={studioRequests[client.path] ?? 0} key={client.path} projectRoot={projectRoot} clientPath={client.path} clientType={client.client_type} huddleTemplate={client.huddle_template} advancedMode={advancedMode && client.status !== "Not a client"} onContextMenu={openPepperContextMenu} reviewDefault={sortedApprovalVersions.length>0||published} hasApprovals={sortedApprovalVersions.length>0} mainPublished={Boolean(exports.final_filename)} finalPath={published&&exports.final_filename?`${client.path.replace(/[\\/]+$/, "")}\\04_FINAL\\${exports.final_filename}`:null}>
-                    {sortedApprovalVersions.length === 0 ? (
-                      pendingApprovalEntry
-                        ? <VersionHistory label={`${label.name} approval versions`}>{pendingApprovalEntry}</VersionHistory>
-                        : <div className="versions-empty">No approval copies available.</div>
-                    ) : selectedApprovalVersion && selectedApprovalPath && (
-                      <div className="version-browser">
-                        <article className="export-preview" aria-label={`V${selectedApprovalVersion.version} preview: ${selectedApprovalVersion.filename}`}>
-                          <InlineVideoPlayer
-                            className="approval-video-player"
-                            src={convertFileSrc(selectedApprovalPath)}
-                            onContextMenu={(event) => {
-                              const player = event.currentTarget.querySelector("video");
-                              const video = ((event.target as HTMLElement).closest("video") ?? player) as HTMLVideoElement | null;
-                              const currentSeconds = video?.currentTime ?? 0;
-                              const wholeSeconds = Math.floor(currentSeconds);
-                              const hours = Math.floor(wholeSeconds / 3600);
-                              const minutes = Math.floor((wholeSeconds % 3600) / 60);
-                              const seconds = wholeSeconds % 60;
-                              const milliseconds = Math.floor((currentSeconds - wholeSeconds) * 1000);
-                              const playbackTime = `${String(hours).padStart(2, "0")}:${String(minutes).padStart(2, "0")}:${String(seconds).padStart(2, "0")}.${String(milliseconds).padStart(3, "0")}`;
-                              openPepperContextMenu(event, `V${selectedApprovalVersion.version} video`, [
-                                { label: video?.paused ? "Play" : "Pause", action: () => video?.paused ? void video.play() : video?.pause() },
-                                { label: video?.muted ? "Unmute" : "Mute", action: () => { if (video) video.muted = !video.muted; } },
-                                { label: `Copy timecode  ${playbackTime}`, action: () => copyFromContextMenu(playbackTime, "Timecode"), separatorBefore: true },
-                                { label: "Copy file name", action: () => copyFromContextMenu(selectedApprovalVersion.filename, "File name") },
-                                { label: "Copy video path", action: () => copyFromContextMenu(selectedApprovalPath, "Video path") },
-                                { label: "Open containing folder", action: () => void handleOpenFileLocation(selectedApprovalPath) },
-                              ]);
-                            }}
-                          />
-                        </article>
-                        <VersionHistory label={`${label.name} approval versions`}>
-                          {pendingApprovalEntry}
-                          {sortedApprovalVersions.map((approvalVersion) => {
-                            const approvalIsBeingRendered = exports.approval_in_progress
-                              && approvalVersion.version === exports.approval_progress_version;
-                            const isLatest = approvalVersion.relative_path === lastApprovalVersion?.relative_path;
-                            const versionRecord = approvalVersion.frameio?.destination_account_id === frameIoConfig.accountId
-                              && approvalVersion.frameio?.destination_project_id === frameIoConfig.projectId
-                              ? approvalVersion.frameio : null;
-                            const versionShareUrl = approvalIsBeingRendered ? null : isLatest ? latestFrameIoShareUrl : versionRecord?.share_url;
-                            const hasEarlierApproval = isLatest && sortedApprovalVersions.some((version) => version.version < approvalVersion.version);
-                            const hasEarlierReviewLinkForDestination = hasEarlierApproval && sortedApprovalVersions.some((version) =>
-                              version.version < approvalVersion.version
-                              && version.frameio?.state === "ready"
-                              && Boolean(version.frameio.share_url)
-                              && version.frameio.destination_account_id === frameIoConfig.accountId
-                              && version.frameio.destination_project_id === frameIoConfig.projectId);
-                            const versionBusy = isLatest && latestFrameIoBusy;
-                            const versionError = versionRecord?.last_error
-                              ?? (isLatest && /fail|error/.test(latestFrameIoState ?? "") ? latestFrameIoProgress?.message : null);
-                            const versionFailed = !approvalIsBeingRendered && !versionBusy && !versionShareUrl
-                              && Boolean(versionError || /fail|error/.test(versionRecord?.state ?? ""));
-                            const versionStatus = approvalIsBeingRendered ? cleanExportInProgress ? "Exporting" : "Rendering"
-                              : versionBusy ? frameIoUploadLabel
-                                : versionFailed ? "Failed"
-                                  : versionShareUrl ? "Shared"
-                                    : isLatest && latestFrameIoShareRetryAvailable ? "Link needed"
-                                      : isLatest && latestFrameIoHasUnfinishedJob ? "Needs attention" : null;
-                            const selected = !approvalIsBeingRendered
-                              && approvalVersion.relative_path === selectedApprovalVersion?.relative_path;
-                            return (
-                              <div
-                                className={`version-entry ${selected ? "selected" : ""} ${isLatest && !approvalIsBeingRendered ? "latest-version" : ""} ${approvalIsBeingRendered ? "version-pending" : ""}`}
-                                key={`${approvalVersion.version}-${approvalVersion.filename}`}
-                                onContextMenu={(event) => openPepperContextMenu(event, `V${approvalVersion.version}`, approvalIsBeingRendered ? [
-                                  { label: "Creating approval copy", action: () => undefined, disabled: true },
-                                ] : [
-                                  { label: "Select version", action: () => setSelectedVersionByClient((current) => ({ ...current, [client.name]: approvalVersion.relative_path })) },
-                                  { label: "Copy version name", action: () => copyFromContextMenu(`V${approvalVersion.version}`, "Version name") },
-                                  { label: "Copy file name", action: () => copyFromContextMenu(approvalVersion.filename, "File name") },
-                                  { label: "Copy file path", action: () => copyFromContextMenu(`${client.path.replace(/[\\/]+$/, "")}\\03_EXPORTS\\${approvalVersion.relative_path.replace(/[\\/]+/g, "\\")}`, "File path") },
-                                  { label: "Open file location", action: () => void handleOpenFileLocation(`${client.path.replace(/[\\/]+$/, "")}\\03_EXPORTS\\${approvalVersion.relative_path.replace(/[\\/]+/g, "\\")}`) },
-                                ])}
-                              >
-                                <button
-                                  type="button"
-                                  aria-pressed={selected}
-                                  aria-label={`Preview V${approvalVersion.version}${isLatest ? ", latest version" : ""}`}
-                                  aria-disabled={approvalIsBeingRendered}
-                                  title={approvalVersion.filename}
-                                  className={`version-option ${approvalIsBeingRendered ? "version-option-rendering" : ""}`}
-                                  disabled={approvalIsBeingRendered}
-                                  onClick={() => setSelectedVersionByClient((current) => ({
-                                    ...current,
-                                    [client.name]: approvalVersion.relative_path,
-                                  }))}
-                                >
-                                  <span className="version-option-heading">
-                                    <span className="version-option-number version-label">V{approvalVersion.version}</span>
-                                    {approvalIsBeingRendered ? (
-                                      <span role="img" aria-label={exportProgressLabel} title={exportProgressLabel}>
-                                        <LoaderCircle className="approval-progress-spinner" size={15} aria-hidden="true" />
-                                      </span>
-                                    ) : (
-                                      isLatest && <span className="version-latest">Latest</span>
-                                    )}
-                                  </span>
-                                  {!approvalIsBeingRendered && <time dateTime={approvalVersion.added_at} title={formatUiDateTime(approvalVersion.added_at)}>
-                                    {new Date(approvalVersion.added_at).toLocaleString(undefined, { day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" })}
-                                  </time>}
-                                  {versionStatus && <span className={`version-state ${versionFailed ? "failed" : ""}`} title={versionError ?? undefined}>{versionStatus}</span>}
-                                </button>
-                                {isLatest && latestApprovalPath && !approvalIsBeingRendered && (
-                                  <div className="frameio-inline-row">
-                                    {latestFrameIoShareUrl ? (
-                                      <button
-                                        type="button"
-                                        className="frameio-icon-button"
-                                        title="Open review"
-                                        aria-label={`Open V${approvalVersion.version} review`}
-                                        onClick={() => void invoke("frameio_open_external_url", { url: latestFrameIoShareUrl }).catch((err) => showToast(String(err), "error", 7000))}
-                                      >
-                                        <Link2 size={15} aria-hidden="true" />
-                                      </button>
-                                    ) : latestFrameIoHasUnfinishedJob ? null : !frameIoConfigured ? (
-                                      <button
-                                        type="button"
-                                        className="frameio-icon-button"
-                                        title="Set up Frame.io review delivery"
-                                        aria-label="Set up Frame.io review delivery"
-                                        onClick={openFrameIoSettings}
-                                      >
-                                        <Settings2 size={16} aria-hidden="true" />
-                                      </button>
-                                    ) : (
-                                      <button
-                                        type="button"
-                                        className="frameio-icon-button"
-                                        title={latestApprovalIsRendering
-                                          ? "Wait until this approval version has finished rendering"
-                                          : latestFrameIoBusy ? frameIoUploadLabel : latestFrameIoShareRetryAvailable ? "Retry share link; video already uploaded" : "Send for review"}
-                                        aria-label={latestApprovalIsRendering
-                                          ? "Approval export in progress"
-                                          : latestFrameIoBusy ? frameIoUploadLabel : latestFrameIoShareRetryAvailable ? "Retry share link; video already uploaded" : "Send for review"}
-                                        disabled={client.exportStatusLoading || !activeProject || frameIoBusyPath === latestApprovalPath || latestApprovalIsRendering}
-                                        onClick={() => {
-                                          if (!activeProject) return;
-                                          if (hasEarlierApproval && !hasEarlierReviewLinkForDestination) {
-                                            setPendingFrameIoUpload({ path: latestApprovalPath, clientKey: client.name, version: approvalVersion.version, projectName: activeProject.name, projectPath: activeProject.path });
-                                          } else {
-                                            void uploadApprovalToFrameIo(latestApprovalPath, client.name, activeProject.name, activeProject.path);
-                                          }
-                                        }}
-                                      >
-                                        {frameIoBusyPath === latestApprovalPath
-                                          ? <LoaderCircle className="approval-progress-spinner" size={16} aria-hidden="true" />
-                                          : latestFrameIoShareRetryAvailable ? <Link2 size={16} aria-hidden="true" /> : <CloudUpload size={16} aria-hidden="true" />}
-                                      </button>
-                                    )}
-                                    {latestFrameIoShareUrl ? (
-                                      <CopyReviewLinkButton url={latestFrameIoShareUrl} version={approvalVersion.version} onCopy={copyFrameIoShareLink} />
-                                    ) : null}
-                                    {latestFrameIoBusy && latestFrameIoState === "uploading" && uploadPercent !== null && (
-                                      <progress
-                                        className="frameio-upload-progress"
-                                        value={uploadPercent}
-                                        max={100}
-                                        aria-label="Upload to Frame.io"
-                                        title={`${((latestFrameIoProgress?.uploaded ?? 0) / 1048576).toFixed(1)} MB of ${((latestFrameIoProgress?.total ?? 0) / 1048576).toFixed(1)} MB`}
-                                      />
-                                    )}
-                                  </div>
-                                )}
-                                {!isLatest && versionShareUrl && <div className="frameio-inline-row">
-                                  <button type="button" className="frameio-icon-button" title="Open review" aria-label={`Open V${approvalVersion.version} review`}
-                                    onClick={() => void invoke("frameio_open_external_url", { url: versionShareUrl }).catch((err) => showToast(String(err), "error", 7000))}>
-                                    <Link2 size={15} aria-hidden="true" />
-                                  </button>
-                                  <CopyReviewLinkButton url={versionShareUrl} version={approvalVersion.version} onCopy={copyFrameIoShareLink} />
-                                </div>}
-                                {versionFailed && versionError && <span className="version-delivery-message" title={versionError}>{versionError}</span>}
-                              </div>
-                            );
-                          })}
-                        </VersionHistory>
-                      </div>
-                    )}
-                    </ClientWorkspace>
-                  </div>
-                )}
-                </Fragment>
-              );
-              })}
+              <section key={section.clients[0].path} className={`client-section ${section.season ? "client-season-group" : ""}`} aria-label={section.season?.replace(/^SEASON\s+/i, "Season ") || "Clients"}>
+              {section.clients.map((client, sectionIndex) => (
+                <ClientListRow
+                  key={client.path}
+                  client={client}
+                  index={section.start + sectionIndex}
+                  screen={screen}
+                  frameIoProgress={frameIoProgress}
+                  frameIoConfig={frameIoConfig}
+                  frameIoBusyPath={frameIoBusyPath}
+                  busy={busy}
+                  projectRoot={projectRoot}
+                  advancedMode={advancedMode}
+                  publishingClientPath={publishingClientPath}
+                  publishProgress={publishProgress?.client_path === client.path ? publishProgress : null}
+                  hoverClientRef={hoverClientRef}
+                  workspaceTypeNames={workspaceTypeNames}
+                  frameIoConfigured={frameIoConfigured}
+                  activeProject={activeProject}
+                  clientIsCached={cachedClientNames.has(client.name)}
+                  expanded={expandedClients.has(client.name)}
+                  manuallyPublished={Boolean(manualPublishedPaths[client.path])}
+                  warningsSuppressed={Boolean(suppressedStatusPaths[client.path])}
+                  publishFailedOverride={publishFailedClientPaths.has(client.path)}
+                  selectedVersion={selectedVersionByClient[client.name]}
+                  dragOver={dragTarget === client.name}
+                  dragKinds={dragTarget === client.name ? dragKinds : null}
+                  transferProgress={sortingClientPath === client.path ? progress : null}
+                  pendingDrop={pendingClientDrops[client.path] ?? null}
+                  creatingStudio={creatingStudioClients.has(client.path)}
+                  studioRequest={studioRequests[client.path] ?? 0}
+                  actions={clientRowActions}
+                />
+              ))}
               </section>
             ))}
             </div>
@@ -3341,13 +3631,13 @@ export default function App() {
       </footer>}
 
       {showAdvancedMenu && (
-        <SettingsDialog section={settingsSection} onClose={() => setShowAdvancedMenu(false)} onNavigate={(section) => {
+        <SettingsDialog section={settingsSection} workspaceAvailable={advancedMode || workspaceSetupRequired} onClose={() => setShowAdvancedMenu(false)} onNavigate={(section) => {
           if (section === "integrations") openFrameIoSettings();
           else setSettingsSection(section);
         }}>
           {settingsSection === "general" && <>
             {advancedMode && <section className="settings-group">
-              <h4>Workspace</h4>
+              <h4>Display</h4>
                 <label className="settings-toggle">
                   <input
                     type="checkbox"
@@ -3490,6 +3780,23 @@ export default function App() {
             </section>
           </div>}
           {settingsSection === "people" && <StudioMailPeopleSettings />}
+          {settingsSection === "workspace" && <WorkspaceSettings
+            root={workspaceRoot}
+            config={workspaceConfig}
+            setup={workspaceSetupRequired}
+            writable={workspaceDiscovery?.status === "absent" ? workspaceDiscovery.writable : workspaceDiscovery?.status === "valid" && workspaceDiscovery.writable}
+            localMappings={workspaceLocalMappings}
+            starterProjectShowNames={projectShowCatalog?.shows.map((show) => show.name) ?? []}
+            onLocalMappingsSave={async (mappings) => {
+              if (!workspaceConfig) throw new Error("Load a validated workspace before saving computer-only paths.");
+              await CONFIG_STORE.set(`workspaceResourceMappings:${workspaceConfig.workspaceId}`, mappings);
+              await CONFIG_STORE.save();
+              setWorkspaceLocalMappings(mappings);
+            }}
+            onRootSelected={(root) => void handleWorkspaceRootSelected(root)}
+            onSaved={(root, config) => void handleWorkspaceSaved(root, config)}
+            onClose={() => setShowAdvancedMenu(false)}
+          />}
         </SettingsDialog>
       )}
 
@@ -3536,6 +3843,32 @@ export default function App() {
         </dialog>
       )}
 
+      {pendingFrameIoRemoval && (
+        <dialog
+          ref={frameIoRemoveDialogRef}
+          className="modal frameio-link-warning-modal"
+          aria-labelledby="frameio-remove-title"
+          aria-describedby="frameio-remove-description"
+          onCancel={(event) => { event.preventDefault(); setPendingFrameIoRemoval(null); }}
+        >
+          <div className="frameio-warning-header">
+            <span className="frameio-warning-icon"><TriangleAlert size={18} aria-hidden="true" /></span>
+            <div><h2 id="frameio-remove-title">Remove from Frame.io?</h2></div>
+          </div>
+          <div className="frameio-warning-body">
+            <div className="frameio-warning-file">
+              <strong>{parseClientLabel(pendingFrameIoRemoval.clientKey).name}</strong>
+              <span className="frameio-warning-version">V{pendingFrameIoRemoval.version}</span>
+            </div>
+            <p id="frameio-remove-description">This deletes the uploaded Frame.io file. Pepper will keep the local approval copy.</p>
+          </div>
+          <div className="modal-actions frameio-warning-actions">
+            <button type="button" className="ghost" autoFocus onClick={() => setPendingFrameIoRemoval(null)}>Cancel</button>
+            <button type="button" className="primary" onClick={() => void confirmRemoveFrameIoUpload()}>Remove from Frame.io</button>
+          </div>
+        </dialog>
+      )}
+
       {pendingPromotion && (
         <dialog
           ref={promotionDialogRef}
@@ -3543,10 +3876,10 @@ export default function App() {
           aria-label="Publish final"
           onCancel={(event) => {
             event.preventDefault();
-            if(publishingClientPath!==pendingPromotion.path)setPendingPromotion(null);
+            setPendingPromotion(null);
           }}
         >
-          <header className="promotion-heading"><div><h2>Publish final</h2><p className="promotion-client-name">{parseClientLabel(pendingPromotion.name).name}</p></div><button type="button" className="promotion-close" aria-label="Close publish dialog" disabled={publishingClientPath===pendingPromotion.path} onClick={()=>setPendingPromotion(null)}><X size={17}/></button></header>
+          <header className="promotion-heading"><div><h2>Publish final</h2><p className="promotion-client-name">{parseClientLabel(pendingPromotion.name).name}</p></div><button type="button" className="promotion-close" aria-label="Close publish dialog" onClick={()=>setPendingPromotion(null)}><X size={17}/></button></header>
           <div className="promotion-content">
           <nav className="cw-tabs cw-review-tabs promotion-tabs" role="tablist" aria-label="Publish views">
             <button type="button" id="publish-main-tab" role="tab" aria-selected={promotionTab==='main'} aria-controls="publish-main-panel" onClick={()=>setPromotionTab('main')}><VideoIcon size={14}/>Main video</button>
@@ -3570,7 +3903,7 @@ export default function App() {
           </div>
           <div className="modal-actions promotion-actions">
             <div className="promotion-publish-summary" aria-live="polite"><span><VideoIcon size={13}/>Main video</span>{promotionClipSelection.size>0&&<><Plus size={11} className="promotion-summary-plus"/><span><Clapperboard size={13}/>{promotionClipSelection.size} {promotionClipSelection.size===1?'clip':'clips'}</span></>}</div>
-            <button type="button" className="ghost promotion-cancel" autoFocus disabled={publishingClientPath===pendingPromotion.path} onClick={() => setPendingPromotion(null)}>
+            <button type="button" className="ghost promotion-cancel" autoFocus onClick={() => setPendingPromotion(null)}>
               Cancel
             </button>
             <button
@@ -3586,41 +3919,12 @@ export default function App() {
       )}
 
       {pendingUpdate && (
-        <div className="modal-backdrop" onClick={() => !installingUpdate && setPendingUpdate(null)}>
-          <div className="modal update-modal" onClick={(event) => event.stopPropagation()}>
-            <h2>Pepper update available</h2>
-            <p>
-              Version <strong>{pendingUpdate.version}</strong> is ready to install.
-            </p>
-            {updateNotes && <p className="update-notes">{updateNotes}</p>}
-            <div className="modal-actions">
-              <button
-                type="button"
-                className="ghost"
-                disabled={installingUpdate}
-                onClick={() => setPendingUpdate(null)}
-              >
-                Later
-              </button>
-              <button
-                type="button"
-                className="primary"
-                disabled={installingUpdate}
-                onClick={async () => {
-                  setInstallingUpdate(true);
-                  try {
-                    await pendingUpdate.downloadAndInstall();
-                  } catch (err) {
-                    showToast("Could not install update.", "error");
-                    setInstallingUpdate(false);
-                  }
-                }}
-              >
-                {installingUpdate ? "Installing…" : "Install update"}
-              </button>
-            </div>
-          </div>
-        </div>
+        <UpdateDialog
+          update={pendingUpdate}
+          operationActive={Boolean(busy || publishingClientPath || frameIoBusyPath || creatingClient || ingestOperationBusy)}
+          onBusyChange={value => { updateInProgressRef.current = value; }}
+          onDismiss={dismissUpdate}
+        />
       )}
 
       {showProjectCreate && (

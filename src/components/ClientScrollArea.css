@@ -14,6 +14,8 @@
 }
 
 .client-scroll-area > .table-scroll {
+  /* Row disclosure owns scroll positioning; avoid competing browser anchoring. */
+  overflow-anchor: none;
   min-width: 0;
   padding-inline: 10px;
   scrollbar-gutter: auto;

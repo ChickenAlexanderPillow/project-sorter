@@ -12,6 +12,16 @@ dist
 dist-ssr
 *.local
 
+# Generated development previews and verification artifacts
+/output/
+/test-results/
+/playwright-report/
+/coverage/
+
+# Local browser preview harnesses (keep regression tests and media fixtures)
+/tests/fixtures/*.html
+/tests/fixtures/*.tsx
+
 # Editor directories and files
 .vscode/*
 !.vscode/extensions.json

@@ -1,0 +1,5 @@
+.client-details[hidden] { display: none; }
+.client-details-placeholder { display: flex; flex-direction: column; gap: 12px; max-height: 55vh; padding: 6px 0; }
+.client-details-placeholder > span { height: 12px; width: 110px; border-radius: 3px; background: #ffffff09; }
+.client-details-placeholder > span:nth-child(2) { width: 65%; height: 1px; margin-top: 6px; }
+.client-details-placeholder > span:nth-child(3) { width: 45%; }

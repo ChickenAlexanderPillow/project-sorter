@@ -15,6 +15,8 @@
   user-select: none;
 }
 .pepper-settings::backdrop { background: #0009; }
+.settings-window-drag-region { position: fixed; top: 0; left: 0; right: 170px; height: 32px; }
+.settings-header h2 { pointer-events: none; }
 .settings-header { height: 55px; padding: 0 18px 0 22px; display: flex; align-items: center; justify-content: space-between; border-bottom: 1px solid var(--pepper-line); }
 .settings-header h2 { margin: 0; font-size: 14px; font-weight: 600; }
 .pepper-settings button { font: inherit; font-weight: 500; box-shadow: none; transform: none; }
@@ -22,11 +24,15 @@
 .pepper-settings button:disabled { opacity: .45; }
 .settings-close { display: grid; place-items: center; width: 28px; height: 28px; padding: 0; border-radius: 4px; background: transparent; color: var(--pepper-muted); }
 .settings-close:hover { background: var(--pepper-hover); color: var(--pepper-text); }
-.settings-layout { display: grid; grid-template-columns: 164px minmax(0, 1fr); height: calc(100% - 55px); }
+.settings-layout { display: grid; grid-template-columns: 164px minmax(0, 1fr); grid-template-rows: minmax(0, 1fr); min-height: 0; height: calc(100% - 55px); }
 .settings-nav { display: flex; flex-direction: column; gap: 4px; padding: 16px 10px; background: var(--pepper-bg); border-right: 1px solid var(--pepper-line); }
 .settings-nav button { display: flex; align-items: center; gap: 10px; min-height: 36px; padding: 8px 12px; border: 1px solid transparent; border-radius: 5px; background: transparent; color: var(--pepper-muted); text-align: left; }
 .settings-nav button:hover { background: var(--pepper-surface-raised); color: var(--pepper-text); }
 .settings-nav button[aria-current] { background: var(--pepper-selection); border-color: var(--pepper-line); color: var(--pepper-text); }
+.pepper-settings .settings-nav button:hover:not(:disabled) { background: var(--pepper-surface-raised); color: var(--pepper-text); transform: none; box-shadow: none; }
+.pepper-settings .settings-nav button[aria-current]:hover:not(:disabled) { background: var(--pepper-selection); }
+.pepper-settings .settings-close:hover:not(:disabled) { background: var(--pepper-hover); color: var(--pepper-text); transform: none; box-shadow: none; }
+
 .settings-content { min-width: 0; overflow: auto; padding: 24px; scrollbar-gutter: stable; }
 .settings-page-heading { margin-bottom: 20px; }
 .settings-page-heading h3 { margin: 0 0 6px; color: var(--pepper-text); font-size: 18px; font-weight: 600; }

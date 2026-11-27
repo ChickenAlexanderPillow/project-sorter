@@ -3,7 +3,9 @@ use chrono::Utc;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::{collections::{BTreeMap, BTreeSet}, fs, io::{Read, Write}, path::{Component, Path, PathBuf}, sync::{Mutex, OnceLock}, time::{Duration, Instant}};
-use tauri::{AppHandle, Emitter};
+use tauri::AppHandle;
+#[cfg(not(test))]
+use tauri::Emitter;
 use uuid::Uuid;
 use walkdir::WalkDir;
 
@@ -63,8 +65,8 @@ pub struct TakeHomeProgress {
 
 struct ProgressReporter { #[cfg(not(test))] app:AppHandle, #[cfg(test)] on_file_done:Option<Box<dyn FnMut(usize)>>, operation_id:String, phase:String, current_file:String, bytes_done:u64, bytes_total:u64, files_done:usize, files_total:usize, last_emit:Instant }
 impl ProgressReporter {
-    fn new(app:AppHandle,operation_id:String)->Self{Self{#[cfg(not(test))] app,#[cfg(test)] on_file_done:None,operation_id,phase:"Starting".into(),current_file:String::new(),bytes_done:0,bytes_total:0,files_done:0,files_total:0,last_emit:Instant::now()}}
-    fn send(&mut self,force:bool){if !force&&self.last_emit.elapsed().as_millis()<100{return;}self.last_emit=Instant::now();#[cfg(not(test))] {let _=self.app.emit("pepper-takehome-progress",TakeHomeProgress{operation_id:self.operation_id.clone(),phase:self.phase.clone(),current_file:self.current_file.clone(),bytes_done:self.bytes_done,bytes_total:self.bytes_total,files_done:self.files_done,files_total:self.files_total});}}
+    fn new(_app:AppHandle,operation_id:String)->Self{Self{#[cfg(not(test))] app:_app,#[cfg(test)] on_file_done:None,operation_id,phase:"Starting".into(),current_file:String::new(),bytes_done:0,bytes_total:0,files_done:0,files_total:0,last_emit:Instant::now()}}
+    fn send(&mut self,force:bool){if !force&&self.last_emit.elapsed().as_millis()<100{return;}self.last_emit=Instant::now();let progress=TakeHomeProgress{operation_id:self.operation_id.clone(),phase:self.phase.clone(),current_file:self.current_file.clone(),bytes_done:self.bytes_done,bytes_total:self.bytes_total,files_done:self.files_done,files_total:self.files_total};#[cfg(not(test))] {let _=self.app.emit("pepper-takehome-progress",progress);}#[cfg(test)] drop(progress);}
     fn begin(&mut self,phase:&str,total:u64,files:usize){self.phase=phase.into();self.current_file.clear();self.bytes_done=0;self.bytes_total=total.max(1);self.files_done=0;self.files_total=files;self.send(true);}
     fn file(&mut self,path:&str){self.current_file=path.into();self.send(false);}
     fn advance(&mut self,phase:&str,bytes:u64){self.phase=phase.into();self.bytes_done=self.bytes_done.saturating_add(bytes).min(self.bytes_total);self.send(false);}
@@ -127,6 +129,7 @@ fn hash_open_file(file:&mut fs::File,path:&Path,mut progress:impl FnMut(u64))->R
     if before.len()!=size||after.len()!=size||before.modified().ok()!=after.modified().ok()||stamp!=file_stamp(file){return Err(format!("File changed while checking: {}",path.display()));}
     Ok(FileRecord{path:String::new(),size,sha256:format!("{:x}",digest.finalize())})
 }
+#[cfg(test)]
 fn hash_file_with_progress(path:&Path,progress:impl FnMut(u64))->Result<FileRecord,String>{
     let mut file=open_stable_source(path)?;
     hash_open_file(&mut file,path,progress)
@@ -419,6 +422,7 @@ fn replace_staged(staged:&Path,destination:&Path)->Result<(),String>{
     fs::rename(staged,destination).map_err(|e|format!("Could not install {}: {e}",destination.display()))
 }
 
+#[cfg(test)]
 fn copy_verified_record_with_progress(source:&Path,destination:&Path,expected:Option<&FileRecord>,mut progress:impl FnMut(&str,u64))->Result<FileRecord,String>{
     copy_verified_guarded(source,destination,expected,&mut progress,||Ok(()))
 }

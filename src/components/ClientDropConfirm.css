@@ -1,0 +1,40 @@
+.client-list .client-row.client-drop-confirm-active { position: relative; isolation: isolate; overflow: hidden; }
+.client-list .client-row.client-drop-confirm-active > :not(.client-drop-confirm) { visibility: hidden !important; pointer-events: none; }
+.client-list .client-row.client-drop-confirm-active > :not(.client-drop-confirm) * { visibility: hidden !important; }
+.app .client-list .table-row.client-row.client-drop-confirm-active > .client-drop-confirm {
+  position: absolute; inset: 4px 16px; z-index: 5; display: flex; align-items: center; gap: 12px;
+  min-width: 0; visibility: visible; opacity: 1 !important; filter: none; cursor: default; pointer-events: auto;
+}
+.client-drop-confirm-heading { display: flex; align-items: center; gap: 12px; flex: 1; min-width: 0; }
+.client-drop-confirm-icon { flex: none; color: #aaa; }
+.client-drop-confirm-copy { display: flex; flex: 1; flex-direction: column; gap: 3px; min-width: 0; }
+.client-drop-confirm-copy > strong { font-size: 12px; line-height: 1.3; font-weight: 500; color: #e3e3e3; }
+.client-drop-confirm-copy > span { font-size: 10px; line-height: 1.2; color: #929292; }
+.client-drop-confirm-copy > * { overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+.client-drop-confirm-actions { display: flex; align-items: center; gap: 6px; flex: none; }
+.client-drop-confirm-actions > button { display: inline-flex; align-items: center; justify-content: center; gap: 6px; min-height: 29px; padding: 5px 10px; border-radius: var(--pepper-radius-control, 4px); font-size: 11px; line-height: 1.2; box-shadow: none; }
+.client-drop-confirm-actions > .client-drop-cancel { background: transparent; border: 1px solid transparent; color: #999; }
+.client-drop-confirm-actions > .client-drop-cancel:hover { background: #303030; color: #eee; }
+.client-drop-confirm-actions > .client-drop-accept { background: #dedede; border: 1px solid #dedede; color: #222; }
+.client-drop-confirm-actions > .client-drop-accept:hover:not(:disabled) { background: #f0f0f0; border-color: #f0f0f0; }
+.client-drop-confirm-actions > button:focus-visible { outline: 2px solid var(--pepper-focus, #bbb); outline-offset: 2px; }
+.client-drop-confirm-actions > button:disabled { opacity: .4; cursor: default; }
+
+.app.sort-mode .client-list .table-row.client-row:has(> .client-drop-confirm[data-expanded="true"]) { height: 220px; min-height: 220px; max-height: none; }
+.app .client-list .table-row.client-row.client-drop-confirm-active > .client-drop-confirm[data-expanded="true"] { inset: 12px 16px; flex-direction: column; align-items: stretch; gap: 10px; }
+.client-drop-confirm[data-expanded="true"] > .client-drop-confirm-heading { flex: none; }
+.client-drop-picker { display: grid; grid-template-columns: repeat(auto-fit, minmax(85px, 1fr)); gap: 5px; flex: 1; min-height: 0; overflow: auto; }
+.client-drop-picker > button { display: flex; flex-direction: column; justify-content: center; align-items: center; gap: 7px; min-width: 0; min-height: 45px; padding: 7px; border: 1px solid #3a3a3a; border-radius: 4px; background: #222; color: #aaa; font-size: 11px; line-height: 1.2; box-shadow: none; }
+.client-drop-picker > button:hover:not(:disabled), .client-drop-picker > button[aria-pressed="true"] { background: #303030; border-color: #777; color: #eee; }
+.client-drop-picker > button > span { overflow-wrap: anywhere; }
+.client-drop-confirm-footer { display: flex; justify-content: space-between; align-items: center; flex: none; min-height: 29px; }
+.client-drop-back { display: inline-flex; align-items: center; gap: 5px; padding: 4px 0; min-height: 25px; background: transparent; border: 0; font-size: 11px; color: #999; box-shadow: none; }
+.client-drop-back:hover:not(:disabled) { background: transparent; color: #eee; }
+.client-drop-summary { flex: 1; min-height: 0; overflow: auto; display: flex; flex-direction: column; }
+.client-drop-summary > button { display: grid; grid-template-columns: minmax(100px, 1fr) minmax(100px, 1fr) 14px; align-items: center; gap: 10px; min-height: 28px; padding: 4px 8px; background: transparent; border: 0; border-radius: 3px; color: #999; font-size: 11px; text-align: left; box-shadow: none; }
+.client-drop-summary > button > strong { font-weight: 500; color: #ddd; }
+.client-drop-summary > button > span, .client-drop-summary > button > strong { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.client-drop-summary > button:hover:not(:disabled) { background: #303030; }
+.client-drop-summary > button > svg { color: #777; }
+.client-drop-no-folders { align-self: center; text-align: center; font-size: 11px; color: #999; }
+.client-drop-picker > button:focus-visible, .client-drop-summary > button:focus-visible { outline: 2px solid var(--pepper-focus); outline-offset: -2px; }

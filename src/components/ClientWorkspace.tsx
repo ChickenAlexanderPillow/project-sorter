@@ -12,7 +12,7 @@ import { ClientClips } from './ClientClips';
 import { useClientClips } from './useClientClips';
 
 export function ClientWorkspace({projectRoot,clientPath,reviewDefault,hasApprovals,finalPath,clientType,huddleTemplate,studioRequest=0,advancedMode=false,children,onContextMenu}:{projectRoot:string;clientPath:string;reviewDefault:boolean;hasApprovals:boolean;finalPath?:string|null;mainPublished?:boolean;clientType?:string|null;huddleTemplate?:string|null;studioRequest?:number;advancedMode?:boolean;children:ReactNode;onContextMenu:FileContextMenu}){
-  const showStudio=clientType==='HUDDLE'&&huddleTemplate==='VIDEO_CALL';
+  const showStudio=clientType?.toUpperCase()==='HUDDLE'&&huddleTemplate==='VIDEO_CALL';
   const [tab,setTab]=useState<'review'|'files'|'studio'|'drive'>(()=>showStudio&&studioRequest?'studio':reviewDefault?'review':'files');
   const previousDefault=useRef(reviewDefault);
   const [error,setError]=useState('');const id=useId();

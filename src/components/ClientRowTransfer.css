@@ -1,0 +1,18 @@
+.client-list .client-row.client-row-transfer-active { position: relative; isolation: isolate; overflow: hidden; }
+.client-list .client-row.client-row-transfer-active > :not(.client-row-transfer) { visibility: hidden !important; pointer-events: none; }
+.client-list .client-row.client-row-transfer-active > :not(.client-row-transfer) * { visibility: hidden !important; }
+.client-list .table-row.client-row.client-row-transfer-active > .client-row-transfer {
+  position: absolute;
+  inset: 0;
+  z-index: 4;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  pointer-events: none;
+  visibility: visible;
+  filter: none;
+  transition: none;
+}
+.client-row-transfer-content { width: 70%; min-width: 0; display: flex; flex-direction: column; gap: 7px; }
+.client-row-transfer-file { color: var(--pepper-muted, #a2a2a2); font-size: 10px; line-height: 1.2; text-align: center; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.client-row-transfer-content > .frameio-upload-progress { width: 100%; margin: 0; flex: none; }

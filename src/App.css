@@ -788,6 +788,32 @@ button.accent {
   min-height: 18px;
 }
 
+.client-operation-progress {
+  display: inline-flex;
+  flex: 0 1 150px;
+  min-width: 92px;
+  flex-direction: column;
+  justify-content: center;
+  gap: 3px;
+  color: #aaa;
+  font-size: 10px;
+  line-height: 1.1;
+}
+
+.client-operation-progress > span:first-child {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.client-operation-progress .frameio-upload-progress {
+  flex: 0 1 auto;
+  width: 100%;
+  min-width: 48px;
+  height: 4px;
+  margin: 0;
+}
+
 .table-row.client-row:has(.export-status-tooltip-anchor:hover),
 .table-row.client-row:has(.export-status-tooltip-anchor:focus-visible) {
   z-index: 20;
@@ -4176,6 +4202,7 @@ input[type="radio"] {
 .new-client-types .inline-types { gap: 6px; }
 .new-client-types .type-chip { min-height: 34px; border-width: 1px; border-radius: 5px; }
 .new-client-types .type-chip.selected { transform: none; }
+.client-type-config-message { margin: 2px 0 0; color: #d7a45c; font-size: 10px; line-height: 1.35; }
 .add-client-inline .client-extra:empty { display: none; }
 .add-client-inline .client-extra.has-options { height: auto; overflow: visible; }
 .add-client-inline > .inline-actions { width: auto; justify-self: stretch; justify-content: flex-end; align-self: auto; margin: 0; padding-top: 12px; border-top: 1px solid #404040; gap: 8px; }

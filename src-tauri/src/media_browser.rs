@@ -33,9 +33,14 @@ pub(crate) fn resolve_paths(paths: Vec<String>) -> Result<Vec<MediaEntry>, Strin
                 source.display()
             ));
         }
+        if source.components().any(|component| component.as_os_str().to_string_lossy().eq_ignore_ascii_case(".pepper")) {
+            return Err("Pepper workspace metadata is not a media source.".into());
+        }
         let candidates = if source.is_dir() {
             let mut found = Vec::new();
-            for entry in walkdir::WalkDir::new(&source).follow_links(false) {
+            for entry in walkdir::WalkDir::new(&source).follow_links(false).into_iter().filter_entry(|entry| {
+                entry.depth() == 0 || !entry.file_type().is_dir() || !entry.file_name().to_string_lossy().eq_ignore_ascii_case(".pepper")
+            }) {
                 let entry =
                     entry.map_err(|e| format!("Could not read the selected folder: {e}"))?;
                 if entry.file_type().is_file() && media_kind(entry.path()).is_some() {

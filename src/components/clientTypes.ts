@@ -21,4 +21,6 @@ export const availableClientTypes = (root: string): readonly ClientType[] => {
   if (folder === "remote") return CLIENT_TYPES.filter(type => type !== "MARIYAMEETS" && type !== "SOCIAL");
   return isMariyaProject(root) ? ["MARIYAMEETS"] : CLIENT_TYPES.filter(type => type !== "MARIYAMEETS");
 };
-export const clientTypeLabel = (type: string) => type === "MARIYAMEETS" ? "MARIYA MEETS" : type;
+export const clientTypeLabel = (type: string, names?: Record<string, string>) =>
+  names?.[type.toLowerCase()] ?? (type.toUpperCase() === "MARIYAMEETS" ? "MARIYA MEETS" : type);
+export const isHuddleClientType = (type?: string | null) => type?.toUpperCase() === "HUDDLE";

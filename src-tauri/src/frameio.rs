@@ -552,29 +552,40 @@ async fn ensure_project_folder(client: &Client, token: &str, account_id: &str, p
         .ok_or_else(|| "Frame.io did not return the new production folder ID.".to_string())
 }
 
+fn matching_approval_video(approval_dir: &Path, video_name: &str, record: &SharedRecord) -> Option<PathBuf> {
+    [approval_dir.to_path_buf(), approval_dir.join("SUPERSEDED")]
+        .into_iter()
+        .map(|directory| directory.join(video_name))
+        .find(|video_path| {
+            fingerprint(video_path).ok()
+                == Some((record.source_size, record.source_modified_nanos))
+        })
+}
+
 fn latest_client_record(approval_dir: &Path, client_key: &str, account_id: &str, project_id: &str, folder_id: &str) -> Option<SharedRecord> {
-    let entries = fs::read_dir(approval_dir).ok()?;
     let mut records = Vec::new();
-    for entry in entries.flatten() {
-        let path = entry.path();
-        let Some(file_name) = path.file_name() else { continue; };
-        let name = file_name.to_string_lossy();
-        let Some(video_name) = name.strip_suffix(".frameio.json") else { continue; };
-        let video_path = approval_dir.join(video_name);
-        let Ok(bytes) = fs::read(&path) else { continue; };
-        let Ok(record) = serde_json::from_slice::<SharedRecord>(&bytes) else { continue; };
-        if record.schema_version < 2
-            || !record.client_key.eq_ignore_ascii_case(client_key)
-            || record.destination_account_id != account_id
-            || record.destination_project_id != project_id
-            || record.destination_folder_id != folder_id
-            || record.state != "ready"
-            || record.share_id.is_none()
-            || record.share_url.is_none()
-            || record.file_id.is_none()
-        { continue; }
-        if fingerprint(&video_path).ok() != Some((record.source_size, record.source_modified_nanos)) { continue; }
-        records.push(record);
+    for sidecar_dir in [approval_dir.to_path_buf(), approval_dir.join("SUPERSEDED")] {
+        let Ok(entries) = fs::read_dir(&sidecar_dir) else { continue; };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            let Some(file_name) = path.file_name() else { continue; };
+            let name = file_name.to_string_lossy();
+            let Some(video_name) = name.strip_suffix(".frameio.json") else { continue; };
+            let Ok(bytes) = fs::read(&path) else { continue; };
+            let Ok(record) = serde_json::from_slice::<SharedRecord>(&bytes) else { continue; };
+            if record.schema_version < 2
+                || !record.client_key.eq_ignore_ascii_case(client_key)
+                || record.destination_account_id != account_id
+                || record.destination_project_id != project_id
+                || record.destination_folder_id != folder_id
+                || record.state != "ready"
+                || record.share_id.is_none()
+                || record.share_url.is_none()
+                || record.file_id.is_none()
+            { continue; }
+            if matching_approval_video(approval_dir, video_name, &record).is_none() { continue; }
+            records.push(record);
+        }
     }
     records.into_iter().max_by(|left, right| left.updated_at.cmp(&right.updated_at))
 }
@@ -605,6 +616,79 @@ async fn create_share_link(
         share.pointer("/data/id").and_then(Value::as_str).map(str::to_string),
         share.pointer("/data/short_url").and_then(Value::as_str).map(str::to_string),
     ))
+}
+
+// A share can represent a version stack as a row with a nested head_version,
+// or flatten its files. Seeing just the stack ID does not prove this upload
+// is available. PALMS returned an accepted add with an empty share afterward.
+fn share_contains_file(assets: &[Value], file_id: &str) -> bool {
+    assets.iter().any(|asset| {
+        (asset.get("type").and_then(Value::as_str) == Some("file")
+            && asset.get("id").and_then(Value::as_str) == Some(file_id))
+            || (asset.get("type").and_then(Value::as_str) == Some("version_stack")
+                && asset.pointer("/head_version/id").and_then(Value::as_str) == Some(file_id))
+    })
+}
+
+async fn ensure_share_contains_file(client: &Client, token: &str, assets_url: &str, file_id: &str) -> Result<(), String> {
+    let list_url = format!("{assets_url}?page_size=100");
+    if share_contains_file(&list_api_data(client, token, list_url.clone()).await?, file_id) {
+        return Ok(());
+    }
+    // Use the file ID, even for a stacked file. Frame.io exposes its stack in
+    // the share. Adding the stack ID alone can succeed without exposing assets.
+    // After an uncertain POST, read back before deciding whether it failed.
+    let added = api_json_after_upload(client, token, reqwest::Method::POST, assets_url,
+        Some(json!({"data":{"asset_id":file_id}}))).await;
+    for delay in [0, 500, 1500, 3000, 5000] {
+        if delay > 0 { tokio::time::sleep(Duration::from_millis(delay)).await; }
+        if share_contains_file(&list_api_data(client, token, list_url.clone()).await?, file_id) {
+            return Ok(());
+        }
+    }
+    Err(added.err().unwrap_or_else(|| "Frame.io accepted the share update, but the latest video is not visible in the review link yet. Send for review again to retry without uploading the video again.".into()))
+}
+
+async fn finish_review_share(client: &Client, token: &str, record_path: &Path, mut record: SharedRecord) -> Result<SharedRecord, String> {
+    // Persist before any network work, including rechecking a legacy 'ready'
+    // record. Failures keep the uploaded file and original share for retry.
+    record.state = "updating_share".into();
+    record.updated_at = chrono::Utc::now().to_rfc3339();
+    atomic_record(record_path, &record)?;
+    let result: Result<(), String> = async {
+        let file_id = record.file_id.as_deref().ok_or("The uploaded Frame.io file ID is missing.")?;
+        if record.share_id.is_none() {
+            record.state = "creating_share".into();
+            atomic_record(record_path, &record)?;
+            let (share_id, share_url) = create_share_link(client, token, &record.destination_account_id,
+                &record.destination_project_id, &record.client_key, file_id).await?;
+            record.share_id = share_id;
+            record.share_url = share_url;
+            // Save the share ID immediately, before verification or URL lookup.
+            atomic_record(record_path, &record)?;
+        }
+        let share_id = record.share_id.as_deref().ok_or("Frame.io did not return a share ID.")?;
+        if record.share_url.is_none() {
+            let share = api_json(client, token, reqwest::Method::GET,
+                &format!("{API}/accounts/{}/shares/{share_id}", record.destination_account_id), None).await?;
+            record.share_url = share.pointer("/data/short_url").and_then(Value::as_str).map(str::to_string);
+            atomic_record(record_path, &record)?;
+        }
+        if record.share_url.is_none() { return Err("Frame.io did not return a share URL.".into()); }
+        ensure_share_contains_file(client, token,
+            &format!("{API}/accounts/{}/shares/{share_id}/assets", record.destination_account_id), file_id).await
+    }.await;
+    record.updated_at = chrono::Utc::now().to_rfc3339();
+    if let Err(error) = result {
+        record.state = "share_needs_reconciliation".into();
+        record.last_error = Some(error.clone());
+        atomic_record(record_path, &record)?;
+        return Err(format!("FRAMEIO_VIDEO_UPLOADED_SHARE_FAILED: {error}"));
+    }
+    record.state = "ready".into();
+    record.last_error = None;
+    atomic_record(record_path, &record)?;
+    Ok(record)
 }
 
 #[tauri::command]
@@ -662,18 +746,9 @@ pub async fn frameio_upload(
     if let Ok(bytes) = fs::read(&record_path) {
         if let Ok(existing) = serde_json::from_slice::<SharedRecord>(&bytes) {
             if existing.source_size == source_size && existing.source_modified_nanos == source_modified_nanos {
-                // A ready sidecar belongs to the destination used by that
-                // upload. Do not treat it as complete when the user has
-                // explicitly selected a different Frame.io account/project
-                // on this computer; allow this explicit action to upload to
-                // the newly selected destination.
-                if existing.state == "ready"
-                    && existing.share_url.is_some()
-                    && existing.destination_account_id == account_id
-                    && existing.destination_project_id == project_id
-                { return Ok(existing); }
-                if (matches!(existing.state.as_str(), "creating_share" | "share_needs_reconciliation")
-                    || (existing.state == "ready" && existing.share_url.is_none()))
+                // Recheck completed records too: older Pepper builds could
+                // persist 'ready' while the review link was empty.
+                if matches!(existing.state.as_str(), "ready" | "creating_share" | "share_needs_reconciliation" | "updating_share" | "share_asset_added")
                     && existing.file_id.is_some()
                     && existing.destination_account_id == account_id
                     && existing.destination_project_id == project_id
@@ -684,6 +759,9 @@ pub async fn frameio_upload(
                     // not an in-flight job and must not block a new explicit
                     // delivery. The sidecar is replaced with the new record
                     // after the new upload is established.
+                } else if existing.state == "removed" {
+                    // The prior remote file was explicitly deleted. A new
+                    // user initiated upload may reuse this approval copy.
                 } else {
                     return Err(format!("This approval copy already has a Frame.io job in state '{}'. Pepper will not create another remote video automatically; reconcile the existing Frame.io item first.", existing.state));
                 }
@@ -691,65 +769,35 @@ pub async fn frameio_upload(
         }
     }
     let approval_dir = path.parent().ok_or_else(|| "Approval folder is missing.".to_string())?;
-    if let Ok(entries) = fs::read_dir(approval_dir) {
-        for entry in entries.flatten() {
-            let sidecar = entry.path();
-            if sidecar == record_path { continue; }
-            let Ok(name) = sidecar.file_name().map(|name| name.to_string_lossy().to_string()).ok_or(()) else { continue; };
-            let Some(video_name) = name.strip_suffix(".frameio.json") else { continue; };
-            let Ok(bytes) = fs::read(&sidecar) else { continue; };
-            let Ok(previous) = serde_json::from_slice::<SharedRecord>(&bytes) else { continue; };
-            let fingerprint_matches = fingerprint(&approval_dir.join(video_name)).ok()
-                == Some((previous.source_size, previous.source_modified_nanos));
-            if previous.schema_version >= 2
-                && previous.client_key.eq_ignore_ascii_case(&client_key)
-                && previous.destination_account_id == account_id
-                && previous.destination_project_id == project_id
-                && previous.state != "ready"
-                && fingerprint_matches
-            {
-                return Err(format!("An earlier Frame.io upload for {client_key} is in state '{}'. Reconcile that job before sending another version.", previous.state));
+    for sidecar_dir in [approval_dir.to_path_buf(), approval_dir.join("SUPERSEDED")] {
+        if let Ok(entries) = fs::read_dir(&sidecar_dir) {
+            for entry in entries.flatten() {
+                let sidecar = entry.path();
+                if sidecar == record_path { continue; }
+                let Ok(name) = sidecar.file_name().map(|name| name.to_string_lossy().to_string()).ok_or(()) else { continue; };
+                let Some(video_name) = name.strip_suffix(".frameio.json") else { continue; };
+                let Ok(bytes) = fs::read(&sidecar) else { continue; };
+                let Ok(previous) = serde_json::from_slice::<SharedRecord>(&bytes) else { continue; };
+                let fingerprint_matches = matching_approval_video(approval_dir, video_name, &previous).is_some();
+                if previous.schema_version >= 2
+                    && previous.client_key.eq_ignore_ascii_case(&client_key)
+                    && previous.destination_account_id == account_id
+                    && previous.destination_project_id == project_id
+                    && !matches!(previous.state.as_str(), "ready" | "removed")
+                    && fingerprint_matches
+                {
+                    return Err(format!("An earlier Frame.io upload for {client_key} is in state '{}'. Reconcile that job before sending another version.", previous.state));
+                }
             }
         }
     }
     let updated = || chrono::Utc::now().to_rfc3339();
     let token = access_token(&client_id).await?;
     let client = Client::builder().timeout(Duration::from_secs(120)).build().map_err(|error| error.to_string())?;
-    if let Some(mut record) = retry_share {
-        let asset_id = record.version_stack_id.as_deref().or(record.file_id.as_deref())
-            .ok_or_else(|| "The uploaded Frame.io file ID is missing; the job needs manual reconciliation.".to_string())?;
-        record.state = "creating_share".into();
-        record.updated_at = updated();
-        record.last_error = None;
-        atomic_record(&record_path, &record)?;
-        let _ = window.emit("frameio-upload-progress", Progress { approval_path: approval_path.clone(), state: record.state.clone(), uploaded: source_size, total: source_size, message: None, share_url: None });
-        match create_share_link(&client, &token, &account_id, &project_id, &client_key, asset_id).await {
-            Ok((share_id, share_url)) => {
-                record.share_id = share_id;
-                record.share_url = share_url;
-            }
-            Err(error) => {
-                record.state = "share_needs_reconciliation".into();
-                record.last_error = Some(error.clone());
-                record.updated_at = updated();
-                let _ = atomic_record(&record_path, &record);
-                let _ = window.emit("frameio-upload-progress", Progress { approval_path, state: record.state.clone(), uploaded: source_size, total: source_size, message: Some(error.clone()), share_url: None });
-                return Err(format!("FRAMEIO_VIDEO_UPLOADED_SHARE_FAILED: {error}"));
-            }
-        }
-        if record.share_url.is_some() {
-            record.state = "ready".into();
-            record.updated_at = updated();
-            record.last_error = None;
-            atomic_record(&record_path, &record)?;
-            let _ = window.emit("frameio-upload-progress", Progress { approval_path, state: record.state.clone(), uploaded: source_size, total: source_size, message: None, share_url: record.share_url.clone() });
-            return Ok(record);
-        }
-        record.state = "share_needs_reconciliation".into();
-        record.last_error = Some("Frame.io created the share but did not return its URL.".into());
-        record.updated_at = updated();
-        atomic_record(&record_path, &record)?;
-        return Err("FRAMEIO_VIDEO_UPLOADED_SHARE_FAILED: Frame.io did not return a share URL. The video is uploaded; retry share link creation.".into());
+    if let Some(record) = retry_share {
+        let record = finish_review_share(&client, &token, &record_path, record).await?;
+        let _ = window.emit("frameio-upload-progress", Progress { approval_path, state: record.state.clone(), uploaded: source_size, total: source_size, message: None, share_url: record.share_url.clone() });
+        return Ok(record);
     }
     let folder_id = ensure_project_folder(&client, &token, &account_id, &project_id, project_name).await?;
     let prior = latest_client_record(approval_dir, &client_key, &account_id, &project_id, &folder_id);
@@ -847,48 +895,73 @@ pub async fn frameio_upload(
         let stack_id = stack.pointer("/data/id").and_then(Value::as_str).map(str::to_string)
             .ok_or_else(|| "Frame.io did not return the version stack ID.".to_string())?;
         record.version_stack_id = Some(stack_id.clone());
-        record.state = "updating_share".into(); record.updated_at = updated(); atomic_record(&record_path, &record)?;
-        let _ = window.emit("frameio-upload-progress", Progress { approval_path: approval_path.clone(), state: record.state.clone(), uploaded: source_size, total: source_size, message: None, share_url: None });
-        if let (Some(share_id), Some(old_share_url)) = (record.share_id.clone(), record.share_url.clone()) {
-            let add_url = format!("{API}/accounts/{account_id}/shares/{share_id}/assets");
-            api_json(&client, &token, reqwest::Method::POST, &add_url, Some(json!({"data":{"asset_id":stack_id}}))).await?;
-            let remove_url = format!("{API}/accounts/{account_id}/shares/{share_id}/assets/{previous_file_id}");
-            api_json(&client, &token, reqwest::Method::DELETE, &remove_url, None).await?;
-            record.share_url = Some(old_share_url);
-        }
+        // Share membership is reconciled below using the latest file ID.
+        // Never remove a historical file from the share: Frame.io can resolve
+        // that file to its entire version stack and empty the existing link.
     }
-    if record.share_id.is_none() {
-        record.state = "creating_share".into(); record.updated_at = updated(); atomic_record(&record_path, &record)?;
-        let _ = window.emit("frameio-upload-progress", Progress { approval_path: approval_path.clone(), state: record.state.clone(), uploaded: source_size, total: source_size, message: None, share_url: None });
-        let asset_id = record.version_stack_id.as_deref().unwrap_or(&file_id);
-        match create_share_link(&client, &token, &account_id, &project_id, &client_key, asset_id).await {
-            Ok((share_id, share_url)) => {
-                record.share_id = share_id;
-                record.share_url = share_url;
-            }
-            Err(error) => {
-                record.state = "share_needs_reconciliation".into();
-                record.last_error = Some(error.clone());
-                record.updated_at = updated();
-                let _ = atomic_record(&record_path, &record);
-                let _ = window.emit("frameio-upload-progress", Progress { approval_path, state: record.state.clone(), uploaded: source_size, total: source_size, message: Some(error.clone()), share_url: None });
-                return Err(format!("FRAMEIO_VIDEO_UPLOADED_SHARE_FAILED: {error}"));
-            }
-        }
-    }
-    if record.share_url.is_none() {
-        let error = "Frame.io returned a share without a URL.".to_string();
-        record.state = "share_needs_reconciliation".into();
-        record.last_error = Some(error.clone());
-        record.updated_at = updated();
-        atomic_record(&record_path, &record)?;
-        let _ = window.emit("frameio-upload-progress", Progress { approval_path, state: record.state.clone(), uploaded: source_size, total: source_size, message: Some(error.clone()), share_url: None });
-        return Err(format!("FRAMEIO_VIDEO_UPLOADED_SHARE_FAILED: {error}"));
-    }
-    record.state = if record.share_url.is_some() { "ready" } else { "share_needs_reconciliation" }.into();
-    record.updated_at = updated(); record.last_error = None; atomic_record(&record_path, &record)?;
+    let record = finish_review_share(&client, &token, &record_path, record).await?;
     let _ = window.emit("frameio-upload-progress", Progress { approval_path, state: record.state.clone(), uploaded: source_size, total: source_size, message: None, share_url: record.share_url.clone() });
     Ok(record)
+}
+
+#[tauri::command]
+pub async fn frameio_remove_upload(
+    approval_path: String,
+    client_id: String,
+    account_id: String,
+    project_id: String,
+    production_project_path: String,
+) -> Result<(), String> {
+    if account_id != PEPPER_FRAMEIO_ACCOUNT_ID {
+        return Err("Frame.io removal blocked: select Callum's Account.".into());
+    }
+    let allowed_projects = frameio_list_projects(client_id.clone(), account_id.clone()).await?;
+    if !allowed_projects.iter().any(|project| project.id == project_id) {
+        return Err("Frame.io removal blocked: Pepper could not verify this project belongs to Callum's Account.".into());
+    }
+    let path = PathBuf::from(&approval_path).canonicalize().map_err(|error| format!("Approval copy is unavailable: {error}"))?;
+    let parent = path.parent();
+    let in_approval_tree = parent.is_some_and(|directory| {
+        directory.file_name().is_some_and(|name| name.to_string_lossy().eq_ignore_ascii_case("APPROVAL"))
+            || (directory.file_name().is_some_and(|name| name.to_string_lossy().eq_ignore_ascii_case("SUPERSEDED"))
+                && directory.parent().and_then(Path::file_name).is_some_and(|name| name.to_string_lossy().eq_ignore_ascii_case("APPROVAL")))
+    });
+    if !in_approval_tree
+        || !path.file_stem().and_then(|stem| stem.to_str()).unwrap_or_default().to_ascii_uppercase().contains("_APPROVAL")
+    {
+        return Err("Only watermarked approval copies in APPROVAL or APPROVAL/SUPERSEDED can be removed from Frame.io.".into());
+    }
+    if approval_render_is_active(&path) { return Err("Wait until this approval version has finished rendering.".into()); }
+    let production_root = PathBuf::from(&production_project_path).canonicalize()
+        .map_err(|error| format!("Pepper production project path is unavailable: {error}"))?;
+    if !production_root.is_dir() { return Err("Pepper production project path is not a folder.".into()); }
+    let _claim = Claim::acquire(&path)?;
+    let project_lock_path = production_root.join(".frameio-workflow.lock");
+    let _project_claim = Claim::acquire_path(project_lock_path.clone(), "Another Pepper computer is updating this production project's Frame.io folder or version stack. Try again shortly.")
+        .map_err(|error| if error.starts_with("INVALID_CLAIM_PATH:") { format!("Unable to create Frame.io workflow lock '{}': Windows rejected the path ({error}).", project_lock_path.display()) } else { error })?;
+    let record_path = sidecar_path(&path);
+    let bytes = fs::read(&record_path).map_err(|error| format!("Frame.io upload record is unavailable: {error}"))?;
+    let mut record: SharedRecord = serde_json::from_slice(&bytes).map_err(|error| format!("Frame.io upload record is invalid: {error}"))?;
+    if record.state != "ready" || record.destination_account_id != account_id || record.destination_project_id != project_id {
+        return Err("This approval version does not have a completed upload to the selected Frame.io project.".into());
+    }
+    let file_id = record.file_id.as_deref().ok_or_else(|| "Frame.io upload record has no file ID.".to_string())?;
+    if fingerprint(&path)? != (record.source_size, record.source_modified_nanos) {
+        return Err("The approval copy changed after upload; Pepper cannot safely identify its Frame.io file.".into());
+    }
+    let token = access_token(&client_id).await?;
+    let client = Client::builder().timeout(Duration::from_secs(120)).build().map_err(|error| error.to_string())?;
+    let remove_url = format!("{API}/accounts/{account_id}/files/{file_id}");
+    api_json(&client, &token, reqwest::Method::DELETE, &remove_url, None).await?;
+    record.state = "removed".into();
+    record.file_id = None;
+    record.version_stack_id = None;
+    record.share_id = None;
+    record.share_url = None;
+    record.last_error = None;
+    record.updated_at = chrono::Utc::now().to_rfc3339();
+    atomic_record(&record_path, &record)?;
+    Ok(())
 }
 
 fn ensure_latest_approval(selected: &Path) -> Result<(), String> {
@@ -963,7 +1036,7 @@ mod auth_tests {
         let url = format!("http://{}/shares", listener.local_addr().unwrap());
         listener.set_nonblocking(true).unwrap();
         let handle = std::thread::spawn(move || {
-            let deadline = std::time::Instant::now() + Duration::from_secs(5);
+            let deadline = std::time::Instant::now() + Duration::from_secs(20);
             let mut requests = Vec::new();
             for (status, body) in responses {
                 let (mut socket, _) = loop {
@@ -990,8 +1063,9 @@ mod auth_tests {
                         content_length = value.trim().parse::<usize>().unwrap();
                     }
                 }
-                reader.read_exact(&mut vec![0; content_length]).unwrap();
-                requests.push(request.trim().to_string());
+                let mut request_body = vec![0; content_length];
+                reader.read_exact(&mut request_body).unwrap();
+                requests.push(format!("{} {}", request.trim(), String::from_utf8(request_body).unwrap()).trim().to_string());
                 write!(socket, "HTTP/1.1 {status} Response\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len()).unwrap();
             }
             requests
@@ -1011,7 +1085,9 @@ mod auth_tests {
         let (url, server) = mock_api(vec![(201, r#"{"data":{"short_url":"https://f.io/test"}}"#)]);
         let result = post_upload_request(&url).unwrap();
         assert_eq!(result.pointer("/data/short_url").and_then(Value::as_str), Some("https://f.io/test"));
-        assert_eq!(server.join().unwrap(), vec!["POST /shares HTTP/1.1"]);
+        let requests = server.join().unwrap();
+        assert_eq!(requests.len(), 1);
+        assert!(requests[0].starts_with("POST /shares HTTP/1.1"));
     }
 
     #[test]
@@ -1038,6 +1114,74 @@ mod auth_tests {
         let payload = share_payload("CLIENT_A", "asset-123");
         assert_eq!(payload.pointer("/data/downloading_enabled").and_then(Value::as_bool), Some(true));
         assert_eq!(payload.pointer("/data/asset_ids/0").and_then(Value::as_str), Some("asset-123"));
+    }
+
+    fn reconcile_test_share(url: &str) -> Result<(), String> {
+        tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap().block_on(async {
+            let client = Client::builder().no_proxy().timeout(Duration::from_secs(2)).build().unwrap();
+            ensure_share_contains_file(&client, "test-token", url, "latest-file").await
+        })
+    }
+
+    #[test]
+    fn share_readback_requires_the_latest_file_in_flat_or_stack_responses() {
+        assert!(!share_contains_file(&[], "latest-file"));
+        assert!(!share_contains_file(&[json!({"id":"stack", "type":"version_stack"})], "latest-file"));
+        assert!(!share_contains_file(&[json!({"id":"stack", "type":"version_stack", "head_version":{"id":"old-file"}})], "latest-file"));
+        assert!(share_contains_file(&[json!({"id":"stack", "type":"version_stack", "head_version":{"id":"latest-file"}})], "latest-file"));
+        assert!(share_contains_file(&[json!({"id":"latest-file", "type":"file"})], "latest-file"));
+    }
+
+    #[test]
+    fn empty_share_is_repaired_with_latest_file_without_removing_history() {
+        let (url, server) = mock_api(vec![
+            (200, r#"{"data":[]}"#),
+            (200, r#"{"data":{"asset_added":"latest-file"}}"#),
+            (200, r#"{"data":[{"id":"stack","type":"version_stack","head_version":{"id":"latest-file"}}]}"#),
+        ]);
+        reconcile_test_share(&url).unwrap();
+        let requests = server.join().unwrap();
+        assert_eq!(requests.len(), 3);
+        assert!(requests[1].starts_with("POST /shares HTTP/1.1"));
+        assert!(requests[1].contains(r#""asset_id":"latest-file""#));
+        assert!(requests.iter().all(|request| !request.starts_with("DELETE")));
+    }
+
+    #[test]
+    fn verified_share_retry_does_not_add_again() {
+        let (url, server) = mock_api(vec![
+            (200, r#"{"data":[{"id":"latest-file","type":"file"}]}"#),
+        ]);
+        reconcile_test_share(&url).unwrap();
+        let requests = server.join().unwrap();
+        assert_eq!(requests.len(), 1);
+        assert!(requests[0].starts_with("GET"));
+    }
+
+    #[test]
+    fn uncertain_add_is_verified_without_repeating_the_post() {
+        let (url, server) = mock_api(vec![
+            (200, r#"{"data":[]}"#),
+            (500, r#"{"errors":[{"detail":"Response failed after adding asset"}]}"#),
+            (200, r#"{"data":[]}"#),
+            (200, r#"{"data":[{"id":"stack","type":"version_stack","head_version":{"id":"latest-file"}}]}"#),
+        ]);
+        reconcile_test_share(&url).unwrap();
+        assert_eq!(server.join().unwrap().iter().filter(|request| request.starts_with("POST")).count(), 1);
+    }
+
+    #[test]
+    fn accepted_but_empty_share_is_not_success() {
+        let (url, server) = mock_api(vec![
+            (200, r#"{"data":[]}"#),
+            (200, r#"{"data":{"asset_added":"latest-file"}}"#),
+            (200, r#"{"data":[]}"#), (200, r#"{"data":[]}"#),
+            (200, r#"{"data":[]}"#), (200, r#"{"data":[]}"#), (200, r#"{"data":[]}"#),
+        ]);
+        assert!(reconcile_test_share(&url).unwrap_err().contains("latest video is not visible"));
+        let requests = server.join().unwrap();
+        assert_eq!(requests.iter().filter(|request| request.starts_with("POST")).count(), 1);
+        assert!(requests.iter().all(|request| !request.starts_with("DELETE")));
     }
 
     #[test]

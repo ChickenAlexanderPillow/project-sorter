@@ -32,11 +32,20 @@ export function mediaKind(path:string) {
   return null;
 }
 export const defaultRole = (path:string) => mediaKind(path) === 'video' ? 'Full-resolution video' : mediaKind(path) === 'audio' ? 'Raw audio' : 'Stills';
+// Shared by ingest classification and client-row folder drop targets.
+export const MEDIA_ROLES_BY_KIND: Record<string, readonly string[]> = {
+  video: ['Proxy video', 'Full-resolution video', 'Stock', 'Miscellaneous'],
+  audio: ['Raw audio', 'Clean audio', 'Music'],
+  other: ['Miscellaneous'],
+  image: ['Stills', 'Graphics', 'Stock', 'Miscellaneous'],
+};
 export function MediaTypeRail({items,onChange,disabled=false}:{items:{path:string;role:string}[];onChange:(role:string)=>void;disabled?:boolean}) {
   const videos=items.filter(item=>mediaKind(item.path)==='video');
   const audio=items.filter(item=>mediaKind(item.path)==='audio');
   const images=items.filter(item=>mediaKind(item.path)==='image');
-  const options=videos.length ? [{role:'Proxy video',label:'Proxy',Icon:MEDIA_ROLE_ICONS['Proxy video']},{role:'Full-resolution video',label:'Full resolution',Icon:MEDIA_ROLE_ICONS['Full-resolution video']},{role:'Stock',label:'Stock',Icon:MEDIA_ROLE_ICONS.Stock},{role:'Miscellaneous',label:'Misc',Icon:MEDIA_ROLE_ICONS.Miscellaneous}] : audio.length ? [{role:'Raw audio',label:'Raw',Icon:MEDIA_ROLE_ICONS['Raw audio']},{role:'Clean audio',label:'Clean',Icon:MEDIA_ROLE_ICONS['Clean audio']},{role:'Music',label:'Music',Icon:MEDIA_ROLE_ICONS.Music}] : images.length ? [{role:'Stills',label:'Stills',Icon:Image},{role:'Graphics',label:'Graphics',Icon:MEDIA_ROLE_ICONS.Graphics},{role:'Stock',label:'Stock',Icon:MEDIA_ROLE_ICONS.Stock},{role:'Miscellaneous',label:'Misc',Icon:MEDIA_ROLE_ICONS.Miscellaneous}] : [];
+  const kind=videos.length?'video':audio.length?'audio':'image';
+  const labels:Record<string,string>={'Proxy video':'Proxy','Full-resolution video':'Full resolution','Raw audio':'Raw','Clean audio':'Clean','Miscellaneous':'Misc'};
+  const options=(videos.length||audio.length||images.length?MEDIA_ROLES_BY_KIND[kind]:[]).map(role=>({role,label:labels[role]??role,Icon:mediaRoleIcon('still.png',role)}));
   const relevant=videos.length?videos:audio.length?audio:images;
   return <MediaClassificationGrid options={options} selectedRole={relevant.every(item=>item.role===relevant[0]?.role)?relevant[0]?.role:undefined} disabled={disabled} onChange={onChange} label={videos.length?'Video type':audio.length?'Audio type':'Still type'}/>;
 }

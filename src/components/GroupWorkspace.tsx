@@ -10,8 +10,9 @@ import './GroupWorkspace.css';
 import { RecordingTimeline, RecordingPill } from './RecordingTimeline';
 
 type File = Recording & {inbox_path:string;role:string;status:string;client:string|null;clients:string[];client_paths:string[];destinations?:string[]};
-type Client = {name:string;path:string};
-export function GroupWorkspace({projectRoot,files,clients,disabled,onAssign,onType,onCreateClient}:{projectRoot:string;files:File[];clients:Client[];disabled:boolean;onAssign:(ids:string[],paths:string[],share?:boolean)=>void;onType?:(ids:string[],role:string)=>void;onCreateClient:CreateIngestClient}) {
+type Client = {name:string;path:string;client_type?:string|null};
+export function GroupWorkspace({projectRoot,files,clients,disabled,onAssign,onType,onCreateClient,clientTypes,defaultClientType}:{projectRoot:string;files:File[];clients:Client[];disabled:boolean;onAssign:(ids:string[],paths:string[],share?:boolean)=>void;onType?:(ids:string[],role:string)=>void;onCreateClient:CreateIngestClient;clientTypes:import('./workspaceTypes').WorkspaceClientType[];defaultClientType:string}) {
+  const typeNames=Object.fromEntries(clientTypes.map(type=>[type.id.toLowerCase(),type.name]));
   const [selected,setSelected]=useState<string[]>([]),[previewId,setPreviewId]=useState<string|null>(null);
   const preview=files.find(file=>file.id===previewId)||null;
   const [dragged,setDragged]=useState<string[]>([]),[over,setOver]=useState<string|null>(null),[query,setQuery]=useState('');
@@ -108,10 +109,10 @@ export function GroupWorkspace({projectRoot,files,clients,disabled,onAssign,onTy
         {searchOpen&&<input autoFocus aria-label="Find a client" placeholder="Find a client" value={query} onChange={event=>setQuery(event.target.value)} onKeyDown={event=>{if(event.key==='Escape'){setQuery('');setSearchOpen(false);}}}/>}
         <button type="button" className="ig-icon-button" aria-label={searchOpen?'Close client search':'Search clients'} title={searchOpen?'Close search':'Search clients'} aria-expanded={searchOpen} onClick={()=>{if(searchOpen)setQuery('');setSearchOpen(!searchOpen);}}><Search size={15}/></button>
       </div></header>
-      <div className="ig-client-drop-grid"><NewIngestClient projectRoot={projectRoot} disabled={disabled} onCreate={onCreateClient}/>{[...clients].sort((a,b)=>parseClientLabel(a.name).name.localeCompare(parseClientLabel(b.name).name,undefined,{sensitivity:'base'})).filter(client=>`${parseClientLabel(client.name).name} ${client.name}`.toLowerCase().includes(query.toLowerCase())).map(client=>{
+      <div className="ig-client-drop-grid"><NewIngestClient projectRoot={projectRoot} disabled={disabled||clientTypes.length===0} onCreate={onCreateClient} clientTypes={clientTypes} defaultClientType={defaultClientType}/>{[...clients].sort((a,b)=>parseClientLabel(a.name).name.localeCompare(parseClientLabel(b.name).name,undefined,{sensitivity:'base'})).filter(client=>`${parseClientLabel(client.name).name} ${client.name}`.toLowerCase().includes(query.toLowerCase())).map(client=>{
         const assigned=files.filter(file=>paths(file).includes(client.path));const open=expanded.includes(client.path);
         return <section key={client.path} className={`ig-client-drop ${over===client.path?'drop-over':''} ${chosen.length||dragged.length?'can-assign':''}`} data-media-destination={client.path}>
-          <button type="button" className="ig-client-drop-heading ig-client-disclosure" disabled={!assigned.length} aria-label={`${open?'Collapse':'Expand'} ${client.name} media`} aria-expanded={open} onClick={()=>setExpanded(current=>current.includes(client.path)?current.filter(path=>path!==client.path):[...current,client.path])}><span className="ig-client-assign"><UsersRound size={16}/><ClientLabel name={client.name}/><small>{assigned.length} {assigned.length===1?'file':'files'}</small></span>{assigned.length>0&&<ChevronRight className="ig-disclosure-chevron" size={14}/>}</button>
+          <button type="button" className="ig-client-drop-heading ig-client-disclosure" disabled={!assigned.length} aria-label={`${open?'Collapse':'Expand'} ${client.name} media`} aria-expanded={open} onClick={()=>setExpanded(current=>current.includes(client.path)?current.filter(path=>path!==client.path):[...current,client.path])}><span className="ig-client-assign"><UsersRound size={16}/><ClientLabel name={client.name} type={client.client_type} typeNames={typeNames}/><small>{assigned.length} {assigned.length===1?'file':'files'}</small></span>{assigned.length>0&&<ChevronRight className="ig-disclosure-chevron" size={14}/>}</button>
           {open&&mediaRows(assigned)}
         </section>;
       })}</div>

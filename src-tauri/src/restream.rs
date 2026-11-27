@@ -336,7 +336,11 @@ pub fn restream_cancel_auth(rt: tauri::State<'_, Runtime>) {
     }
 }
 #[tauri::command]
-pub fn restream_connection_status() -> String {
+pub async fn restream_connection_status() -> Result<String, String> {
+    crate::background::run(move || restream_connection_status_sync()).await
+}
+
+pub fn restream_connection_status_sync() -> String{
     if read("refresh").is_some() {
         "connected".into()
     } else {
@@ -669,7 +673,11 @@ fn association_path(client: &str) -> Result<std::path::PathBuf, String> {
     Ok(root.join(".pepper-restream.json"))
 }
 #[tauri::command]
-pub fn restream_client_sessions(client_path: String) -> Result<Vec<StudioAssociation>, String> {
+pub async fn restream_client_sessions(client_path: String) -> Result<Vec<StudioAssociation>, String>{
+    crate::background::run(move || restream_client_sessions_sync(client_path)).await?
+}
+
+pub fn restream_client_sessions_sync(client_path: String) -> Result<Vec<StudioAssociation>, String>{
     let path = association_path(&client_path)?;
     if !path.exists() {
         return Ok(Vec::new());
@@ -679,10 +687,17 @@ pub fn restream_client_sessions(client_path: String) -> Result<Vec<StudioAssocia
         .map_err(|e| format!("Client Studio session metadata is invalid: {e}"))
 }
 #[tauri::command]
-pub fn restream_associate_session(
+pub async fn restream_associate_session(
     client_path: String,
     session: StudioAssociation,
-) -> Result<Vec<StudioAssociation>, String> {
+) -> Result<Vec<StudioAssociation>, String>{
+    crate::background::run(move || restream_associate_session_sync(client_path, session)).await?
+}
+
+pub fn restream_associate_session_sync(
+    client_path: String,
+    session: StudioAssociation,
+) -> Result<Vec<StudioAssociation>, String>{
     validate_event(json!({"event":{"id":session.event_id,"url":session.url}}))
         .map_err(|e| e.to_string())?;
     update_client_sessions(&client_path, |rows| {
@@ -701,7 +716,7 @@ pub async fn restream_delete_studio(
     event_id: String,
 ) -> Result<Vec<StudioAssociation>, String> {
     // Restrict deletion to sessions explicitly saved for this client.
-    let saved = restream_client_sessions(client_path.clone())?;
+    let saved = restream_client_sessions_sync(client_path.clone())?;
     if !saved.iter().any(|row| row.event_id == event_id) {
         return Err("This session is no longer associated with the client. Refresh and try again.".into());
     }
@@ -844,22 +859,22 @@ mod tests {
             ..one.clone()
         };
         assert_eq!(
-            restream_associate_session(client.clone(), one)
+            restream_associate_session_sync(client.clone(), one)
                 .unwrap()
                 .len(),
             1
         );
-        let rows = restream_associate_session(client.clone(), two).unwrap();
+        let rows = restream_associate_session_sync(client.clone(), two).unwrap();
         assert_eq!(rows.len(), 1);
         assert_eq!(rows[0].title, "Renamed");
-        assert_eq!(restream_client_sessions(client).unwrap().len(), 1);
+        assert_eq!(restream_client_sessions_sync(client).unwrap().len(), 1);
     }
     #[test]
     fn removing_a_session_preserves_other_sessions_and_releases_lock_on_error() {
         let root = tempfile::tempdir().unwrap();
         let client = root.path().to_string_lossy().to_string();
         for id in ["one", "two"] {
-            restream_associate_session(client.clone(), StudioAssociation {
+            restream_associate_session_sync(client.clone(), StudioAssociation {
                 event_id: id.into(), title: id.into(),
                 url: format!("https://studio.restream.io/{id}"), status: None,
             }).unwrap();
@@ -867,7 +882,7 @@ mod tests {
         let rows = remove_client_session(&client, "one").unwrap();
         assert_eq!(rows.len(), 1);
         assert_eq!(rows[0].event_id, "two");
-        assert_eq!(restream_client_sessions(client.clone()).unwrap()[0].event_id, "two");
+        assert_eq!(restream_client_sessions_sync(client.clone()).unwrap()[0].event_id, "two");
         assert_eq!(remove_client_session(&client, "missing").unwrap().len(), 1);
         let path = association_path(&client).unwrap();
         fs::write(&path, b"invalid json").unwrap();

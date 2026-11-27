@@ -32,6 +32,18 @@ fn open_directory(path: &Path) -> Result<(), String> {
         use std::os::windows::ffi::OsStrExt;
         use windows::core::{w, PCWSTR};
         use windows::Win32::UI::{Shell::ShellExecuteW, WindowsAndMessaging::SW_SHOWNORMAL};
+        use windows::Win32::{Foundation::RPC_E_CHANGED_MODE, System::Com::{CoInitializeEx, CoUninitialize, COINIT_APARTMENTTHREADED}};
+
+        // Worker threads do not inherit the window thread's COM apartment.
+        struct Apartment(bool);
+        impl Drop for Apartment {
+            fn drop(&mut self) { if self.0 { unsafe { CoUninitialize() }; } }
+        }
+        let initialized = unsafe { CoInitializeEx(None, COINIT_APARTMENTTHREADED) };
+        if initialized.is_err() && initialized != RPC_E_CHANGED_MODE {
+            return Err(format!("Could not initialize folder opening: {initialized:?}"));
+        }
+        let _apartment = Apartment(initialized.is_ok());
 
         let shell_path = shell_folder_path(&target);
         let wide: Vec<u16> = std::ffi::OsStr::new(&shell_path).encode_wide().chain(Some(0)).collect();
@@ -55,13 +67,21 @@ fn open_directory(path: &Path) -> Result<(), String> {
 }
 
 #[tauri::command]
-pub fn open_folder(path: String) -> Result<(), String> {
+pub async fn open_folder(path: String) -> Result<(), String> {
+    crate::background::run(move || open_folder_sync(path)).await?
+}
+
+pub fn open_folder_sync(path: String) -> Result<(), String>{
     if path.trim().is_empty() { return Err("Folder path is empty".into()); }
     open_directory(Path::new(&path))
 }
 
 #[tauri::command]
-pub fn open_file_location(path: String) -> Result<(), String> {
+pub async fn open_file_location(path: String) -> Result<(), String> {
+    crate::background::run(move || open_file_location_sync(path)).await?
+}
+
+pub fn open_file_location_sync(path: String) -> Result<(), String>{
     let file = PathBuf::from(path);
     let parent = containing_folder(&file)?;
     match selectable_file(&file)? {
@@ -140,7 +160,7 @@ mod tests {
     fn relative_and_empty_file_locations_are_rejected() {
         assert!(containing_folder(Path::new("clip.mp4")).is_err());
         assert!(containing_folder(Path::new("")).is_err());
-        assert!(open_folder(String::new()).is_err());
+        assert!(open_folder_sync(String::new()).is_err());
     }
 
     #[cfg(windows)]

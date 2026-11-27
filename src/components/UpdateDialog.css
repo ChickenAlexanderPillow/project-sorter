@@ -1,0 +1,73 @@
+.pepper-update-dialog {
+  position: fixed;
+  inset: 0;
+  box-sizing: border-box;
+  width: min(360px, calc(100vw - 40px));
+  margin: auto;
+  padding: 22px;
+  overflow: hidden;
+  border: 1px solid var(--pepper-line, #3c3c3c);
+  border-radius: 10px;
+  background: var(--pepper-surface-raised, #262626);
+  color: var(--pepper-text, #e3e3e3);
+  box-shadow: 0 20px 65px rgb(0 0 0 / 30%);
+  font-family: inherit;
+}
+
+.pepper-update-dialog::backdrop { background: rgb(0 0 0 / 48%); }
+.pepper-update-heading { display: flex; align-items: center; gap: 13px; }
+.pepper-update-icon {
+  display: grid;
+  place-items: center;
+  flex: none;
+  width: 42px;
+  height: 42px;
+  border: 1px solid #424242;
+  border-radius: 11px;
+  background: #303030;
+  color: #dedede;
+}
+.pepper-update-heading-copy { min-width: 0; }
+.pepper-update-dialog h2 { margin: 0 0 7px; font-size: 15px; line-height: 1.15; font-weight: 600; letter-spacing: -.2px; }
+.pepper-update-version { display: flex; align-items: center; gap: 7px; color: var(--pepper-muted, #999); font-size: 11px; line-height: 1; font-variant-numeric: tabular-nums; }
+.pepper-update-version strong { color: var(--pepper-text, #ddd); font-weight: 500; }
+.pepper-update-version > svg { opacity: .6; }
+.pepper-update-preview { margin-left: 3px; padding: 3px 5px; border: 1px solid #444; border-radius: 4px; color: #aaa; font-size: 9px; }
+.pepper-update-actions { display: flex; align-items: center; justify-content: flex-end; gap: 8px; margin-top: 24px; }
+.pepper-update-actions button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 7px;
+  min-height: 32px;
+  padding: 6px 11px;
+  border: 1px solid transparent;
+  border-radius: 5px;
+  font: inherit;
+  font-size: 11px;
+  font-weight: 500;
+  box-shadow: none;
+  cursor: pointer;
+  transition: background 120ms ease, border-color 120ms ease;
+}
+.pepper-update-actions .pepper-update-later { background: transparent; color: #aaa; }
+.pepper-update-actions .pepper-update-later:hover { background: #333; color: #eee; }
+.pepper-update-actions .pepper-update-primary { border-color: #ddd; background: #ddd; color: #242424; }
+.pepper-update-actions .pepper-update-primary:hover { background: #f0f0f0; border-color: #f0f0f0; }
+.pepper-update-actions button:focus-visible { outline: 2px solid #aaa; outline-offset: 3px; }
+.pepper-update-actions button:disabled { opacity: .4; cursor: default; }
+.pepper-update-progress { margin-top: 24px; }
+.pepper-update-status { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-bottom: 10px; color: var(--pepper-muted, #aaa); font-size: 11px; }
+.pepper-update-percent { color: var(--pepper-text, #ddd); font-variant-numeric: tabular-nums; }
+.pepper-update-progress progress { display: block; width: 100%; height: 4px; overflow: hidden; border: 0; border-radius: 3px; appearance: none; }
+.pepper-update-progress progress::-webkit-progress-bar { background: #414141; border-radius: 3px; }
+.pepper-update-progress progress::-webkit-progress-value { background: #ddd; border-radius: 3px; transition: width 150ms linear; }
+.pepper-update-progress progress:indeterminate { background: linear-gradient(90deg, #414141 25%, #aaa 50%, #414141 75%); background-size: 200% 100%; animation: pepper-update-loading 1.4s linear infinite; }
+.pepper-update-progress progress:indeterminate::-webkit-progress-bar { background: transparent; }
+.pepper-update-error { display: flex; align-items: center; gap: 7px; margin-top: 18px; color: #e4a0a0; font-size: 11px; }
+.pepper-update-blocked { justify-content: flex-start; margin: 18px 0 0; }
+@keyframes pepper-update-loading { to { background-position: -200% 0; } }
+@media (prefers-reduced-motion: reduce) {
+  .pepper-update-dialog .spinning, .pepper-update-progress progress { animation: none; }
+  .pepper-update-actions button, .pepper-update-progress progress::-webkit-progress-value { transition: none; }
+}

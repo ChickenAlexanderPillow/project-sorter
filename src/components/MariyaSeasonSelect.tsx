@@ -3,7 +3,7 @@ import { createPortal } from "react-dom";
 import { invoke } from "@tauri-apps/api/core";
 import { LoaderCircle, Plus, RefreshCw } from "lucide-react";
 
-export function useMariyaSeasons(projectRoot: string, active: boolean, refreshKey?: string | null) {
+export function useProjectSeasons(projectRoot: string, active: boolean, refreshKey?: string | null) {
   const [seasons, setSeasons] = useState<string[]>([]);
   const [season, setSeason] = useState("");
   const [error, setError] = useState("");
@@ -61,7 +61,7 @@ export function useMariyaSeasons(projectRoot: string, active: boolean, refreshKe
 
 const seasonLabel = (value: string) => value.replace(/^SEASON\s+/i, "Season ");
 
-export function MariyaSeasonSelect({ selection }: { selection: ReturnType<typeof useMariyaSeasons> }) {
+export function ProjectSeasonSelect({ selection }: { selection: ReturnType<typeof useProjectSeasons> }) {
   const id = useId();
   const [confirming, setConfirming] = useState(false);
   const busy = selection.loading || selection.creating;
@@ -88,7 +88,7 @@ export function MariyaSeasonSelect({ selection }: { selection: ReturnType<typeof
 
 
 function SeasonConfirmation({ selection, onClose }: {
-  selection: ReturnType<typeof useMariyaSeasons>;
+  selection: ReturnType<typeof useProjectSeasons>;
   onClose: () => void;
 }) {
   const dialog = useRef<HTMLDialogElement>(null);
@@ -103,7 +103,7 @@ function SeasonConfirmation({ selection, onClose }: {
   return createPortal(<dialog ref={dialog} className="season-confirm-dialog" aria-labelledby={`${id}-title`}
     onCancel={event => { event.preventDefault(); if (!selection.creating) onClose(); }}>
     <div className="season-confirm-heading"><h2 id={`${id}-title`}>Create a new season?</h2></div>
-    <div className="season-confirm-preview"><span>New season</span><strong>{selection.loading ? "Loading?" : `Season ${nextNumber}`}</strong><small>8_Mariya Meets / {selection.loading ? "?" : `SEASON ${nextNumber}`}</small></div>
+    <div className="season-confirm-preview"><span>New season</span><strong>{selection.loading ? "Loading?" : `Season ${nextNumber}`}</strong><small>{selection.loading ? "Workspace project" : `SEASON ${nextNumber}`}</small></div>
     {selection.error && <p className="season-confirm-error" role="alert">{selection.error}</p>}
     <div className="season-confirm-actions">
       <button type="button" className="ghost" autoFocus disabled={selection.creating} onClick={onClose}>Cancel</button>

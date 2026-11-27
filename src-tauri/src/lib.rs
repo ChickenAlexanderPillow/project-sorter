@@ -6,8 +6,8 @@ use sha2::{Digest, Sha256};
 use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::io::{self, Read, Write};
-use std::path::{Path, PathBuf};
-use std::sync::{mpsc, Mutex, OnceLock};
+use std::path::{Component, Path, PathBuf};
+use std::sync::{mpsc, Arc, Mutex, OnceLock};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 use tauri::{Emitter, Manager};
@@ -19,10 +19,14 @@ mod studio_mail;
 mod ingest;
 mod media_browser;
 mod client_files;
+mod media_drop;
+mod sort_transfer;
 mod premiere_health;
 mod file_drag;
 mod file_locations;
 mod takehome;
+mod workspace;
+mod background;
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 struct ClientInfo {
@@ -204,6 +208,19 @@ fn approval_version_from_progress_filename(filename: &str) -> Option<u32> {
 }
 
 fn is_adobe_export_intermediate(path: &Path) -> bool {
+    // Premiere can leave the active mux stream beside its target as
+    // `MASTER.mp4._00_` while the clean export is still being written.
+    if let Some(filename) = path.file_name().and_then(|name| name.to_str()) {
+        if let Some((target, sequence)) = filename.rsplit_once("._") {
+            let sequence = sequence.strip_suffix('_').unwrap_or(sequence);
+            let target_is_video = Path::new(target)
+                .extension()
+                .is_some_and(|ext| ["mp4", "mov", "mxf"].iter().any(|candidate| ext.eq_ignore_ascii_case(candidate)));
+            if target_is_video && !sequence.is_empty() && sequence.bytes().all(|byte| byte.is_ascii_digit()) {
+                return true;
+            }
+        }
+    }
     if !path.extension().is_some_and(|ext| ext.eq_ignore_ascii_case("m4v")) {
         return false;
     }
@@ -328,6 +345,13 @@ fn approval_progress_for_client(client_name: &str, client_path: &Path) -> Option
             }
             let metadata = entry.metadata().ok()?;
             let modified = metadata.modified().ok()?;
+            if std::time::SystemTime::now()
+                .duration_since(modified)
+                .unwrap_or_default()
+                > APPROVAL_PROGRESS_STALE_AFTER
+            {
+                return None;
+            }
             Some((modified, filename))
         })
         .collect();
@@ -417,6 +441,8 @@ struct SortProgress {
     total: usize,
     current: String,
     result: String,
+    bytes_done: u64,
+    bytes_total: u64,
 }
 
 struct WatchState {
@@ -424,6 +450,7 @@ struct WatchState {
     stop_tx: Option<mpsc::Sender<()>>,
     thread: Option<JoinHandle<()>>,
 }
+static WATCH_GENERATION: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
 const REQUIRED_DIRS: [&str; 4] = ["01_MEDIA", "02_EDIT", "03_EXPORTS", "04_FINAL"];
 const WINDOWS_NOT_SAME_DEVICE: i32 = 17;
@@ -461,6 +488,19 @@ fn destination_for_mode(mode: &str) -> Option<&'static str> {
         "STILLS" => Some("01_MEDIA/050_STILLS"),
         "EXPORTS" => Some("03_EXPORTS"),
         "APPROVAL EXPORTS" => Some("03_EXPORTS/APPROVAL"),
+        _ => None,
+    }
+}
+
+fn purpose_for_mode(mode: &str) -> Option<&'static str> {
+    match mode {
+        "VIDEO PROXY" => Some("video_proxy"),
+        "VIDEO RAW" => Some("video_raw"),
+        "AUDIO CLEAN" => Some("audio_clean"),
+        "AUDIO RAW" => Some("audio_raw"),
+        "STILLS" => Some("stills"),
+        "EXPORTS" => Some("exports"),
+        "APPROVAL EXPORTS" => Some("approval"),
         _ => None,
     }
 }
@@ -741,8 +781,6 @@ fn frameio_sidecar_path(video_path: &Path) -> PathBuf {
 }
 
 fn read_frameio_record(video_path: &Path) -> Option<FrameIoRecord> {
-    let bytes = fs::read(frameio_sidecar_path(video_path)).ok()?;
-    let record = serde_json::from_slice::<FrameIoRecord>(&bytes).ok()?;
     let metadata = fs::metadata(video_path).ok()?;
     let modified_nanos = metadata
         .modified()
@@ -750,8 +788,29 @@ fn read_frameio_record(video_path: &Path) -> Option<FrameIoRecord> {
         .duration_since(std::time::UNIX_EPOCH)
         .ok()?
         .as_nanos();
-    (record.source_size == metadata.len() && record.source_modified_nanos == modified_nanos)
-        .then_some(record)
+    let adjacent_sidecar = frameio_sidecar_path(video_path);
+    let mut sidecars = vec![adjacent_sidecar.clone()];
+    if video_path
+        .parent()
+        .and_then(Path::file_name)
+        .is_some_and(|name| name.to_string_lossy().eq_ignore_ascii_case("SUPERSEDED"))
+    {
+        if let Some(legacy_sidecar) = video_path
+            .parent()
+            .and_then(Path::parent)
+            .map(|approval_dir| approval_dir.join(adjacent_sidecar.file_name().unwrap_or_default()))
+        {
+            sidecars.push(legacy_sidecar);
+        }
+    }
+    for sidecar in sidecars {
+        let Ok(bytes) = fs::read(sidecar) else { continue; };
+        let Ok(record) = serde_json::from_slice::<FrameIoRecord>(&bytes) else { continue; };
+        if record.source_size == metadata.len() && record.source_modified_nanos == modified_nanos {
+            return Some(record);
+        }
+    }
+    None
 }
 
 fn scan_approval_versions(exports_dir: &Path) -> Result<Vec<ExportVersion>, String> {
@@ -1097,7 +1156,12 @@ fn files_match(left: &Path, right: &Path) -> io::Result<bool> {
     }
 }
 
-fn copy_with_sha256(source: &Path, destination: &Path) -> io::Result<(u64, String)> {
+fn copy_with_sha256_progress(
+    source: &Path,
+    destination: &Path,
+    mut on_progress: impl FnMut(u64, u64),
+) -> io::Result<(u64, String)> {
+    let total = fs::metadata(source)?.len();
     let mut input = fs::File::open(source)?;
     let mut output = fs::File::create(destination)?;
     let mut digest = Sha256::new();
@@ -1111,20 +1175,32 @@ fn copy_with_sha256(source: &Path, destination: &Path) -> io::Result<(u64, Strin
         output.write_all(&buffer[..read])?;
         digest.update(&buffer[..read]);
         copied += read as u64;
+        on_progress(copied, total);
     }
     Ok((copied, format!("{:x}", digest.finalize())))
 }
 
 fn sha256_file(path: &Path) -> io::Result<String> {
+    sha256_file_progress(path, |_, _| {})
+}
+
+fn sha256_file_progress(
+    path: &Path,
+    mut on_progress: impl FnMut(u64, u64),
+) -> io::Result<String> {
     let mut file = fs::File::open(path)?;
     let mut digest = Sha256::new();
     let mut buffer = vec![0u8; 1024 * 1024];
+    let total = file.metadata()?.len();
+    let mut processed = 0u64;
     loop {
         let read = file.read(&mut buffer)?;
         if read == 0 {
             break;
         }
         digest.update(&buffer[..read]);
+        processed += read as u64;
+        on_progress(processed, total);
     }
     Ok(format!("{:x}", digest.finalize()))
 }
@@ -1159,9 +1235,18 @@ fn cached_files_match(source: &Path, final_file: &Path) -> io::Result<bool> {
     Ok(matches)
 }
 
+#[cfg(test)]
 fn promote_latest_export_for_client(
     client_path: &Path,
     expected_filename: Option<&str>,
+) -> Result<String, String> {
+    promote_latest_export_for_client_with_progress(client_path, expected_filename, |_, _| {})
+}
+
+fn promote_latest_export_for_client_with_progress(
+    client_path: &Path,
+    expected_filename: Option<&str>,
+    mut on_progress: impl FnMut(u64, u64),
 ) -> Result<String, String> {
     let exports_dir = client_path.join("03_EXPORTS");
     let final_dir = client_path.join("04_FINAL");
@@ -1202,7 +1287,10 @@ fn promote_latest_export_for_client(
     .map_err(|error| format!("Unable to record FINAL publish attempt: {error}"))?;
     let source_before =
         fs::metadata(&source).map_err(|error| format!("Unable to read export: {error}"))?;
-    let (copied, source_digest) = match copy_with_sha256(&source, &stage) {
+    let total_work = source_before.len().saturating_mul(2);
+    let (copied, source_digest) = match copy_with_sha256_progress(&source, &stage, |copied, _| {
+        on_progress(copied, total_work);
+    }) {
         Ok(copied) => copied,
         Err(error) => {
             let _ = fs::remove_file(&stage);
@@ -1219,7 +1307,9 @@ fn promote_latest_export_for_client(
         {
             return Ok(false);
         }
-        let staged_digest = sha256_file(&stage).map_err(|error| error.to_string())?;
+        let staged_digest = sha256_file_progress(&stage, |validated, _| {
+            on_progress(source_before.len().saturating_add(validated), total_work);
+        }).map_err(|error| error.to_string())?;
         Ok(source_digest == staged_digest)
     })();
     match validation {
@@ -1473,6 +1563,60 @@ fn ensure_dir(path: &Path) -> Result<(), io::Error> {
     Ok(())
 }
 
+fn ensure_client_destination_dir(client_root: &Path, destination: &Path) -> Result<(), String> {
+    let canonical_client = client_root
+        .canonicalize()
+        .map_err(|error| format!("Client folder is unavailable: {error}"))?;
+    let relative = destination
+        .strip_prefix(client_root)
+        .map_err(|_| "Destination is outside the client folder".to_string())?;
+    let mut cursor = client_root.to_path_buf();
+    for component in relative.components() {
+        let Component::Normal(name) = component else {
+            return Err("Destination contains an unsafe path component".into());
+        };
+        cursor.push(name);
+        match fs::symlink_metadata(&cursor) {
+            Ok(metadata) => {
+                if is_link_or_reparse(&metadata) {
+                    return Err(format!("Destination contains a link; no files were sorted: {}", cursor.display()));
+                }
+                if !metadata.is_dir() {
+                    return Err(format!("Destination is not a folder: {}", cursor.display()));
+                }
+                let canonical = cursor.canonicalize().map_err(|error| error.to_string())?;
+                if !canonical.starts_with(&canonical_client) {
+                    return Err("Destination resolves outside the client folder".into());
+                }
+            }
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {
+                fs::create_dir(&cursor).map_err(|error| format!("Could not create destination folder: {error}"))?;
+                let metadata = fs::symlink_metadata(&cursor).map_err(|error| error.to_string())?;
+                let canonical = cursor.canonicalize().map_err(|error| error.to_string())?;
+                if is_link_or_reparse(&metadata) || !metadata.is_dir() || !canonical.starts_with(&canonical_client) {
+                    return Err("Destination changed while it was being prepared; no files were sorted".into());
+                }
+            }
+            Err(error) => return Err(format!("Could not inspect destination folder: {error}")),
+        }
+    }
+    Ok(())
+}
+
+fn is_link_or_reparse(metadata: &fs::Metadata) -> bool {
+    if metadata.file_type().is_symlink() {
+        return true;
+    }
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::MetadataExt;
+        const FILE_ATTRIBUTE_REPARSE_POINT: u32 = 0x400;
+        return metadata.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0;
+    }
+    #[cfg(not(windows))]
+    false
+}
+
 fn client_project_filename(client_name: &str) -> String {
     let parts: Vec<&str> = client_name
         .split('_')
@@ -1668,6 +1812,107 @@ fn username() -> String {
 }
 
 #[tauri::command]
+async fn workspace_discover(root: String) -> Result<workspace::WorkspaceDiscovery, String> {
+    tauri::async_runtime::spawn_blocking(move || workspace::discover(&root))
+        .await.map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+fn default_workspace_root() -> String {
+    PRODUCTION_PROJECTS_ROOT.to_string()
+}
+
+#[tauri::command]
+async fn workspace_starter(root: String, display_name: String, project_show_names: Vec<String>) -> Result<workspace::WorkspaceConfig, String>{
+    crate::background::run(move || workspace_starter_sync(root, display_name, project_show_names)).await?
+}
+
+fn workspace_starter_sync(root: String, display_name: String, project_show_names: Vec<String>) -> Result<workspace::WorkspaceConfig, String>{
+    let path = PathBuf::from(&root).canonicalize().map_err(|error| format!("Workspace root is unavailable: {error}"))?;
+    let projects = workspace::projects_from_filesystem(&path)?;
+    Ok(workspace::starter(&root, projects, project_show_names, display_name))
+}
+
+#[tauri::command]
+async fn workspace_register_project(root: String, project_path: String, name: String) -> Result<workspace::WorkspaceConfig, String>{
+    crate::background::run(move || workspace_register_project_sync(root, project_path, name)).await?
+}
+
+fn workspace_register_project_sync(root: String, project_path: String, name: String) -> Result<workspace::WorkspaceConfig, String>{
+    workspace::register_project(&root, &project_path, &name)
+}
+
+#[tauri::command]
+async fn workspace_save(root: String, draft: workspace::WorkspaceConfig, expected_revision: Option<u64>, expected_hash: Option<String>) -> Result<workspace::WorkspaceConfig, String>{
+    crate::background::run(move || workspace_save_sync(root, draft, expected_revision, expected_hash)).await?
+}
+
+fn workspace_save_sync(root: String, draft: workspace::WorkspaceConfig, expected_revision: Option<u64>, expected_hash: Option<String>) -> Result<workspace::WorkspaceConfig, String>{
+    workspace::save(&root, draft, expected_revision, expected_hash.as_deref())
+}
+
+#[tauri::command]
+async fn workspace_history(root: String) -> Result<Vec<workspace::WorkspaceHistoryEntry>, String>{
+    crate::background::run(move || workspace_history_sync(root)).await?
+}
+
+fn workspace_history_sync(root: String) -> Result<Vec<workspace::WorkspaceHistoryEntry>, String>{
+    workspace::history(&root)
+}
+
+#[tauri::command]
+async fn workspace_read_recovery(root: String, file_name: String) -> Result<workspace::WorkspaceConfig, String>{
+    crate::background::run(move || workspace_read_recovery_sync(root, file_name)).await?
+}
+
+fn workspace_read_recovery_sync(root: String, file_name: String) -> Result<workspace::WorkspaceConfig, String>{
+    workspace::snapshot(&root, &file_name)
+}
+
+#[tauri::command]
+async fn workspace_import_read(path: String) -> Result<workspace::WorkspaceConfig, String>{
+    crate::background::run(move || workspace_import_read_sync(path)).await?
+}
+
+fn workspace_import_read_sync(path: String) -> Result<workspace::WorkspaceConfig, String>{
+    let config: workspace::WorkspaceConfig = serde_json::from_slice(&fs::read(&path).map_err(|error| format!("Could not read import file: {error}"))?)
+        .map_err(|error| format!("Import file is not valid workspace configuration: {error}"))?;
+    workspace::validate(&config)?;
+    Ok(config)
+}
+
+#[tauri::command]
+async fn workspace_export(root: String, path: String) -> Result<(), String> {
+    crate::background::run(move || workspace_export_sync(root, path)).await?
+}
+
+fn workspace_export_sync(root: String, path: String) -> Result<(), String>{
+    let discovery = workspace::discover(&root);
+    if discovery.status != "valid" { return Err(discovery.message.unwrap_or_else(|| "No valid saved workspace settings to export".into())); }
+    let config = discovery.config.ok_or_else(|| "No valid saved workspace settings to export".to_string())?;
+    let bytes = serde_json::to_vec_pretty(&config).map_err(|error| error.to_string())?;
+    let mut file = fs::OpenOptions::new().write(true).create_new(true).open(&path)
+        .map_err(|error| format!("Could not create export file: {error}"))?;
+    file.write_all(&bytes).and_then(|_| file.sync_all()).map_err(|error| format!("Could not write export file: {error}"))
+}
+
+#[tauri::command]
+async fn workspace_restore(root: String, file_name: String, expected_revision: u64, expected_hash: String) -> Result<workspace::WorkspaceConfig, String>{
+    crate::background::run(move || workspace_restore_sync(root, file_name, expected_revision, expected_hash)).await?
+}
+
+fn workspace_restore_sync(root: String, file_name: String, expected_revision: u64, expected_hash: String) -> Result<workspace::WorkspaceConfig, String>{
+    let current = workspace::discover(&root);
+    let current_config = current.config.ok_or_else(|| current.message.unwrap_or_else(|| "Workspace settings are unavailable".into()))?;
+    if current_config.revision != expected_revision || current_config.content_hash != expected_hash {
+        return Err("Workspace settings changed after recovery review. Refresh the review before restoring.".into());
+    }
+    let mut restored = workspace::snapshot(&root, &file_name)?;
+    restored.workspace_id = current_config.workspace_id;
+    workspace::save(&root, restored, Some(expected_revision), Some(&expected_hash))
+}
+
+#[tauri::command]
 fn append_debug_log(message: String) -> Result<(), String> {
     let path = std::env::temp_dir().join("project-sorter-drag.log");
     let mut file = fs::OpenOptions::new()
@@ -1714,8 +1959,7 @@ fn affected_clients(event: &Event, root: &Path) -> (bool, HashSet<String>) {
         if components.is_empty() {
             continue;
         }
-        let is_mariya_meets = root.file_name().and_then(|value| value.to_str())
-            .map(|value| value.eq_ignore_ascii_case("8_Mariya Meets")).unwrap_or(false);
+        let is_mariya_meets = workspace::season_support_available(root).unwrap_or(false);
         let season_path = is_mariya_meets && components[0].to_ascii_uppercase().starts_with("SEASON ");
         let client_index = if season_path { 1 } else { 0 };
         if components.len() <= client_index { all_clients = true; clients.clear(); break; }
@@ -1842,14 +2086,12 @@ async fn scan_project_root(
         let partial = client_names.is_some();
         let requested_names: HashSet<String> =
             client_names.unwrap_or_default().into_iter().collect();
-        let is_mariya_meets = root.file_name().and_then(|value| value.to_str())
-            .map(|value| value.eq_ignore_ascii_case("8_Mariya Meets"))
-            .unwrap_or(false);
+        let is_mariya_meets = workspace::season_support_available(&root).unwrap_or(false);
         let mut client_paths = Vec::new();
         let mut removed_names = Vec::new();
         if partial {
             for name in &requested_names {
-                if name == "_logs" || name == "_INGEST" || Path::new(name).components().count() != 1 {
+                if name == ".pepper" || name == "_logs" || name == "_INGEST" || Path::new(name).components().count() != 1 {
                     continue;
                 }
                 let direct_path = root.join(name);
@@ -1886,7 +2128,7 @@ async fn scan_project_root(
                     Some(name) => name.to_string(),
                     None => continue,
                 };
-                if name == "_logs" || name == "_INGEST" {
+                if name == ".pepper" || name == "_logs" || name == "_INGEST" {
                     continue;
                 }
                 let is_season = is_mariya_meets && name.to_ascii_uppercase().starts_with("SEASON ");
@@ -2020,21 +2262,24 @@ fn mariya_meets_seasons(root: &Path) -> Result<Vec<String>, String> {
 }
 
 #[tauri::command]
-fn list_mariya_meets_seasons(project_root: String) -> Result<Vec<String>, String> {
+async fn list_mariya_meets_seasons(project_root: String) -> Result<Vec<String>, String>{
+    crate::background::run(move || list_mariya_meets_seasons_sync(project_root)).await?
+}
+
+fn list_mariya_meets_seasons_sync(project_root: String) -> Result<Vec<String>, String>{
     let root = PathBuf::from(project_root);
-    if !root.file_name().and_then(|name| name.to_str())
-        .map(|name| name.eq_ignore_ascii_case("8_Mariya Meets")).unwrap_or(false) {
-        return Err("Seasons are only available in 8_Mariya Meets".to_string());
-    }
+    if !workspace::season_support_available(&root)? { return Err("Season support is not enabled for this project profile".to_string()); }
     mariya_meets_seasons(&root)
 }
 
 #[tauri::command]
-fn create_mariya_meets_season(project_root: String) -> Result<String, String> {
+async fn create_mariya_meets_season(project_root: String) -> Result<String, String>{
+    crate::background::run(move || create_mariya_meets_season_sync(project_root)).await?
+}
+
+fn create_mariya_meets_season_sync(project_root: String) -> Result<String, String>{
     let root = PathBuf::from(project_root);
-    let is_mariya_meets = root.file_name().and_then(|value| value.to_str())
-        .map(|value| value.eq_ignore_ascii_case("8_Mariya Meets")).unwrap_or(false);
-    if !is_mariya_meets { return Err("Season creation is only available in 8_Mariya Meets".to_string()); }
+    if !workspace::season_support_available(&root)? { return Err("Season support is not enabled for this project profile".to_string()); }
     let mut highest = 0;
     for entry in fs::read_dir(&root).map_err(|error| error.to_string())? {
         let entry = entry.map_err(|error| error.to_string())?;
@@ -2059,15 +2304,25 @@ async fn scan_approval_progress(
         if !root.is_dir() {
             return Err("Project root is not a directory".to_string());
         }
+        let season_names = if workspace::season_support_available(&root).unwrap_or(false) {
+            mariya_meets_seasons(&root).unwrap_or_default()
+        } else {
+            Vec::new()
+        };
         let mut progress = Vec::new();
         for name in client_names {
             if name == "_logs" || name == "." || name == ".." || Path::new(&name).components().count() != 1 {
                 continue;
             }
-            let client_path = root.join(&name);
-            if !client_path.is_dir() {
-                continue;
-            }
+            let direct_path = root.join(&name);
+            let client_path = if direct_path.is_dir() {
+                Some(direct_path)
+            } else {
+                season_names.iter()
+                    .map(|season| root.join(season).join(&name))
+                    .find(|path| path.is_dir())
+            };
+            let Some(client_path) = client_path else { continue };
             if let Some(status) = approval_progress_for_client(&name, &client_path) {
                 progress.push(status);
             }
@@ -2079,9 +2334,9 @@ async fn scan_approval_progress(
 }
 
 #[tauri::command]
-async fn list_project_roots() -> Result<Vec<ProjectRootOption>, String> {
-    tauri::async_runtime::spawn_blocking(|| {
-        let root = Path::new(PRODUCTION_PROJECTS_ROOT);
+async fn list_project_roots(workspace_root: String) -> Result<Vec<ProjectRootOption>, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let root = Path::new(&workspace_root);
         let entries = fs::read_dir(root).map_err(|error| {
             format!("Unable to read project list at {}: {error}", root.display())
         })?;
@@ -2162,7 +2417,7 @@ fn get_project_show_catalog(app: tauri::AppHandle) -> Result<ProjectShowCatalog,
 }
 
 #[tauri::command]
-async fn create_project_folder(show_name: String, year: u32) -> Result<ProjectRootOption, String> {
+async fn create_project_folder(workspace_root: String, show_name: String, year: u32) -> Result<ProjectRootOption, String> {
     tauri::async_runtime::spawn_blocking(move || {
         let show_name = show_name.trim();
         if show_name.is_empty() || show_name.chars().any(|ch| !(ch.is_ascii_alphanumeric() || ch == ' ' || ch == '-' || ch == '_')) {
@@ -2172,7 +2427,7 @@ async fn create_project_folder(show_name: String, year: u32) -> Result<ProjectRo
         if year < current_year || year > current_year + 1 {
             return Err("Choose the current year or the following year".to_string());
         }
-        let production = Path::new(PRODUCTION_PROJECTS_ROOT);
+        let production = Path::new(&workspace_root);
         let entries = fs::read_dir(production).map_err(|error| format!("Unable to read production folder: {error}"))?;
         let mut next_number = 1u32;
         for entry in entries.flatten().filter(|entry| entry.path().is_dir()) {
@@ -2196,21 +2451,29 @@ async fn create_project_folder(show_name: String, year: u32) -> Result<ProjectRo
 
 #[tauri::command]
 async fn promote_latest_export(
+    app: tauri::AppHandle,
     client_path: String,
     expected_filename: String,
     selected_clips: Vec<ClipSelection>,
 ) -> Result<String, String> {
     tauri::async_runtime::spawn_blocking(move || {
+        #[derive(Serialize, Clone)]
+        struct PublishProgress { client_path: String, stage: String, completed: u64, total: u64 }
         let client = Path::new(&client_path);
         validate_clip_selections(client, &selected_clips)?;
         let current = scan_export_status(client);
         let main_result = if current.final_current && current.latest_filename.as_deref() == Some(expected_filename.as_str()) {
+            let _ = app.emit("publish-progress", PublishProgress { client_path: client_path.clone(), stage: "main".into(), completed: 1, total: 1 });
             "Main video is already current".to_string()
         } else {
-            promote_latest_export_for_client(client, Some(&expected_filename))?
+            promote_latest_export_for_client_with_progress(client, Some(&expected_filename), |completed, total| {
+                let _ = app.emit("publish-progress", PublishProgress { client_path: client_path.clone(), stage: "main".into(), completed, total });
+            })?
         };
         if selected_clips.is_empty() { return Ok(main_result); }
-        match publish_client_clips_sync(client, &selected_clips) {
+        match publish_client_clips_sync_with_progress(client, &selected_clips, |completed, total| {
+            let _ = app.emit("publish-progress", PublishProgress { client_path: client_path.clone(), stage: "clips".into(), completed, total });
+        }) {
             Ok(clips_result) => Ok(format!("{main_result}. {clips_result}")),
             Err(error) => Err(format!("Main video published successfully, but clip publishing needs attention: {error}")),
         }
@@ -2281,6 +2544,14 @@ async fn publish_client_clips(client_path: String, clip_selections: Vec<ClipSele
 }
 
 fn publish_client_clips_sync(client: &Path, selections: &[ClipSelection]) -> Result<String, String> {
+    publish_client_clips_sync_with_progress(client, selections, |_, _| {})
+}
+
+fn publish_client_clips_sync_with_progress(
+    client: &Path,
+    selections: &[ClipSelection],
+    mut on_progress: impl FnMut(u64, u64),
+) -> Result<String, String> {
     static CLIP_PUBLISH_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
     let _publish_guard = CLIP_PUBLISH_LOCK.get_or_init(|| Mutex::new(())).lock().map_err(|_| "Clip publishing lock is unavailable".to_string())?;
     let final_dir = client.join("04_FINAL");
@@ -2291,6 +2562,11 @@ fn publish_client_clips_sync(client: &Path, selections: &[ClipSelection]) -> Res
     let clip_dir = final_dir.join("CLIPS");
     let mut metadata: serde_json::Value = fs::read(final_dir.join(".pepper-clips.json")).ok().and_then(|bytes| serde_json::from_slice::<serde_json::Value>(&bytes).ok()).filter(serde_json::Value::is_object).unwrap_or_else(|| serde_json::json!({}));
     let mut failed = Vec::new();
+    let total_bytes = selections.iter().fold(0u64, |total, selection| {
+        let has_destination = clip_dir.join(&selection.name).is_file();
+        total.saturating_add(selection.size.saturating_mul(if has_destination { 5 } else { 4 }))
+    });
+    let mut completed_bytes = 0u64;
     for selection in selections {
         let name = &selection.name;
         let safe = Path::new(name);
@@ -2302,21 +2578,40 @@ fn publish_client_clips_sync(client: &Path, selections: &[ClipSelection]) -> Res
         let ext = safe.extension().and_then(|v| v.to_str()).unwrap_or("").to_ascii_lowercase();
         if !VIDEO_EXTENSIONS.contains(&ext.as_str()) { failed.push(format!("{name}: unsupported video file")); continue; }
         let destination = clip_dir.join(name);
-        let source_digest_before = match sha256_file(&source) { Ok(value) => value, Err(error) => { failed.push(format!("{name}: unable to validate source: {error}")); continue; } };
+        let has_destination = destination.is_file();
+        let file_work = before.len().saturating_mul(if has_destination { 5 } else { 4 });
+        let source_digest_before = match sha256_file_progress(&source, |hashed, _| {
+            on_progress(completed_bytes.saturating_add(hashed), total_bytes);
+        }) { Ok(value) => value, Err(error) => { failed.push(format!("{name}: unable to validate source: {error}")); continue; } };
         if source_digest_before != selection.sha256 { failed.push(format!("{name}: source content changed since confirmation; refresh and confirm the selection again")); continue; }
         let prior_digest = metadata.get(name).and_then(|v| v.get("sha256")).and_then(|v| v.as_str());
-        if destination.is_file() && sha256_file(&destination).is_ok_and(|value| value == source_digest_before) {
+        let destination_digest = if has_destination {
+            sha256_file_progress(&destination, |hashed, _| {
+                on_progress(completed_bytes.saturating_add(before.len()).saturating_add(hashed), total_bytes);
+            }).ok()
+        } else { None };
+        if destination_digest.as_deref() == Some(source_digest_before.as_str()) {
             if prior_digest != Some(source_digest_before.as_str()) { metadata[name]=serde_json::json!({"sha256":source_digest_before,"size":before.len(),"published_at":chrono::Utc::now().to_rfc3339()}); if let Err(error)=persist_clip_metadata(&final_dir,&metadata){failed.push(format!("{name}: verified destination is current but metadata repair failed: {error}"));} }
+            completed_bytes = completed_bytes.saturating_add(file_work);
+            on_progress(completed_bytes, total_bytes);
             continue;
         }
         let stage_dir = final_dir.join(".staging");
         if let Err(error) = fs::create_dir_all(&stage_dir) { failed.push(format!("{name}: {error}")); continue; }
         let stage = stage_dir.join(format!("clip-{}-{}.part", std::process::id(), chrono::Utc::now().timestamp_nanos_opt().unwrap_or_default()));
-        let copied = copy_with_sha256(&source, &stage);
+        let copied = copy_with_sha256_progress(&source, &stage, |copied, _| {
+            on_progress(completed_bytes.saturating_add(before.len().saturating_mul(if has_destination { 2 } else { 1 })).saturating_add(copied), total_bytes);
+        });
         let (size, digest) = match copied { Ok(value) => value, Err(error) => { let _ = fs::remove_file(&stage); failed.push(format!("{name}: copy failed: {error}")); continue; } };
         let after = fs::metadata(&source);
+        let validation_source_digest = sha256_file_progress(&source, |hashed, _| {
+            on_progress(completed_bytes.saturating_add(before.len().saturating_mul(if has_destination { 3 } else { 2 })).saturating_add(hashed), total_bytes);
+        }).ok();
+        let validation_stage_digest = sha256_file_progress(&stage, |hashed, _| {
+            on_progress(completed_bytes.saturating_add(before.len().saturating_mul(if has_destination { 4 } else { 3 })).saturating_add(hashed), total_bytes);
+        }).ok();
         let valid = after.as_ref().is_ok_and(|v| v.len() == before.len() && v.modified().ok() == before.modified().ok())
-            && size == before.len() && digest == source_digest_before && sha256_file(&source).is_ok_and(|v| v == source_digest_before) && sha256_file(&stage).is_ok_and(|v| v == digest);
+            && size == before.len() && digest == source_digest_before && validation_source_digest.as_deref() == Some(source_digest_before.as_str()) && validation_stage_digest.as_deref() == Some(digest.as_str());
         if !valid { let _ = fs::remove_file(&stage); failed.push(format!("{name}: source changed or staged copy verification failed; retry")); continue; }
         if let Err(error)=fs::File::options().read(true).write(true).open(&stage).and_then(|file|file.sync_all()) { let _=fs::remove_file(&stage); failed.push(format!("{name}: unable to flush verified copy: {error}")); continue; }
         if let Err(error) = fs::create_dir_all(&clip_dir) { let _ = fs::remove_file(&stage); failed.push(format!("{name}: cannot create FINAL/CLIPS: {error}")); continue; }
@@ -2331,6 +2626,8 @@ fn publish_client_clips_sync(client: &Path, selections: &[ClipSelection]) -> Res
         if let Err(error) = fs::rename(&stage, &dest) { if let Some(archived)=archived_previous { let _=fs::rename(archived,&dest); } failed.push(format!("{name}: unable to activate verified copy: {error}")); continue; }
         metadata[name] = serde_json::json!({"sha256":digest,"size":size,"published_at":chrono::Utc::now().to_rfc3339()});
         if let Err(error)=persist_clip_metadata(&final_dir,&metadata) { failed.push(format!("{name}: published but metadata update failed: {error}")); }
+        completed_bytes = completed_bytes.saturating_add(file_work);
+        on_progress(completed_bytes, total_bytes);
     }
     if failed.is_empty() { Ok(format!("Published {} clip{}", selections.len(), if selections.len() == 1 { "" } else { "s" })) }
     else { Err(format!("Some clips were not published; successful clips remain published. Retry failed items: {}", failed.join("; "))) }
@@ -2373,14 +2670,26 @@ async fn migrate_project_finals(project_root: String) -> Result<usize, String> {
 }
 
 #[tauri::command]
-fn set_watch_root(
+async fn set_watch_root(
     window: tauri::Window,
     project_root: String,
-    state: tauri::State<Mutex<WatchState>>,
+    state: tauri::State<'_, Arc<Mutex<WatchState>>>,
+) -> Result<(), String> {
+    let state = state.inner().clone();
+    let generation = WATCH_GENERATION.fetch_add(1, std::sync::atomic::Ordering::SeqCst) + 1;
+    crate::background::run(move || set_watch_root_sync(window, project_root, state, generation)).await?
+}
+
+fn set_watch_root_sync(
+    window: tauri::Window,
+    project_root: String,
+    state: Arc<Mutex<WatchState>>,
+    generation: u64,
 ) -> Result<(), String> {
     let mut state = state
         .lock()
         .map_err(|_| "Watcher lock poisoned".to_string())?;
+    if WATCH_GENERATION.load(std::sync::atomic::Ordering::SeqCst) != generation { return Ok(()); }
     if let Some(stop_tx) = state.stop_tx.take() {
         let _ = stop_tx.send(());
     }
@@ -2398,6 +2707,7 @@ fn set_watch_root(
         return Err("Project root is not a directory".to_string());
     }
     let root_canon = root_path.canonicalize().unwrap_or(root_path.clone());
+    if WATCH_GENERATION.load(std::sync::atomic::Ordering::SeqCst) != generation { return Ok(()); }
 
     let (event_tx, event_rx) = mpsc::channel::<notify::Result<Event>>();
     let (stop_tx, stop_rx) = mpsc::channel::<()>();
@@ -2474,12 +2784,16 @@ fn set_watch_root(
 }
 
 #[tauri::command]
-async fn create_client(project_root:String,client_name:String,client_type:String,huddle_template:Option<String>,season:Option<String>)->Result<(),String>{
-    tauri::async_runtime::spawn_blocking(move||create_client_sync(project_root,client_name,client_type,huddle_template,season)).await.map_err(|error|error.to_string())?
+async fn create_client(project_root:String,client_name:String,client_type:String,huddle_template:Option<String>,season:Option<String>,resource_mappings:HashMap<String,String>)->Result<(),String>{
+    tauri::async_runtime::spawn_blocking(move||create_client_with_resources(project_root,client_name,client_type,huddle_template,season,resource_mappings)).await.map_err(|error|error.to_string())?
 }
 
 #[tauri::command]
-fn set_client_huddle_template(client_path:String,huddle_template:String)->Result<(),String>{
+async fn set_client_huddle_template(client_path:String,huddle_template:String)-> Result<(), String> {
+    crate::background::run(move || set_client_huddle_template_sync(client_path, huddle_template)).await?
+}
+
+fn set_client_huddle_template_sync(client_path:String,huddle_template:String)->Result<(),String>{
     if !matches!(huddle_template.as_str(),"VIDEO_CALL"|"PHYSICAL") { return Err("Choose a supported Huddle interview type".into()); }
     let root=PathBuf::from(&client_path);
     if !root.is_dir(){return Err("Client folder is unavailable".into());}
@@ -2494,7 +2808,7 @@ fn set_client_huddle_template(client_path:String,huddle_template:String)->Result
         }else{serde_json::json!({"schema_version":1})};
         let existing_type=metadata.get("client_type").and_then(|v|v.as_str());
         let legacy_huddle=root.file_name().and_then(|v|v.to_str()).map(|v|v.to_ascii_uppercase().ends_with("_HUDDLE")).unwrap_or(false);
-        if existing_type!=Some("HUDDLE")&&!legacy_huddle{return Err("This action is only available for Huddle clients".into())}
+        if !existing_type.is_some_and(|value| value.eq_ignore_ascii_case("HUDDLE"))&&!legacy_huddle{return Err("This action is only available for Huddle clients".into())}
         let object=metadata.as_object_mut().ok_or("Client metadata must be a JSON object")?;
         object.insert("schema_version".into(),serde_json::json!(1));
         object.insert("client_type".into(),serde_json::json!("HUDDLE"));
@@ -2516,6 +2830,7 @@ fn replace_client_metadata(from:&Path,to:&Path)->Result<(),String>{
     let from:Vec<u16>=from.as_os_str().encode_wide().chain(Some(0)).collect();let to:Vec<u16>=to.as_os_str().encode_wide().chain(Some(0)).collect();
     unsafe{MoveFileExW(windows::core::PCWSTR(from.as_ptr()),windows::core::PCWSTR(to.as_ptr()),MOVEFILE_REPLACE_EXISTING|MOVEFILE_WRITE_THROUGH)}.map_err(|e|e.to_string())
 }
+#[cfg(test)]
 fn create_client_sync(
     project_root: String,
     client_name: String,
@@ -2523,13 +2838,42 @@ fn create_client_sync(
     huddle_template: Option<String>,
     season: Option<String>,
 ) -> Result<(), String> {
+    create_client_with_resources(project_root, client_name, client_type, huddle_template, season, HashMap::new())
+}
+
+fn create_client_with_resources(
+    project_root: String,
+    client_name: String,
+    client_type: String,
+    huddle_template: Option<String>,
+    season: Option<String>,
+    resource_mappings: HashMap<String, String>,
+) -> Result<(), String> {
     let project_root = PathBuf::from(project_root);
-    let is_mariya_meets = project_root.file_name().and_then(|value| value.to_str())
-        .map(|value| value.eq_ignore_ascii_case("8_Mariya Meets")).unwrap_or(false);
-    if season.is_some() && (!is_mariya_meets || client_type != "MARIYAMEETS") {
-        return Err("Season selection is only available for Mariya Meets clients in 8_Mariya Meets".to_string());
+    let workspace_root = project_root.parent().map(Path::to_path_buf);
+    let config = workspace::load_for_project(&project_root)?;
+    let selected_type = config.as_ref().and_then(|config| workspace::client_type(config, &client_type));
+    let profile = config.as_ref().and_then(|config| workspace::profile_for_project(config, &project_root));
+    if let Some(config) = &config {
+        let profile = profile.ok_or_else(|| "No project profile is configured for this project".to_string())?;
+        if !profile.allowed_client_type_ids.iter().any(|id| id.eq_ignore_ascii_case(&client_type)) {
+            return Err("This client type is not allowed by the project's shared profile".into());
+        }
+        if selected_type.is_none() { return Err("This client type is not defined in shared workspace settings".into()); }
+        if !config.folder_templates.iter().any(|template| selected_type.is_some_and(|client_type| template.id == client_type.folder_template_id)) {
+            return Err("The selected client type has no valid folder structure".into());
+        }
     }
-    let client_parent = if is_mariya_meets {
+    if Path::new(&client_name).components().count() != 1 || client_name.trim().is_empty()
+        || client_name.chars().any(|character| matches!(character, '<' | '>' | ':' | '"' | '/' | '\\' | '|' | '?' | '*' ) || character.is_control())
+        || client_name.ends_with('.') || client_name.ends_with(' ')
+    { return Err("Choose a valid client folder name".into()); }
+    let has_season_feature = selected_type.is_some_and(|item| item.features.iter().any(|feature| feature == "seasons"));
+    let is_season_project = if config.is_some() { has_season_feature } else { workspace::season_support_available(&project_root)? && client_type.eq_ignore_ascii_case("MARIYAMEETS") };
+    if season.is_some() && !is_season_project {
+        return Err("Season selection is available only for a client type with season support".into());
+    }
+    let client_parent = if is_season_project {
         let seasons = mariya_meets_seasons(&project_root)?;
         let selected = match season {
             Some(selected) if seasons.contains(&selected) => selected,
@@ -2537,50 +2881,107 @@ fn create_client_sync(
             None => seasons.into_iter().next().ok_or_else(|| "Create a season before adding a Mariya Meets project".to_string())?,
         };
         project_root.join(selected)
-    } else { project_root };
-    let client_root = client_parent.join(&client_name);
-    if client_root.exists() {
-        return Err("Client folder already exists".to_string());
+    } else { project_root.clone() };
+    let client_parent_canonical = client_parent.canonicalize().map_err(|error| format!("Client destination is unavailable: {error}"))?;
+    let project_canonical = project_root.canonicalize().map_err(|error| format!("Project folder is unavailable: {error}"))?;
+    if !client_parent_canonical.starts_with(&project_canonical) {
+        return Err("Client destination must remain inside the project folder".into());
     }
-    for dir in TEMPLATE_DIRS.iter() {
-        ensure_dir(&client_root.join(dir)).map_err(|e| e.to_string())?;
-    }
-
-    let metadata = serde_json::json!({"schema_version":1,"client_type":client_type,"huddle_template":if client_type=="HUDDLE" { huddle_template.as_deref() } else { None }});
-    fs::write(client_root.join(".pepper-client.json"), serde_json::to_vec_pretty(&metadata).map_err(|e|e.to_string())?)
-        .map_err(|e|format!("Unable to save client type metadata: {e}"))?;
-
-    if client_type == "EXHIBITOR" || client_type == "PRODUCT" || client_type == "HUDDLE" {
-        let template_source =
-            if client_type == "HUDDLE" && huddle_template.as_deref() == Some("VIDEO_CALL") {
-                PathBuf::from(CLIENT_SCENE_SWITCHING_TEMPLATE_SOURCE)
-            } else {
-                PathBuf::from(CLIENT_TEMPLATE_PROJECT_SOURCE)
-            };
-        if !template_source.exists() {
-            return Err(format!(
-                "Premiere template not found: {}",
-                template_source.display()
-            ));
+    if let Some(workspace_root) = &workspace_root {
+        let workspace_canonical = workspace_root.canonicalize().map_err(|error| format!("Workspace root is unavailable: {error}"))?;
+        if project_canonical.parent() != Some(workspace_canonical.as_path()) {
+            return Err("Project folder must be a direct child of the selected workspace root".into());
         }
+    }
+    if client_name.eq_ignore_ascii_case(".pepper") || client_name.starts_with(".pepper-client-setup-") {
+        return Err("Choose a client name that does not use a Pepper metadata name".into());
+    }
+    let client_root = client_parent.join(&client_name);
+    match fs::symlink_metadata(&client_root) {
+        Ok(_) => return Err("Client folder already exists".to_string()),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+        Err(error) => return Err(format!("Could not inspect client destination: {error}")),
+    }
 
-        let template_dest = client_root
-            .join("02_EDIT")
-            .join(client_project_filename(&client_name));
-        fs::copy(&template_source, &template_dest).map_err(|e| {
-            format!(
-                "Failed to copy Premiere template from {} to {}: {}",
-                template_source.display(),
-                template_dest.display(),
-                e
-            )
-        })?;
+    let selected_feature = selected_type.filter(|item| item.features.iter().any(|feature| feature == "premiere_project"));
+    let allowed_premiere = selected_feature.and_then(|item| item.feature_options.get("premiere_project"));
+    let selected_premiere = if allowed_premiere.is_some_and(|options| !options.is_empty()) {
+        let requested = if huddle_template.as_deref() == Some("VIDEO_CALL") { "video_call" } else { "standard" };
+        if !allowed_premiere.is_some_and(|options| options.iter().any(|option| option == requested)) {
+            return Err("This client type does not support the selected Premiere template".into());
+        }
+        Some(requested)
+    } else if selected_feature.is_some() { Some("standard") } else { None };
+    let template_source = if let Some(option) = selected_premiere {
+        if let Some(config) = &config {
+            let resource_id = if option == "video_call" { "premiere_video_call" } else { "premiere_standard" };
+            let resource = config.resources.iter().find(|resource| resource.id == resource_id);
+            let shared_path = resource.and_then(|resource| resource.relative_path.as_ref()).and_then(|relative| workspace_root.as_ref().map(|root| root.join(relative)));
+            let local_path = resource_mappings.get(resource_id).map(PathBuf::from);
+            let bundled_default = if option == "video_call" { PathBuf::from(CLIENT_SCENE_SWITCHING_TEMPLATE_SOURCE) } else { PathBuf::from(CLIENT_TEMPLATE_PROJECT_SOURCE) };
+            let path = shared_path.filter(|path| path.is_file())
+                .or_else(|| local_path.filter(|path| path.is_file()))
+                .or_else(|| bundled_default.is_file().then_some(bundled_default))
+                .ok_or_else(|| format!("The local Premiere template for '{}' is unresolved. Map it in Workspace settings on this computer.", if option == "video_call" { "Video call" } else { "Standard" }))?;
+            Some(path)
+        } else {
+            Some(if option == "video_call" { PathBuf::from(CLIENT_SCENE_SWITCHING_TEMPLATE_SOURCE) } else { PathBuf::from(CLIENT_TEMPLATE_PROJECT_SOURCE) })
+        }
+    } else { None };
+    if let Some(path) = &template_source { if !path.is_file() { return Err(format!("Premiere template not found: {}", path.display())); } }
+
+    let stage = client_parent.join(format!(".pepper-client-setup-{}", uuid::Uuid::new_v4()));
+    fs::create_dir(&stage).map_err(|error| format!("Could not prepare new client folder: {error}"))?;
+    let build_result = (|| -> Result<(), String> {
+        let folder_template = config.as_ref().and_then(|config| selected_type.and_then(|kind| config.folder_templates.iter().find(|template| template.id == kind.folder_template_id)));
+        if let Some(template) = folder_template {
+            for folder in template.folders.iter().filter(|folder| folder.enabled) {
+                ensure_dir(&stage.join(&folder.path)).map_err(|error| error.to_string())?;
+            }
+        } else {
+            for dir in TEMPLATE_DIRS.iter() { ensure_dir(&stage.join(dir)).map_err(|error| error.to_string())?; }
+        }
+        let folder_destinations: HashMap<String, String> = folder_template
+            .map(|template| {
+                template
+                    .folders
+                    .iter()
+                    .filter(|folder| folder.enabled && folder.purpose != "other")
+                    .map(|folder| (folder.purpose.clone(), folder.path.clone()))
+                    .collect()
+            })
+            .unwrap_or_default();
+        let metadata = serde_json::json!({
+            "schema_version": 1,
+            "client_type": client_type,
+            "huddle_template": if client_type.eq_ignore_ascii_case("HUDDLE") { huddle_template.as_deref() } else { None },
+            "folder_destinations": folder_destinations,
+        });
+        fs::write(stage.join(".pepper-client.json"), serde_json::to_vec_pretty(&metadata).map_err(|e|e.to_string())?)
+            .map_err(|e|format!("Unable to save client type metadata: {e}"))?;
+        if let Some(template_source) = template_source {
+            let template_dest = stage.join("02_EDIT").join(client_project_filename(&client_name));
+            fs::copy(&template_source, &template_dest).map_err(|e| format!("Failed to copy Premiere template from {}: {}", template_source.display(), e))?;
+        }
+        Ok(())
+    })();
+    if let Err(error) = build_result {
+        let _ = fs::remove_dir_all(&stage);
+        return Err(error);
+    }
+    if let Err(error) = fs::rename(&stage, &client_root) {
+        let _ = fs::remove_dir_all(&stage);
+        return Err(format!("Could not activate the new client folder; existing project data remains unchanged: {error}"));
     }
     Ok(())
 }
 
 #[tauri::command]
-fn project_has_sort_logs(project_root: String) -> Result<bool, String> {
+async fn project_has_sort_logs(project_root: String) -> Result<bool, String>{
+    crate::background::run(move || project_has_sort_logs_sync(project_root)).await?
+}
+
+fn project_has_sort_logs_sync(project_root: String) -> Result<bool, String>{
     let project = Path::new(&project_root);
     if !project.is_dir() {
         return Err(format!("Project folder is unavailable: {}", project.display()));
@@ -2605,7 +3006,11 @@ fn project_has_sort_logs(project_root: String) -> Result<bool, String> {
 }
 
 #[tauri::command]
-fn fix_client(project_root: String, client_name: String) -> Result<(), String> {
+async fn fix_client(project_root: String, client_name: String) -> Result<(), String> {
+    crate::background::run(move || fix_client_sync(project_root, client_name)).await?
+}
+
+fn fix_client_sync(project_root: String, client_name: String) -> Result<(), String>{
     let client_root = PathBuf::from(project_root).join(&client_name);
     if !client_root.exists() {
         return Err("Client folder does not exist".to_string());
@@ -2632,12 +3037,18 @@ async fn sort_files(
     operation: String,
     dry_run: bool,
     paths: Vec<String>,
+    destination_folder: Option<String>,
+    destination_routes: Option<Vec<media_drop::DropRoute>>,
 ) -> Result<SortResult, String> {
     let window_clone = window.clone();
     tauri::async_runtime::spawn_blocking(move || {
+        let client_root = PathBuf::from(&project_root).join(&client_name);
+        if let Some(folder) = &destination_folder { media_drop::destination(&client_root, folder)?; }
+        let planned_routes = destination_routes.as_ref().map(|routes| media_drop::validate_routes(&client_root, &paths, routes)).transpose()?;
+        let explicit_destination = destination_folder.is_some() || planned_routes.is_some();
         let files = list_files(&paths);
         let mut files: Vec<PathBuf> = files;
-        if mode != "AUTO" {
+        if !explicit_destination && mode != "AUTO" {
             files = files
                 .into_iter()
                 .filter(|path| is_allowed_for_mode(&mode, path))
@@ -2653,6 +3064,8 @@ async fn sort_files(
         }
         let files = unique_files;
         let total = files.len();
+        let bytes_total = files.iter().filter_map(|path| fs::metadata(path).ok()).map(|metadata| metadata.len()).sum::<u64>();
+        let mut bytes_done = 0u64;
         if total == 0 {
             return Err("No files matched the selected mode.".to_string());
         }
@@ -2663,6 +3076,7 @@ async fn sort_files(
         let mut reserved_names = HashSet::new();
         let username = username();
         let mut ensured_dirs = HashSet::new();
+        let mut workspace_destinations: HashMap<String, String> = HashMap::new();
 
         let log_dir = PathBuf::from(&project_root).join("_logs");
         if !dry_run {
@@ -2681,7 +3095,9 @@ async fn sort_files(
         for file_path in files {
             processed += 1;
             let source_path = file_path.to_string_lossy().to_string();
-            let resolved_mode = if mode == "AUTO" {
+            let resolved_mode = if explicit_destination {
+                Some("FOLDER")
+            } else if mode == "AUTO" {
                 detect_mode_for_path(&file_path)
             } else {
                 Some(mode.as_str())
@@ -2706,6 +3122,8 @@ async fn sort_files(
                         SortProgress {
                             processed,
                             total,
+                            bytes_done,
+                            bytes_total,
                             current: source_path,
                             result: "skipped".to_string(),
                         },
@@ -2713,13 +3131,29 @@ async fn sort_files(
                     continue;
                 }
             };
-            let destination_rel = destination_for_mode(resolved_mode)
-                .ok_or_else(|| "Unknown mode selected".to_string())?;
-            let dest_dir = PathBuf::from(&project_root)
-                .join(&client_name)
-                .join(destination_rel);
+            let legacy_destination = if explicit_destination { "" } else {
+                destination_for_mode(resolved_mode).ok_or_else(|| "Unknown mode selected".to_string())?
+            };
+            let client_path = PathBuf::from(&project_root).join(&client_name);
+            let route_key = format!("{}|{}", client_name.to_ascii_lowercase(), resolved_mode);
+            let destination_rel = if let Some(folder) = planned_routes.as_ref().and_then(|routes| routes.get(&file_path)) {
+                folder.clone()
+            } else if let Some(folder) = &destination_folder {
+                folder.clone()
+            } else if let Some(destination) = workspace_destinations.get(&route_key) {
+                destination.clone()
+            } else {
+                let destination = purpose_for_mode(resolved_mode)
+                    .map(|purpose| workspace::destination_for_client_in_config(&client_path, purpose, None))
+                    .transpose()?
+                    .flatten()
+                    .unwrap_or_else(|| legacy_destination.to_string());
+                workspace_destinations.insert(route_key, destination.clone());
+                destination
+            };
+            let dest_dir = client_path.join(destination_rel);
             if !dry_run && ensured_dirs.insert(dest_dir.clone()) {
-                ensure_dir(&dest_dir).map_err(|e| e.to_string())?;
+                ensure_client_destination_dir(&client_path, &dest_dir)?;
             }
             let file_name = match file_path.file_name().and_then(|n| n.to_str()) {
                 Some(name) => name.to_string(),
@@ -2741,6 +3175,8 @@ async fn sort_files(
                         SortProgress {
                             processed,
                             total,
+                            bytes_done,
+                            bytes_total,
                             current: source_path,
                             result: "failed".to_string(),
                         },
@@ -2752,6 +3188,24 @@ async fn sort_files(
             let dest_path = unique_destination_path(&dest_dir, &file_name, &mut reserved_names);
             let dest_path_str = dest_path.to_string_lossy().to_string();
             let timestamp = chrono::Local::now().to_rfc3339();
+
+            let file_size = fs::metadata(&file_path).map(|metadata| metadata.len()).unwrap_or(0);
+            let _ = window_clone.emit("sort-progress", SortProgress {
+                processed: processed - 1, total, current: source_path.clone(), result: "transferring".into(), bytes_done, bytes_total,
+            });
+            let base_bytes = bytes_done;
+            let mut copied_bytes = 0u64;
+            let mut last_update = Instant::now();
+            let mut report_copy = |copied: u64| {
+                copied_bytes = copied;
+                if last_update.elapsed() >= Duration::from_millis(80) {
+                    last_update = Instant::now();
+                    let _ = window_clone.emit("sort-progress", SortProgress {
+                        processed: processed - 1, total, current: source_path.clone(), result: "transferring".into(),
+                        bytes_done: base_bytes.saturating_add(copied), bytes_total,
+                    });
+                }
+            };
 
             let result = if dry_run {
                 skipped += 1;
@@ -2768,7 +3222,7 @@ async fn sort_files(
                 }
             } else {
                 match operation.as_str() {
-                    "copy" => match fs::copy(&file_path, &dest_path) {
+                    "copy" => match sort_transfer::copy(&file_path, &dest_path, &mut report_copy) {
                         Ok(_) => SortEntry {
                             timestamp,
                             username: username.clone(),
@@ -2810,7 +3264,7 @@ async fn sort_files(
                         Err(err) => {
                             let raw = err.raw_os_error();
                             if raw == Some(EXDEV) || raw == Some(WINDOWS_NOT_SAME_DEVICE) {
-                                match fs::copy(&file_path, &dest_path) {
+                                match sort_transfer::copy(&file_path, &dest_path, &mut report_copy) {
                                     Ok(_) => match remove_file_with_retry(&file_path) {
                                         Ok(_) => SortEntry {
                                             timestamp,
@@ -2904,6 +3358,7 @@ async fn sort_files(
                 }
             };
 
+            bytes_done = bytes_done.saturating_add(if result.result == "ok" { file_size.max(copied_bytes) } else { copied_bytes });
             let result_status = result.result.clone();
             entries.push(result);
 
@@ -2912,6 +3367,8 @@ async fn sort_files(
                 SortProgress {
                     processed,
                     total,
+                    bytes_done,
+                    bytes_total,
                     current: source_path,
                     result: result_status,
                 },
@@ -3041,6 +3498,9 @@ pub fn run() {
             media_browser::media_browse_folder,
             media_browser::media_resolve_files,
             media_browser::media_prepare_preview,
+            media_drop::client_media_drop_folders,
+            media_drop::media_drop_kinds,
+            media_drop::media_drop_preview,
             client_files::client_files_list,
             client_files::client_edit_notes_load,
             client_files::client_edit_notes_save,
@@ -3066,6 +3526,16 @@ pub fn run() {
             ingest::ingest_recover_stale_lease,
             ingest::ingest_source_availability,
             ingest::ingest_preview_filing,
+            workspace_discover,
+            default_workspace_root,
+            workspace_starter,
+            workspace_register_project,
+            workspace_save,
+            workspace_history,
+            workspace_read_recovery,
+            workspace_import_read,
+            workspace_export,
+            workspace_restore,
             list_project_roots,
             get_project_show_catalog,
             create_project_folder,
@@ -3097,6 +3567,7 @@ pub fn run() {
             frameio::frameio_get_storage,
             frameio::frameio_list_projects,
             frameio::frameio_upload,
+            frameio::frameio_remove_upload,
             restream::restream_start_auth,
             restream::restream_finish_auth,
             restream::restream_cancel_auth,
@@ -3116,11 +3587,11 @@ pub fn run() {
             studio_mail::studio_mail_save_recipients,
             studio_mail::studio_mail_send_link
         ])
-        .manage(Mutex::new(WatchState {
+        .manage(Arc::new(Mutex::new(WatchState {
             watcher: None,
             stop_tx: None,
             thread: None,
-        }))
+        })))
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
 }
@@ -3134,7 +3605,7 @@ mod tests {
     fn legacy_huddle_can_be_marked_video_call_in_shared_metadata() {
         let temp=tempfile::tempdir().unwrap();
         let client=temp.path().join("Interview_HUDDLE");fs::create_dir(&client).unwrap();
-        set_client_huddle_template(client.to_string_lossy().into_owned(),"VIDEO_CALL".into()).unwrap();
+        set_client_huddle_template_sync(client.to_string_lossy().into_owned(),"VIDEO_CALL".into()).unwrap();
         let metadata:serde_json::Value=serde_json::from_slice(&fs::read(client.join(".pepper-client.json")).unwrap()).unwrap();
         assert_eq!(metadata["client_type"],"HUDDLE");
         assert_eq!(metadata["huddle_template"],"VIDEO_CALL");
@@ -3144,7 +3615,7 @@ mod tests {
     fn interview_type_marking_rejects_non_huddle_clients() {
         let temp=tempfile::tempdir().unwrap();
         let client=temp.path().join("Other_PRODUCT");fs::create_dir(&client).unwrap();
-        assert!(set_client_huddle_template(client.to_string_lossy().into_owned(),"VIDEO_CALL".into()).is_err());
+        assert!(set_client_huddle_template_sync(client.to_string_lossy().into_owned(),"VIDEO_CALL".into()).is_err());
     }
 
     #[test]
@@ -3156,7 +3627,7 @@ mod tests {
         }
         fs::write(root.join("SEASON 99"), b"not a directory").unwrap();
         let root_string = root.to_string_lossy().to_string();
-        assert_eq!(list_mariya_meets_seasons(root_string.clone()).unwrap(), vec!["SEASON 10", "SEASON 2", "SEASON 1"]);
+        assert_eq!(list_mariya_meets_seasons_sync(root_string.clone()).unwrap(), vec!["SEASON 10", "SEASON 2", "SEASON 1"]);
         create_client_sync(root_string.clone(), "Guest_MARIYAMEETS".into(), "MARIYAMEETS".into(), None, Some("SEASON 1".into())).unwrap();
         assert!(root.join("SEASON 1/Guest_MARIYAMEETS/02_EDIT").is_dir());
         assert!(!root.join("SEASON 10/Guest_MARIYAMEETS").exists());
@@ -3168,7 +3639,7 @@ mod tests {
         }
         assert!(!root.join("SEASON 3").exists());
         assert!(create_client_sync(root_string, "Other_SOCIAL".into(), "SOCIAL".into(), None, Some("SEASON 1".into())).is_err());
-        assert!(list_mariya_meets_seasons(temp.to_string_lossy().to_string()).is_err());
+        assert!(list_mariya_meets_seasons_sync(temp.to_string_lossy().to_string()).is_err());
         fs::remove_dir_all(temp).unwrap();
     }
 
@@ -3189,6 +3660,13 @@ mod tests {
         ));
         fs::create_dir_all(&path).unwrap();
         path
+    }
+
+    fn mark_review_ready(exports: &Path, filename: &str) {
+        let stem = Path::new(filename).file_stem().unwrap().to_string_lossy();
+        let approval = exports.join("APPROVAL");
+        fs::create_dir_all(&approval).unwrap();
+        fs::write(approval.join(format!("{stem}_APPROVAL_1080p_WM_TC.mp4")), b"review copy").unwrap();
     }
 
     #[test]
@@ -3302,6 +3780,8 @@ mod tests {
         fs::write(directory.join("Spotlight_V2.mp4"), b"v2").unwrap();
         fs::write(directory.join("Spotlight_V1.MOV"), b"v1").unwrap();
         fs::write(directory.join("thumbnail.jpg"), b"still").unwrap();
+        mark_review_ready(&directory, "Spotlight_V1.MOV");
+        mark_review_ready(&directory, "Spotlight_V2.mp4");
         let versions = scan_video_versions(&directory).unwrap();
         assert_eq!(
             versions.iter().map(|item| item.version).collect::<Vec<_>>(),
@@ -3312,14 +3792,21 @@ mod tests {
     }
 
     #[test]
-    fn lone_unversioned_export_is_v1_and_conflicts_are_reported() {
+    fn original_unversioned_export_remains_v1_when_numbered_versions_are_added() {
         let directory = test_dir("unversioned");
         fs::write(directory.join("Spotlight.mp4"), b"v1").unwrap();
+        mark_review_ready(&directory, "Spotlight.mp4");
         assert_eq!(scan_video_versions(&directory).unwrap()[0].version, 1);
         fs::write(directory.join("Spotlight_V2.mp4"), b"v2").unwrap();
-        assert!(scan_video_versions(&directory)
-            .unwrap_err()
-            .contains("Unversioned"));
+        mark_review_ready(&directory, "Spotlight_V2.mp4");
+        // An established original is not a new export in the watcher handoff window.
+        filetime::set_file_mtime(directory.join("Spotlight.mp4"), filetime::FileTime::from_system_time(
+            std::time::SystemTime::now() - UNVERSIONED_EXPORT_HANDOFF_WINDOW - std::time::Duration::from_secs(1)
+        )).unwrap();
+        assert_eq!(scan_video_versions(&directory).unwrap().iter().map(|file| file.version).collect::<Vec<_>>(), vec![1, 2]);
+        fs::write(directory.join("Spotlight_V1.mp4"), b"duplicate").unwrap();
+        mark_review_ready(&directory, "Spotlight_V1.mp4");
+        assert!(scan_video_versions(&directory).unwrap_err().contains("Duplicate"));
         fs::remove_dir_all(directory).unwrap();
     }
 
@@ -3360,7 +3847,7 @@ mod tests {
         let scanned = scan_client_folders("Legacy", &client);
         assert_eq!(scanned.status, "OK");
         assert!(!scanned.missing.iter().any(|value| value == "03_EXPORTS/CLIPS"));
-        fix_client(root.to_string_lossy().to_string(),"Legacy".into()).unwrap();
+        fix_client_sync(root.to_string_lossy().to_string(),"Legacy".into()).unwrap();
         assert!(client.join("03_EXPORTS/CLIPS").is_dir());
     }
 
@@ -3500,6 +3987,7 @@ mod tests {
         fs::create_dir_all(exports.join("APPROVAL/PENDING")).unwrap();
         fs::write(exports.join("Spotlight_V2.mp4"), b"one").unwrap();
         fs::write(exports.join("APPROVAL/PENDING/Spotlight_V2.mp4"), b"two").unwrap();
+        mark_review_ready(&client.join("03_EXPORTS"), "Spotlight_V2.mp4");
         assert!(scan_export_status(&client)
             .issue
             .unwrap()
@@ -3516,6 +4004,8 @@ mod tests {
         fs::create_dir_all(&exports).unwrap();
         fs::write(exports.join("Spotlight_V2.mp4"), b"confirmed").unwrap();
         fs::write(exports.join("Spotlight_V3.mp4"), b"newer").unwrap();
+        mark_review_ready(&client.join("03_EXPORTS"), "Spotlight_V3.mp4");
+        mark_review_ready(&exports, "Spotlight_V2.mp4");
         let error =
             promote_latest_export_for_client(&client, Some("Spotlight_V2.mp4")).unwrap_err();
         assert!(error.contains("latest export changed"));
@@ -3541,6 +4031,7 @@ mod tests {
             b"final",
         )
         .unwrap();
+        mark_review_ready(&client.join("03_EXPORTS"), "Spotlight.mp4");
         assert!(scan_export_status(&client).final_current);
         fs::remove_dir_all(client).unwrap();
     }
@@ -3556,6 +4047,7 @@ mod tests {
         let final_file = final_dir.join("EVENBETER_EXHIBITOR SPOTLIGHT_FINAL.mp4");
         fs::write(&source, b"version three").unwrap();
         fs::write(&final_file, b"version three").unwrap();
+        mark_review_ready(&client.join("03_EXPORTS"), "EVENBETER_EXHIBITOR SPOTLIGHT_V3.mp4");
         let status = scan_export_status(&client);
         assert!(status.final_current);
         assert_eq!(status.final_version, Some(3));
@@ -3565,6 +4057,7 @@ mod tests {
             b"new fourth version",
         )
         .unwrap();
+        mark_review_ready(&client.join("03_EXPORTS"), "EVENBETER_EXHIBITOR SPOTLIGHT_V4.mp4");
         let status = scan_export_status(&client);
         assert!(!status.final_current);
         assert_eq!(status.final_version, Some(3));
@@ -3585,6 +4078,7 @@ mod tests {
         let final_dir = client.join("04_FINAL");
         fs::create_dir_all(&exports).unwrap();
         fs::write(exports.join("Different_Source_Name_V2.MOV"), b"version two").unwrap();
+        mark_review_ready(&client.join("03_EXPORTS"), "Different_Source_Name_V2.MOV");
         promote_latest_export_for_client(&client, None).unwrap();
         let final_file = final_dir.join("CLIENT_TYPE_FINAL.MOV");
         assert_eq!(fs::read(&final_file).unwrap(), b"version two");
@@ -3602,6 +4096,7 @@ mod tests {
             b"version three",
         )
         .unwrap();
+        mark_review_ready(&exports, "Different_Source_Name_V3.MOV");
         let status = scan_export_status(&client);
         assert_eq!(status.final_version, Some(2));
         assert!(!status.final_current);
@@ -3639,6 +4134,7 @@ mod tests {
         fs::create_dir_all(final_dir.join(FINAL_PROMOTION_RECORD)).unwrap();
         fs::write(exports.join("Source_V2.mp4"), b"new video").unwrap();
         fs::write(final_dir.join("CLIENT_TYPE_FINAL.mp4"), b"previous video").unwrap();
+        mark_review_ready(&client.join("03_EXPORTS"), "Source_V2.mp4");
         assert!(promote_latest_export_for_client(&client, None)
             .unwrap_err()
             .contains("version record"));
@@ -3665,6 +4161,7 @@ mod tests {
         fs::write(final_dir.join("old-final.mp4"), b"old final video").unwrap();
         fs::write(final_dir.join("INFO.txt"), b"delivery notes").unwrap();
 
+        mark_review_ready(&client.join("03_EXPORTS"), "Spotlight_V2.mp4");
         let message = promote_latest_export_for_client(&client, None).unwrap();
         assert!(message.contains("Spotlight_V2.mp4"));
         assert_eq!(
