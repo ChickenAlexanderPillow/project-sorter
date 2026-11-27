@@ -1,3 +1,4 @@
+import { createCloseRequestHandler } from "./components/closeRequest";
 import { ClientDropConfirm, type DropPreview, type DropChoices } from "./components/ClientDropConfirm";
 import { ClientIssuesDialog, type ClientIssue } from "./components/ClientIssuesDialog";
 import { ClientRowTransfer } from "./components/ClientRowTransfer";
@@ -1133,22 +1134,22 @@ export default function App() {
   const [showNewClientForm, setShowNewClientForm] = useState(false);
   const [newClientType, setNewClientType] = useState<string>("exhibitor");
   const [creatingClient, setCreatingClient] = useState(false);
-  const closeAfterConfirmationRef = useRef(false);
   const closeOperationActiveRef = useRef(false);
   const updateInProgressRef = useRef(false);
   closeOperationActiveRef.current = Boolean(busy || publishingClientPath || frameIoBusyPath || creatingClient || ingestOperationBusy);
   useEffect(() => {
     let active = true;
-    const unlistenPromise = getCurrentWindow().onCloseRequested(async (event) => {
-      if (updateInProgressRef.current) { event.preventDefault(); return; }
-      if (closeAfterConfirmationRef.current || !closeOperationActiveRef.current) return;
-      event.preventDefault();
-      const shouldClose = await confirm("An operation is still running. Closing Pepper may interrupt it. Close Pepper anyway?", { title: "Pepper is busy", kind: "warning" });
-      if (!active || !shouldClose) return;
-      closeAfterConfirmationRef.current = true;
-      await getCurrentWindow().close();
+    const handler = createCloseRequestHandler({
+      shouldWarn: () => closeOperationActiveRef.current || updateInProgressRef.current,
+      confirmClose: async () => {
+        const shouldClose = await confirm("An operation is still running. Closing Pepper may interrupt it. Close Pepper anyway?", { title: "Pepper is busy", kind: "warning" });
+        return active && shouldClose;
+      },
+      onError: error => showToast(`Could not confirm closing Pepper: ${String(error)}`, "error"),
     });
-    return () => { active = false; void unlistenPromise.then((unlisten) => unlisten()); };
+    const unlistenPromise = getCurrentWindow().onCloseRequested(handler);
+    void unlistenPromise.catch(error => console.error("Could not register Pepper close handler", error));
+    return () => { active = false; void unlistenPromise.then(unlisten => unlisten()).catch(() => {}); };
   }, []);
 
   useEffect(() => {
@@ -2923,7 +2924,7 @@ export default function App() {
         destinationFolder,
         destinationRoutes,
         mode,
-        operation: "move",
+        operation: "copy",
         dryRun: false,
         paths,
       });
@@ -3199,7 +3200,7 @@ export default function App() {
             className="window-control close"
             aria-label="Close Pepper"
             title="Close"
-            onClick={() => void getCurrentWindow().close()}
+            onClick={() => void getCurrentWindow().close().catch(error => showToast(`Could not close Pepper: ${String(error)}`, "error"))}
           >
             <X size={15} aria-hidden="true" />
           </button>

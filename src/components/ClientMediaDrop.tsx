@@ -59,7 +59,7 @@ export function ClientMediaDrop({ clientPath, kinds, active }: { clientPath: str
       : !relevant?.length ? <span className="client-media-drop-message" role="status"><Files size={15} aria-hidden="true"/><span>Drop one type of media at a time</span></span>
       : relevant.map(folder => {
         const Icon = folder.role === 'Stills' ? Image : MEDIA_ROLE_ICONS[folder.role as keyof typeof MEDIA_ROLE_ICONS] ?? FolderInput;
-        return <div key={folder.path} className="client-media-drop-folder" data-media-drop-folder={folder.path} title={`Move to ${folder.path}`}>
+        return <div key={folder.path} className="client-media-drop-folder" data-media-drop-folder={folder.path} title={`Copy to ${folder.path}`}>
           <span className="client-media-drop-icon" aria-hidden="true"><Icon size={16}/><FolderInput size={16}/></span>
           <span>{folder.path.split("/").pop()!.replace(/^\d+[_ -]*/, "").replace(/_/g, " ").toLowerCase().replace(/\b\w/g, letter => letter.toUpperCase())}</span>
         </div>;

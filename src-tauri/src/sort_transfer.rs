@@ -4,6 +4,11 @@ use std::{
     path::Path,
 };
 
+/// Reviewed region drops always copy, including requests from an older frontend.
+pub(crate) fn destination_operation(requested: &str, reviewed_destination: bool) -> &str {
+    if reviewed_destination { "copy" } else { requested }
+}
+
 /// Report actual bytes written, and never leave a partial copy on failure.
 pub(crate) fn copy(
     source: &Path,
@@ -43,6 +48,18 @@ pub(crate) fn copy(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn reviewed_drops_cannot_move_source_media_even_on_the_same_drive() {
+        let temp = tempfile::tempdir().unwrap();
+        let source = temp.path().join("source.mov");
+        let destination = temp.path().join("client.mov");
+        fs::write(&source, b"original media").unwrap();
+        assert_eq!(destination_operation("move", true), "copy");
+        copy(&source, &destination, |_| {}).unwrap();
+        assert_eq!(fs::read(&source).unwrap(), b"original media");
+        assert_eq!(fs::read(&destination).unwrap(), b"original media");
+        assert_eq!(destination_operation("move", false), "move");
+    }
     #[test]
     fn reports_intermediate_bytes_and_preserves_source_and_existing_destinations() {
         let temp = tempfile::tempdir().unwrap();

@@ -3046,6 +3046,7 @@ async fn sort_files(
         if let Some(folder) = &destination_folder { media_drop::destination(&client_root, folder)?; }
         let planned_routes = destination_routes.as_ref().map(|routes| media_drop::validate_routes(&client_root, &paths, routes)).transpose()?;
         let explicit_destination = destination_folder.is_some() || planned_routes.is_some();
+        let operation = sort_transfer::destination_operation(&operation, explicit_destination).to_string();
         let files = list_files(&paths);
         let mut files: Vec<PathBuf> = files;
         if !explicit_destination && mode != "AUTO" {

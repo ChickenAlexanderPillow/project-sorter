@@ -1,6 +1,6 @@
 //! Native file-reference dragging. Only paths are offered; no media is copied.
 use std::{
-    path::{Path, PathBuf},
+    path::Path,
     sync::atomic::{AtomicBool, Ordering},
 };
 
@@ -16,29 +16,7 @@ fn validate_paths(client: &Path, paths: Vec<String>) -> Result<Vec<String>, Stri
     if paths.is_empty() || paths.len() > 2000 || !client.is_absolute() {
         return Err("Choose between 1 and 2,000 client files.".into());
     }
-    let root = client
-        .canonicalize()
-        .map_err(|e| format!("Client folder unavailable: {e}"))?;
-    let mut relative_roots: Vec<String> = [
-        "01_MEDIA/010_VIDEO_PROXY",
-        "01_MEDIA/020_VIDEO_RAW",
-        "01_MEDIA/030_AUDIO_CLEAN",
-        "01_MEDIA/040_AUDIO_RAW",
-        "01_MEDIA/050_STILLS",
-        "01_MEDIA/060_MUSIC",
-        "01_MEDIA/070_GRAPHICS",
-        "01_MEDIA/090_STOCK",
-        "02_EDIT",
-    ]
-    .iter().map(|dir| (*dir).to_string()).collect();
-    for purpose in ["video_proxy", "video_raw", "audio_clean", "audio_raw", "stills", "music", "graphics", "stock", "edit"] {
-        if let Ok(Some(path)) = crate::workspace::destination_for_client(client, purpose) { relative_roots.push(path); }
-    }
-    relative_roots.sort(); relative_roots.dedup();
-    let roots: Vec<PathBuf> = relative_roots.iter()
-    .filter_map(|dir| client.join(dir).canonicalize().ok())
-    .filter(|dir| dir.starts_with(&root))
-    .collect();
+    let roots = crate::client_files::asset_roots(client)?;
     let mut result = Vec::new();
     let mut seen = std::collections::HashSet::new();
     for original in paths {
@@ -63,7 +41,7 @@ fn validate_paths(client: &Path, paths: Vec<String>) -> Result<Vec<String>, Stri
             .canonicalize()
             .map_err(|e| format!("{} is unavailable: {e}", path.display()))?;
         if !canonical.is_file() || !roots.iter().any(|root| canonical.starts_with(root)) {
-            return Err("The file is outside this client's media and Edit folders.".into());
+            return Err("Choose a file inside this client's configured media or Edit folders.".into());
         }
         // Canonical paths are for validation only. Preserve mapped drives and
         // original UNC spelling in Premiere's reference.
@@ -368,6 +346,21 @@ mod native {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn miscellaneous_and_configured_media_and_edit_files_are_draggable() {
+        let temp = tempfile::tempdir().unwrap();
+        let client = temp.path().join("client");
+        std::fs::create_dir_all(&client).unwrap();
+        std::fs::write(client.join(".pepper-client.json"), br#"{"folder_destinations":{"edit":"Editing","media":"Footage","video_raw":"Originals","misc":"Supporting"}}"#).unwrap();
+        for relative in ["01_MEDIA/080_MISCELLANEOUS/clip.mp4", "01_MEDIA/Custom/scene.blend", "Editing/main.prproj", "Footage/custom/mic.wav", "Originals/camera.mov", "Supporting/scene.blend"] {
+            let path = client.join(relative);
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(&path, b"original").unwrap();
+            let result = validate_paths(&client, vec![path.to_string_lossy().into_owned()]).unwrap();
+            assert_eq!(result.len(), 1, "{relative}");
+            assert_eq!(std::fs::read(path).unwrap(), b"original");
+        }
+    }
     #[test]
     fn validation_rejects_missing_outside_and_nonmedia_files() {
         let temp = tempfile::tempdir().unwrap();

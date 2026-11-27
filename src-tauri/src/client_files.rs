@@ -330,16 +330,33 @@ pub async fn client_edit_notes_save(client_path: String, tasks: Vec<ClientEditNo
         .await.map_err(|e| e.to_string())?
 }
 
+/// Share the same client asset boundaries between browsing, opening and dragging.
+pub(crate) fn asset_roots(client_path: &Path) -> Result<Vec<PathBuf>, String> {
+    let client = client_path.canonicalize().map_err(|error| format!("Client folder unavailable: {error}"))?;
+    let mut relative = vec!["01_MEDIA".to_string(), "02_EDIT".to_string()];
+    for (purpose, legacy) in [
+        ("media", "01_MEDIA"), ("edit", "02_EDIT"),
+        ("video_proxy", "01_MEDIA/010_VIDEO_PROXY"), ("video_raw", "01_MEDIA/020_VIDEO_RAW"),
+        ("audio_clean", "01_MEDIA/030_AUDIO_CLEAN"), ("audio_raw", "01_MEDIA/040_AUDIO_RAW"),
+        ("stills", "01_MEDIA/050_STILLS"), ("music", "01_MEDIA/060_MUSIC"),
+        ("graphics", "01_MEDIA/070_GRAPHICS"), ("misc", "01_MEDIA/080_MISCELLANEOUS"), ("stock", "01_MEDIA/090_STOCK"),
+    ] {
+        relative.push(crate::workspace::destination_for_client(client_path, purpose)?.unwrap_or_else(|| legacy.into()));
+    }
+    let mut roots: Vec<_> = relative.into_iter().filter_map(|path| client_path.join(path).canonicalize().ok())
+        .filter(|path| path.is_dir() && path.starts_with(&client)).collect();
+    roots.sort(); roots.dedup();
+    Ok(roots)
+}
+
 fn validated_project(client_path: &Path, path: &Path) -> Result<PathBuf, String> {
     if !client_path.is_absolute() || !path.is_absolute() || !project_file(path) || !path.is_file() {
         return Err("Choose an available editing project.".into());
     }
-    let root = client_path.canonicalize().map_err(|e| e.to_string())?;
     let target = path.canonicalize().map_err(|e| e.to_string())?;
-    let allowed=["02_EDIT","01_MEDIA"].into_iter().any(|folder|client_path.join(folder).canonicalize().ok()
-        .is_some_and(|folder|folder.starts_with(&root)&&target.starts_with(folder)));
+    let allowed = asset_roots(client_path)?.iter().any(|folder| target.starts_with(folder));
     if !allowed {
-        return Err("This project is outside the client's Edit and Media folders.".into());
+        return Err("Choose a project inside this client's configured media or Edit folders.".into());
     }
     // Use the original absolute spelling for Windows file associations rather
     // than passing ShellExecute a verbatim (\\?\) canonical path.
@@ -432,6 +449,23 @@ mod tests {
         let executable = root.join("02_EDIT/start.exe");
         fs::write(&executable, b"exe").unwrap();
         assert!(validated_project(&root, &executable).is_err());
+    }
+    #[test]
+    fn configured_edit_and_media_projects_can_be_opened() {
+        let temp = tempfile::tempdir().unwrap();
+        let client = temp.path().join("client");
+        fs::create_dir_all(&client).unwrap();
+        fs::write(client.join(".pepper-client.json"), br#"{"folder_destinations":{"edit":"Editing/Premiere","media":"Footage","video_raw":"Originals","misc":"Supporting"}}"#).unwrap();
+        for relative in ["Editing/Premiere/Interview.prproj", "Footage/Scene.blend", "Originals/Imported.aep", "Supporting/Animation.aep"] {
+            let path = client.join(relative);
+            fs::create_dir_all(path.parent().unwrap()).unwrap();
+            fs::write(&path, b"project").unwrap();
+            assert_eq!(validated_project(&client, &path).unwrap(), path);
+        }
+        let outside = client.join("03_EXPORTS/Not an editing source.prproj");
+        fs::create_dir_all(outside.parent().unwrap()).unwrap();
+        fs::write(&outside, b"export").unwrap();
+        assert!(validated_project(&client, &outside).is_err());
     }
     #[cfg(windows)]
     #[test]
