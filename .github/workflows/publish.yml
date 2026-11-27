@@ -77,7 +77,7 @@ jobs:
           releaseBody: ""
           releaseDraft: false
           prerelease: false
-          args: "--bundles msi"
+          args: "--bundles nsis"
 
       - name: Use direct release URLs for updater assets
         shell: pwsh

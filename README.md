@@ -89,7 +89,9 @@ The GitHub Actions workflow in `.github/workflows/publish.yml` builds the signed
 
 The public key is embedded in `src-tauri/tauri.conf.json`; never commit the private key.
 
-Pepper displays update download progress and signature verification in the app. **Update and restart** downloads the signed release, then launches the Windows installer in quiet mode; Pepper closes briefly and the installer reopens it. Existing machine-wide installations may still require Windows administrator approval. Update installation is disabled while another Pepper operation is running.
+Pepper displays update download progress and signature verification in the app. **Update and restart** downloads the signed release and applies it silently in the background; Pepper closes briefly and reopens without an installer window. Windows releases use NSIS with `currentUser` installation and `quiet` updater mode so subsequent updates do not require administrator permission. Keep the release workflow and bundle target on NSIS: a quiet MSI update cannot request permission to replace a machine-wide installation. Update installation is disabled while another Pepper operation is running.
+
+Existing MSI installations need a one-time migration: close Pepper, run the new NSIS `-setup.exe`, and allow removal of the old MSI installation (Windows may request administrator approval). Install for the current user. Subsequent updates run through Pepper without the Windows installer UI. Do not use the old MSI updater to perform this migration silently: the old machine-wide product must be removed successfully before relying on per-user updates. Pepper's app data remains under the same `com.project.sorter` identifier.
 
 Development mode shows a simulated update dialog on startup. **Check for updates** reopens it; the preview runs through download, verification, and completion without installing or restarting the app.
 

@@ -3,7 +3,7 @@ import {Focus,Minus,Plus,ScanLine,Search} from 'lucide-react';
 import {createPortal} from 'react-dom';
 import type {NoteTimelineMarker} from './TimelineNotes';
 import {formatNoteTime} from './noteTiming';
-import {markerLanes,markerViewport,moveRangeBoundary,timelineSecond} from './noteTimelineGeometry';
+import {markerLanes,markerViewport,moveRangeBoundary,timelineSecond,timelineZoomScroll} from './noteTimelineGeometry';
 import {noteRangeContains} from './activeNoteRanges';
 
 type Props={controlsTarget?:HTMLElement|null;duration:number;time:number;markers:NoteTimelineMarker[];focusRequest?:number;onSeek:(second:number)=>void;onSelect:(marker:NoteTimelineMarker,second?:number)=>void;onAdd:(second:number)=>void};
@@ -12,6 +12,8 @@ export function NoteTimelineTrack({duration,time,markers,focusRequest,onSeek,onS
   const [zoom,setZoom]=useState(1),[width,setWidth]=useState(0),[scroll,setScroll]=useState(0);
   const [drag,setDrag]=useState<{key:string;start:number;end:number;boundary:'in'|'out'}|null>(null);
   const pendingCenter=useRef<number|null>(null);
+  const pendingAnchor=useRef<{scroll:number;width:number;pointer:number}|null>(null);
+  const zoomValue=useRef(zoom);zoomValue.current=zoom;
   const suppressHandleClick=useRef(false);
   const activeDrag=useRef<{id:number;marker:NoteTimelineMarker;start:number;end:number;boundary:'in'|'out'}|null>(null);
   const selected=markers.find(marker=>marker.selected);
@@ -20,7 +22,7 @@ export function NoteTimelineTrack({duration,time,markers,focusRequest,onSeek,onS
   const maxZoom=Math.max(1,duration/10);
   const focusMarker=(marker:NoteTimelineMarker)=>{
     const view=markerViewport(duration,marker.seconds,marker.endSeconds);
-    pendingCenter.current=view.center;setZoom(view.zoom);
+    pendingAnchor.current=null;pendingCenter.current=view.center;setZoom(view.zoom);
     // Recenter even when the zoom factor has not changed.
     if(viewport.current){viewport.current.scrollLeft=(view.center/duration*view.zoom-.5)*viewport.current.clientWidth;}
   };
@@ -33,12 +35,60 @@ export function NoteTimelineTrack({duration,time,markers,focusRequest,onSeek,onS
     return()=>observer.disconnect();
   },[]);
   useLayoutEffect(()=>{
-    const element=viewport.current;if(!element||pendingCenter.current===null||!duration)return;
+    const element=viewport.current;if(!element||!duration)return;
+    if(pendingAnchor.current){
+      const anchor=pendingAnchor.current;
+      element.scrollLeft=timelineZoomScroll(anchor.scroll,anchor.width,element.scrollWidth,anchor.pointer,element.clientWidth);
+      pendingAnchor.current=null;setScroll(element.scrollLeft);return;
+    }
+    if(pendingCenter.current===null)return;
     element.scrollLeft=pendingCenter.current/duration*element.scrollWidth-element.clientWidth/2;
     pendingCenter.current=null;setScroll(element.scrollLeft);
   },[zoom,width,duration]);
+  useEffect(()=>{
+    const element=viewport.current;if(!element)return;
+    let pan:{id:number;x:number;scroll:number}|null=null;
+    const wheel=(event:WheelEvent)=>{
+      if(!duration)return;
+      event.preventDefault();event.stopPropagation();
+      if(event.deltaY===0){element.scrollLeft+=event.deltaX;return;}
+      const pixels=event.deltaY*(event.deltaMode===1?16:event.deltaMode===2?element.clientWidth:1);
+      const next=Math.max(1,Math.min(maxZoom,zoomValue.current*Math.exp(-Math.max(-500,Math.min(500,pixels))*.003)));
+      if(Math.abs(next-zoomValue.current)<.0001)return;
+      pendingCenter.current=null;
+      pendingAnchor.current={scroll:element.scrollLeft,width:element.scrollWidth,pointer:event.clientX-element.getBoundingClientRect().left};
+      zoomValue.current=next;setZoom(next);
+    };
+    const down=(event:globalThis.PointerEvent)=>{
+      if(event.button!==1)return;
+      event.preventDefault();event.stopPropagation();
+      pan={id:event.pointerId,x:event.clientX,scroll:element.scrollLeft};
+      element.setPointerCapture(event.pointerId);element.classList.add('is-panning');
+    };
+    const move=(event:globalThis.PointerEvent)=>{
+      if(!pan||pan.id!==event.pointerId)return;
+      element.scrollLeft=pan.scroll-(event.clientX-pan.x);event.preventDefault();event.stopPropagation();
+    };
+    const finish=(event:globalThis.PointerEvent)=>{
+      if(!pan||pan.id!==event.pointerId)return;
+      pan=null;element.classList.remove('is-panning');
+      if(element.hasPointerCapture(event.pointerId))element.releasePointerCapture(event.pointerId);
+      event.preventDefault();event.stopPropagation();
+    };
+    const preventAutoScroll=(event:MouseEvent)=>{if(event.button===1){event.preventDefault();event.stopPropagation();}};
+    element.addEventListener('wheel',wheel,{passive:false});
+    element.addEventListener('pointerdown',down,true);element.addEventListener('pointermove',move,true);element.addEventListener('pointerup',finish,true);element.addEventListener('pointercancel',finish,true);element.addEventListener('lostpointercapture',finish,true);
+    element.addEventListener('mousedown',preventAutoScroll,true);element.addEventListener('auxclick',preventAutoScroll,true);
+    return()=>{
+      if(pan&&element.hasPointerCapture(pan.id))element.releasePointerCapture(pan.id);
+      element.classList.remove('is-panning');
+      element.removeEventListener('wheel',wheel);element.removeEventListener('pointerdown',down,true);element.removeEventListener('pointermove',move,true);element.removeEventListener('pointerup',finish,true);element.removeEventListener('pointercancel',finish,true);element.removeEventListener('lostpointercapture',finish,true);
+      element.removeEventListener('mousedown',preventAutoScroll,true);element.removeEventListener('auxclick',preventAutoScroll,true);
+    };
+  },[duration,maxZoom]);
   const changeZoom=(next:number)=>{
     const element=viewport.current;
+    pendingAnchor.current=null;
     pendingCenter.current=element?((element.scrollLeft+element.clientWidth/2)/Math.max(1,element.scrollWidth))*duration:time;
     setZoom(Math.max(1,Math.min(maxZoom,next)));
   };
@@ -82,7 +132,7 @@ export function NoteTimelineTrack({duration,time,markers,focusRequest,onSeek,onS
   return <div className="note-timeline" role="group" aria-label="Marker timeline">
     {controlsTarget?createPortal(controls,controlsTarget):controls}
     <div className="note-timeline-window"><span>{formatNoteTime(startTime)}</span><span>{formatNoteTime(endTime)}</span></div>
-    <div className="note-timeline-viewport" ref={viewport} onScroll={event=>setScroll(event.currentTarget.scrollLeft)}>
+    <div className="note-timeline-viewport" title="Scroll to zoom. Drag with the middle mouse button to pan." ref={viewport} onScroll={event=>setScroll(event.currentTarget.scrollLeft)}>
       <div className="note-timeline-track" ref={track} style={{width:`${zoom*100}%`,height:laneHeight+23}}>
         <div className="note-marker-lane" ref={lane} role="group" aria-label="Markers" style={{height:laneHeight}}>
           {markers.map(marker=>{

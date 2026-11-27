@@ -5,6 +5,10 @@ export function markerViewport(duration:number,start:number,end=start){
 export function timelineSecond(clientX:number,left:number,width:number,duration:number){
   return Math.max(0,Math.min(Math.floor(duration),Math.floor((clientX-left)/Math.max(1,width)*duration)));
 }
+export function timelineZoomScroll(scroll:number,oldContentWidth:number,newContentWidth:number,pointer:number,viewportWidth:number,padding=12){
+  const ratio=Math.max(0,Math.min(1,(scroll+pointer-padding)/Math.max(1,oldContentWidth-padding*2)));
+  return Math.max(0,Math.min(Math.max(0,newContentWidth-viewportWidth),padding+ratio*Math.max(1,newContentWidth-padding*2)-pointer));
+}
 export function moveRangeBoundary(start:number,end:number,target:number,boundary:'in'|'out',duration:number){
   const second=Math.max(0,Math.min(Math.floor(duration),Math.floor(target)));
   return boundary==='in'?{start:Math.min(end-1,second),end}:{start,end:Math.max(start+1,second)};

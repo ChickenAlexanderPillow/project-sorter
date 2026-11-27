@@ -362,7 +362,7 @@
 .cf-note-preview .cf-preview-heading>strong{font-size:10px;color:#aaa}
 .cf-note-preview .cf-preview-content{display:block;flex:none;overflow:visible;background:#1b1b1b}
 .cf-note-preview .cf-preview-content>.ig-preview-media{display:block;height:auto}
-.cf-note-preview .ig-preview-media>.pepper-media-transition{height:auto;aspect-ratio:auto}
+.cf-note-preview .ig-preview-media>.pepper-media-transition{height:auto;aspect-ratio:auto;grid-template-columns:minmax(0,1fr)}
 .cf-note-preview .pepper-media-layer{position:relative;inset:auto;grid-area:1 / 1;height:auto}
 .cf-note-preview .pepper-preview-player,.cf-note-preview .pepper-audio-preview{display:flex;flex-direction:column;height:auto!important;padding-bottom:0;box-sizing:border-box}
 .cf-note-preview .has-note-timing>.pepper-video-skin{flex:none;height:var(--note-stage-height,260px)!important;aspect-ratio:auto!important;margin-bottom:0!important;overflow:hidden!important;background:#1b1b1b}
@@ -370,7 +370,7 @@
 .cf-note-preview .cf-preview-content .pepper-audio-art{flex:none;height:var(--note-stage-height,220px);min-height:0;background:#1e1e1e;color:#777}
 .cf-note-preview .pepper-media-layer>img{height:var(--note-stage-height,260px);width:100%;object-fit:contain}
 .pepper-media-layer:not(.controls-current) .note-preview-console{visibility:hidden}
-.note-preview-console{flex:none;min-width:0;background:#252525;border-top:1px solid #363636;color:#bbb;font-size:10px;--note-active:#a6c7b1}
+.note-preview-console{flex:none;min-width:0;width:100%;box-sizing:border-box;background:#252525;border-top:1px solid #363636;color:#bbb;font-size:10px;--note-active:#a6c7b1}
 .note-preview-console button{display:inline-flex;align-items:center;justify-content:center;gap:4px;min-width:24px;min-height:24px;padding:3px 5px;border:1px solid transparent;border-radius:4px;background:transparent;color:#aaa;font:inherit;white-space:nowrap}
 .note-preview-console button:hover:not(:disabled){background:#383838;color:#eee}
 .note-preview-console button:disabled{opacity:.3}
@@ -423,6 +423,7 @@
 .note-timeline-toolbar button:hover:not(:disabled){background:#3a3a3a;color:#eee}
 .note-timeline-toolbar button:disabled{opacity:.3}
 .note-timeline-viewport{overflow-x:auto;overflow-y:hidden;scrollbar-width:thin;scrollbar-color:#555 #262626;max-width:100%}
+.note-timeline-viewport.is-panning,.note-timeline-viewport.is-panning *{cursor:grabbing!important;user-select:none!important}
 .note-timeline-track{position:relative;min-width:100%;height:49px;padding:0 12px;box-sizing:border-box}
 .note-marker-lane{position:relative;height:26px;border-bottom:1px solid #3c3c3c}
 .note-lane-marker{display:contents}

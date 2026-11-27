@@ -1,6 +1,6 @@
 import {test} from 'node:test';
 import assert from 'node:assert/strict';
-import {markerLanes,markerViewport,timelineSecond,moveRangeBoundary} from '../src/components/noteTimelineGeometry.ts';
+import {markerLanes,markerViewport,timelineSecond,moveRangeBoundary,timelineZoomScroll} from '../src/components/noteTimelineGeometry.ts';
 
 test('a short range in a long recording gets a useful zoom with both ends visible',()=>{
   const view=markerViewport(1568,1365,1385);
@@ -36,4 +36,16 @@ test('overlapping ranges and crowded point targets use distinct marker rows',()=
   assert.notEqual(layout.rows.a,layout.rows.b);
   assert.notEqual(layout.rows.c,layout.rows.d);
   assert.equal(layout.rows.c,0);
+});
+test('wheel zoom keeps the time beneath the pointer anchored',()=>{
+  const oldWidth=1000,newWidth=2000,scroll=200,pointer=150,viewport=400;
+  const next=timelineZoomScroll(scroll,oldWidth,newWidth,pointer,viewport);
+  const before=(scroll+pointer-12)/(oldWidth-24);
+  const after=(next+pointer-12)/(newWidth-24);
+  assert.ok(Math.abs(before-after)<.000001);
+});
+test('zoom scroll clamps at both edges and Fit returns to the beginning',()=>{
+  assert.equal(timelineZoomScroll(0,1000,500,0,500),0);
+  assert.equal(timelineZoomScroll(600,1000,500,200,400),100);
+  assert.equal(timelineZoomScroll(500,1000,400,200,400),0);
 });
